@@ -1,0 +1,32 @@
+# --- Credentials & Secrets (CRITICAL) ---
+# Never share these; they contain your master keys
+.env
+.streamlit/secrets.toml
+
+# --- Python Environments ---
+# Prevents thousands of library files from bloating your repo
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Local Data & Scraper Outputs ---
+# Now that state is in Supabase, ignore all local data folders
+data/
+outputs/
+archive/
+*.csv
+*.xlsx
+*.json
+*.sqlite3
+
+# --- IDE & System Files ---
+# Keeps your personal editor settings out of the project
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

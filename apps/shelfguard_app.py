@@ -10,95 +10,100 @@ st.set_page_config(page_title="ShelfGuard OS", layout="wide", page_icon="🛡️
 # --- CSS CONSOLIDATION (Unified Styling) ---
 st.markdown("""
     <style>
-    /* 1. FORCE METRIC CARDS - Targeting the specific container */
     [data-testid="stMetric"] {
         background-color: #ffffff !important;
         border-left: 6px solid #00704A !important;
         padding: 1.5rem !important;
         border-radius: 0.5rem !important;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1) !important;
-        width: 100% !important;
     }
-
-    /* 2. FORCE METRIC LABELS & VALUES */
-    [data-testid="stMetricLabel"] p {
-        font-size: 1rem !important;
-        color: #555555 !important;
-        font-weight: 700 !important;
-    }
-    
     [data-testid="stMetricValue"] div {
-        font-size: 1.8rem !important;
         color: #00704A !important;
-        font-weight: 800 !important;
     }
-
-    /* 3. VISUAL AUDIT CARDS */
     .product-card {
-        background-color: white !important;
-        border: 1px solid #e6e9ef !important;
-        border-radius: 12px !important;
-        padding: 15px !important;
-        text-align: center !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05) !important;
-        margin-bottom: 20px !important;
-        transition: all 0.3s ease !important;
+        background-color: white;
+        border: 1px solid #e6e9ef;
+        border-radius: 12px;
+        padding: 15px;
+        text-align: center;
+        transition: all 0.3s ease;
+        height: 320px;
     }
-
     .product-card:hover {
-        border-color: #00704A !important;
-        box-shadow: 0 8px 16px rgba(0,112,74,0.15) !important;
-        transform: translateY(-5px) !important;
+        border-color: #00704A;
+        transform: translateY(-5px);
     }
-
-    /* Force images to be centered and constrained */
     .product-img {
-        max-height: 140px !important;
-        margin: 0 auto !important;
-        display: block !important;
-        border-radius: 4px !important;
+        max-height: 140px;
+        max-width: 100%;
+        margin: 0 auto;
+        display: block;
+        object-fit: contain;
     }
     </style>
     """, unsafe_allow_html=True)
 
 try:
     # 2. DATA INGESTION
-    df = get_all_data()
+    with st.spinner("🔄 Ingesting 36-Month Historical Data..."):
+        df_raw = get_all_data()
     
-    # --- FIX: Force conversion to datetime before using .dt accessor ---
-    df["week_start"] = pd.to_datetime(df["week_start"], errors='coerce')
-    # --------------------------------------------------------------------
+    if df_raw.empty:
+        st.warning("⚠️ No data found in the database. Please check your Supabase connection.")
+        st.stop()
+
+    # Normalize dates and handle empty states
+    df_raw["week_start"] = pd.to_datetime(df_raw["week_start"])
+    all_weeks = sorted(df_raw["week_start"].dt.date.dropna().unique(), reverse=True)
     
-    # Ensure dates are normalized for selection
-    all_weeks = sorted(df["week_start"].dt.date.dropna().unique(), reverse=True)
+    if not all_weeks:
+        st.error("❌ No valid weeks found in dataset.")
+        st.stop()
+        
     selected_week = st.sidebar.selectbox("Fiscal Period", all_weeks)
     
     # 3. ANALYSIS EXECUTION
-    res = run_weekly_analysis(df, selected_week)
-    fin = analyze_capital_efficiency(res["capital_flow"])
+    # We use a spinner here because the 36-month trend math is computationally heavy
+    with st.spinner("🧠 Executing Predictive Intelligence..."):
+        res = run_weekly_analysis(df_raw, selected_week)
+        
+    # --- DATA INTEGRITY CHECK ---
+    # Ensure the engine returned the required dataframes
+    if res["data"].empty:
+        st.info(f"📅 No Starbucks activity recorded for the week of {selected_week}.")
+        st.stop()
+
+    fin = analyze_capital_efficiency(res["capital_flow"], res_data=res["data"])
     
+    # 4. HEADER
     st.title("🛡️ ShelfGuard: Unified Command Center")
-    st.caption(f"Strategy & Analytics Dashboard | Period Ending: {selected_week}")
+    st.caption(f"Strategy & Analytics Dashboard | Predictive Intelligence Active (36M Lookback)")
     
     # --- ROW 1: STRATEGIC CAPITAL METRICS ---
     c1, c2, c3, c4 = st.columns(4)
     
     c1.metric("Weekly Portfolio Rev", f_money(fin["total_rev"]))
-    c2.metric("Efficiency Score", f"{fin['efficiency_score']:.0f}/100")
     
-    bad_spend = res["capital_flow"].get("📉 DRAG (Waste)", 0) + res["capital_flow"].get("🩸 BLEED (Negative Margin)", 0)
+    c2.metric("Efficiency Score", f"{fin.get('efficiency_score', 0):.0f}/100", 
+              help="Composite score of margin health and inventory velocity.")
+    
+    # Calculate Inefficient Capital dynamically
+    bad_zones = ["📉 DRAG (Waste)", "📉 DRAG (Terminal Decay)", "🩸 BLEED (Negative Margin)"]
+    bad_spend = sum(res["capital_flow"].get(zone, 0) for zone in bad_zones)
+    
     c3.metric("Inefficient Capital", f_money(bad_spend), 
-              delta=f"{fin['drag_pct']:.1%} of Rev", delta_color="inverse")
-              
-    c4.metric("Annualized Waste Risk", f_money(fin["annualized_waste"]), 
-              delta="Projected Leakage", delta_color="inverse")
+              delta=f"{fin.get('drag_pct', 0):.1%} Exposure", delta_color="inverse")
+    
+    c4.metric("Annualized Risk", f_money(fin.get("annualized_waste", 0)), 
+              delta=f"{fin.get('avg_velocity_decay', 1.0):.2f}x Velocity Decay", delta_color="inverse")
     
     st.divider()
 
     # --- ROW 2: STRATEGIC ZONE FILTERING ---
+    available_zones = sorted(res["data"]["capital_zone"].unique())
     selected_zone = st.radio(
         "Strategic Filter", 
-        options=["🏰 FORTRESS (Cash Flow)", "🚀 FRONTIER (Growth)", "📉 DRAG (Waste)", "🩸 BLEED (Negative Margin)"], 
+        options=available_zones, 
         horizontal=True
     )
 
@@ -106,75 +111,78 @@ try:
     if selected_zone:
         display_df = display_df[display_df["capital_zone"] == selected_zone]
 
-    # --- VARIATION CLEANING ---
-    def clean_var_string(s):
-        val = str(s).strip()
-        if not s or val in ["", "nan", "None", "Standard", "Standard Product"]:
-            return "Standard SKU"
-        return val
-
-    display_df["Clean Details"] = display_df["variation_attributes"].apply(clean_var_string)
-
-    # --- ROW 3: PRODUCT GALLERY & TABLE ---
+    # --- ROW 3: PERFORMANCE MATRIX & VISUAL AUDIT ---
     tab1, tab2 = st.tabs(["📊 Performance Matrix", "🖼️ Visual Audit"])
 
     with tab1:
-        st.dataframe(
-            display_df[[
-                "Clean Details", "capital_zone", "efficiency_score", "net_margin", 
-                "weekly_sales_filled", "ad_action", "ecom_action", "asin"
+        # We wrap the dataframe in a try-block because LineChartColumn is sensitive to data types
+        try:
+            # Prepare DataFrame for display
+            final_df = display_df[[
+                "variation_attributes", "capital_zone", "efficiency_score", "velocity_decay", 
+                "Trend (36M)", "net_margin", "weekly_sales_filled", "ad_action", "ecom_action"
             ]].rename(columns={
-                "Clean Details": "Product / Variation",
+                "variation_attributes": "Product Details",
                 "capital_zone": "Status",
                 "efficiency_score": "Score",
-                "net_margin": "Net Margin %",
+                "velocity_decay": "Decay",
+                "Trend (36M)": "3-Year Velocity",
+                "net_margin": "Margin %",
                 "weekly_sales_filled": "Revenue",
                 "ad_action": "Media Directive",
                 "ecom_action": "Ops Lever"
-            }).sort_values("Revenue", ascending=False),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Revenue": st.column_config.NumberColumn(
-                    "Revenue",
-                    format="$%.2f"  # REMOVED COMMA: Streamlit handles thousands sep automatically
-                ),
-                "Net Margin %": st.column_config.NumberColumn(
-                    "Net Margin %",
-                    format="%.2f%%"  # Standardized percentage display
-                ),
-                "Score": st.column_config.ProgressColumn(
-                    "Score",
-                    min_value=0, 
-                    max_value=100, 
-                    format="%d",
-                    color="#00704A"
-                )
-            }
-        )
+            }).sort_values("Revenue", ascending=False)
+
+            st.dataframe(
+                final_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Revenue": st.column_config.NumberColumn(format="$%.2f"),
+                    "Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Decay": st.column_config.NumberColumn(
+                        "Decay", help=">1.0 = Rank is worsening vs 3-yr average.", format="%.2fx"
+                    ),
+                    "3-Year Velocity": st.column_config.LineChartColumn(
+                        "3-Year Velocity", help="Historical Sales Rank Trend (Lower is better)"
+                    ),
+                    "Score": st.column_config.ProgressColumn(
+                        "Score", min_value=0, max_value=100, format="%d", color="#00704A"
+                    )
+                }
+            )
+        except Exception as table_err:
+            st.error("Unable to render Performance Matrix. This is usually due to corrupted historical rank data.")
+            st.exception(table_err)
 
     with tab2:
         st.write("### Starbucks Visual Portfolio Audit")
-        gallery_df = display_df[display_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(12)
-    
+        # Filter for rows that actually have images
+        gallery_df = display_df[display_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(16)
+        
         if not gallery_df.empty:
             cols = st.columns(4)
             for i, (_, row) in enumerate(gallery_df.iterrows()):
                 with cols[i % 4]:
+                    # Truncate title for UI consistency
+                    clean_title = (row['title'][:45] + '...') if len(row['title']) > 45 else row['title']
+                    
                     st.markdown(f"""
                         <div class="product-card">
                             <img src="{row['main_image']}" class="product-img">
-                            <div style="margin-top:10px; height:45px; overflow:hidden;">
-                                <b style="font-size:0.85rem; color:#333;">{row['Clean Details']}</b>
+                            <div style="margin-top:10px; height:50px; overflow:hidden;">
+                                <b style="font-size:0.85rem; color:#333;">{clean_title}</b>
                             </div>
-                            <div style="font-size:1.1rem; color:#00704A; font-weight:bold; margin:5px 0;">
+                            <div style="font-size:1.1rem; color:#00704A; font-weight:bold; margin-top:5px;">
                                 {f_money(row['weekly_sales_filled'])}
                             </div>
+                            <div style="font-size:0.75rem; color:#666; font-weight:600;">{row['capital_zone']}</div>
                             <div style="font-size:0.7rem; color:#999;">ASIN: {row['asin']}</div>
                         </div>
                     """, unsafe_allow_html=True)
+        else:
+            st.info("No product images available for the selected filter.")
 
 except Exception as e:
-    st.error(f"Command Center Offline: {e}")
-    st.exception(e) 
-    st.info("Check if sync_supabase.py was run after the new Keepa batches were fetched.")
+    st.error(f"🛡️ Command Center Offline: {e}")
+    st.exception(e)

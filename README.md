@@ -1,85 +1,81 @@
+# 🛡️ ShelfGuard: The Predictive Operating System for CPG Brands
+
+> **Stop optimizing ROAS. Start protecting Enterprise Value.**
+
+ShelfGuard is an autonomous capital allocation engine for modern consumer brands, developed to bridge the gap between Director-level strategy and technical execution. It triangulates **Advertising Data** (Amazon Ads), **Inventory Logistics** (SP-API), and **36-Month Market Intelligence** (Keepa) to act as an automated CFO—directing capital away from "zombie" SKUs and toward high-velocity, high-margin opportunities.
+
+---
+
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=Streamlit&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat&logo=supabase&logoColor=white)
 ![License](https://img.shields.io/badge/License-Proprietary-red.svg)
 
-# 🛡️ ShelfGuard: The Financial Operating System for CPG Brands
-
-> **Stop optimizing ROAS. Start optimizing Capital Efficiency.**
-
-ShelfGuard is an autonomous capital allocation engine for modern consumer brands. It triangulates **Advertising Data** (Amazon Ads), **Inventory Logistics** (SP-API), and **Competitive Intelligence** (Keepa) to act as an automated CFO—directing every dollar of ad spend to where it generates the highest Net Margin, not just the most clicks.
-
 ---
 
-## 📸 Demo
+## 📸 Demo: Predictive Command Center
 ![ShelfGuard Command Center](screenshot.png)
-*Figure 1: Unified Command Center displaying real-time Capital Efficiency and Strategic Action Zones.*
-
-
+*Unified Command Center displaying 36-month trend sparklines, Predictive Efficiency Scores, and Strategic Action Zones.*
 
 ---
 
-## 📉 The Problem: The "Silo Trap"
-Current e-commerce tools are fragmented, leading to massive capital inefficiency:
-* **Ad Managers (Pacvue, Perpetua):** Optimize for *Spend* (ROAS), ignoring inventory health.
-* **Ops Tools (SoStocked):** Optimize for *Stock*, ignoring marketing pushes.
-* **Finance Tools (A2X):** Look *backward* at last month's P&L.
+## 📉 The Problem: The "Short-Termism" Trap
+Current e-commerce tools optimize for the **next 24 hours**, leading to long-term capital destruction. Drawing on experience as a Director of Strategy & Analytics, this tool addresses the "Silo Trap" common in large-scale CPG brands:
 
-**Result:** Brands spend thousands on ads for products that are out of stock, low margin, or losing the Buy Box.
+* **Ad Managers (Pacvue, Perpetua):** Optimize for *Spend* (ROAS), often scaling spend on products with good 7-day ROAS even if they are in a 3-year "death spiral."
+* **Ops Tools (SoStocked):** Optimize for *Stock*, but fail to signal when marketing should be throttled to prevent stockouts on low-margin variations.
+* **Finance Tools (A2X):** Look *backward* at last month's P&L, providing no guidance on where the next dollar of growth capital should go.
 
-## 🚀 The Solution: ShelfGuard
-ShelfGuard sits above these silos. It ingests data from all three sources to answer the single most important question: **"Where should my next dollar go?"**
+**The Result:** Brands spend thousands on ads for products that are out of stock, low margin, or losing fundamental market momentum.
+
+---
+
+## 🚀 The Solution: Predictive Capital Allocation
+ShelfGuard sits above these silos, functioning as a "Director of Strategy in a Box." By ingesting **36 months of historical data** via Keepa and Supabase APIs, it answers the critical strategic question: **"Is this revenue building our brand or draining our cash reserve?"**
 
 ### 🚀 Core Capabilities
 
-#### 1. 🏰 Strategic Capital Zones
-ShelfGuard classifies your entire catalog into four distinct investment zones. By triangulating **Net Margin**, **Inventory Cover**, and **Sales Velocity**, it assigns every SKU a specific strategic posture:
-
-* **🏰 FORTRESS (Cash Flow):** High-performing assets. *Focus: Margin Protection.*
-* **🚀 FRONTIER (Growth):** High-potential variations. *Focus: Market Share.*
-* **📉 DRAG (Waste):** Underperforming capital. *Focus: Efficiency.*
-* **🩸 BLEED (Negative Margin):** Capital-destructive SKUs. *Focus: Loss Mitigation.*
+#### 1. 🏰 Strategic Capital Zones (Multi-Year Context)
+ShelfGuard classifies every SKU into a strategic posture based on Margin, Inventory, and Historical Momentum:
+* **🏰 FORTRESS (Cash Flow):** High-margin assets with stable 3-year velocity. Directive: Maximize Yield.
+* **🚀 FRONTIER (Growth):** High-potential items with improving BSR momentum. Directive: Aggressive Market Share.
+* **📉 DRAG (Terminal Decay):** SKUs showing persistent YoY velocity loss. Directive: Liquidate/Exit.
+* **🩸 BLEED (Negative Margin):** Capital-destructive units. Directive: Hard Halt.
 
 #### 2. 🚦 Automated Decision Logic
-The "Unified Command Center" translates complex financial data into two clear execution paths for every SKU:
+The Command Center translates complex financial data into two clear execution paths for every SKU:
 
-| Execution Path | Purpose | Examples |
-| :--- | :--- | :--- |
-| **Media Directive** | Directs Advertising Spend | `SCALE AD SPEND`, `ROAS OPTIMIZATION`, `HALT SPEND` |
-| **Ops Lever** | Directs Operational Changes | `TEST PRICE (+5%)`, `MAINTAIN`, `INVENTORY REPLENISH` |
+| Execution Path | Purpose | Data Signal | Media Directive |
+| :--- | :--- | :--- | :--- |
+| **Media Lever** | Directs Advertising Spend | High Momentum + High Margin | Scale Spend & Optimize ROAS |
+| **Ops Lever** | Directs Operational Changes | Low Margin + Low Inventory | Test Price (+5%) or Exit SKU |
 
-
+#### 3. 📉 Predictive Waste Engine
+Unlike tools that simply multiply last week's waste by 52, ShelfGuard calculates Annualized Risk by weighting inefficiency against a 36-month Velocity Decay Factor. This surfaces the true "Cost of Inaction" for underperforming SKUs.
 
 ---
 
 ### 🧠 Under the Hood: The Intelligence Layer
+ShelfGuard utilizes vectorized time-series analysis (Pandas/NumPy) to calculate momentum shifts across 150+ weeks of historical rank data, an approach refined through coursework in "Data Intelligence" at the Chicago Booth School of Business.
 
-ShelfGuard bridges the gap between raw API data and financial strategy using a proprietary logic engine.
-
-#### The Efficiency Score (0-100)
-A dynamic risk metric calculated for every SKU to prevent "Empty Calorie" ad spend. It penalizes revenue that doesn't contribute to long-term enterprise value.
+#### The Velocity Decay Factor
+Quantified as a core risk metric, it compares a product's current sales rank (BSR) to its 3-year historical baseline. A factor of **1.20x** indicates the product is 20% less efficient than its long-term average.
 
 ```python
-def calculate_efficiency_score(row):
+def analyze_velocity_decay(asin, history_df):
     """
-    Quantifies the risk/reward ratio of ad spend based on inventory health.
+    Vectorized calculation of 3-year momentum.
+    Compares recent 8-week performance to 150-week baseline.
     """
-    # 1. Inventory Velocity Penalty: If we have < 2 weeks cover, score drops
-    if row['weeks_of_cover'] < 2.0:
-        return 0.0
+    # 1. Establish the 36-month baseline from Supabase
+    long_term_avg = history_df['sales_rank_filled'].mean()
     
-    # 2. Margin Impact: High margin items get a multiplier
-    margin_factor = 1.0 + (row['net_margin_pct'] * 2)
+    # 2. Capture the recent trend (2 months)
+    recent_avg = history_df.sort_values('week_start', ascending=False).head(8)['sales_rank_filled'].mean()
     
-    # 3. Buy Box Binary: If we don't own the Buy Box, marketing is waste
-    buy_box_factor = 1.0 if row['buy_box_owner'] == 'SELF' else 0.1
-    
-    base_score = (row['cv_rate'] / row['category_avg_cv']) * 50
-    return min(100, base_score * margin_factor * buy_box_factor)
+    # Decay > 1.0 = Rank is worsening (higher) than the 36-month mean
+    return round(recent_avg / long_term_avg, 2)
 ```
-
-### 2. The Intelligence Layer: Estimation Engine
-ShelfGuard uses a transparent **Power Law Regression** model to convert Sales Rank (BSR) into Unit Sales, allowing for competitive benchmarking against category leaders.
 
 ---
 
@@ -94,88 +90,47 @@ graph TD
     classDef ui fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px,color:#4a148c;
 
     %% --- NODES ---
-    subgraph "1. External Data Sources"
-        K(Keepa API<br/>*BSR, Price, Buy Box*):::source
-        SP(Amazon SP-API<br/>*Orders & Inventory*):::source
-        AD(Amazon Ads API<br/>*Spend & Performance*):::source
-    end
+    K(Keepa API<br/>*36M History*):::source
+    SP(Amazon SP-API<br/>*Orders & Inventory*):::source
+    AD(Amazon Ads API<br/>*Spend & Performance*):::source
 
-    subgraph "2. Data Ingestion & Storage"
-        PY[Python Ingestion Workers]:::process
-        DB[(Supabase PostgreSQL<br/>*Single Source of Truth*)]:::storage
-    end
+    DB[(Supabase PostgreSQL<br/>*3-Year Single Source of Truth*)]:::storage
 
-    subgraph "3. Intelligence Layer"
-        ST[Streamlit App Window]:::ui
-        ENG[Analysis Engine<br/>*Pandas/NumPy*]:::process
-        LOGIC{{Proprietary Logic<br/>*Efficiency Score & Capital Zones*}}:::process
-    end
+    ST[Streamlit App]:::ui
+    ENG[Vectorized Engine<br/>*Pandas/NumPy*]:::process
+    AI[OpenAI Agent<br/>*Strategic Briefs*]:::process
 
     %% --- FLOWS ---
-    K -->|Raw Intelligence| PY
-    SP -->|Raw Ops Data| PY
-    AD -->|Raw Ad Data| PY
-    PY -->|Normalize & Store| DB
-
-    DB -->|Fetch Weekly Data| ST
-    ST -->|Pass Dataframe| ENG
-    ENG -->|Apply Models| LOGIC
-    LOGIC -->|Return Classified Results| ST
-    ST -->|Render Dashboard| UI[Final User Interface]:::ui
+    K & SP & AD -->|Python ETL| DB
+    DB -->|Historical Batch| ST
+    ST -->|Trend Analysis| ENG
+    ENG -->|Predictive Logic| AI
+    AI -->|Executive Insight| ST
 ```
-
-* **Frontend:** Streamlit (Custom CSS-themed dashboard)
-* **Database:** Supabase (PostgreSQL)
-* **Intelligence:** OpenAI API (for agentic insight generation)
-* **Data Sourcing:** Keepa API, Amazon SP-API & Ads API
-* **Processing:** Pandas & NumPy for financial modeling
 
 ---
 
-## 🔮 Product Roadmap: Scaling Capital Intelligence
+## 🔮 Product Roadmap
 
-#### Phase 1: Omnichannel Integration (Q1 2026)
-* **[ ] DTC Integration (Shopify):** Real-time ingestion of Shopify sales and inventory to enable cross-channel traffic routing (Amazon vs. DTC).
-* **[ ] Paid Social Attribution (Meta/Google):** Correlating external ad spend with Amazon BSR lift to identify "True ROAS."
-* **[ ] Walmart Connect:** Expanding the Command Center to include Walmart Marketplace performance and inventory logic.
+### Phase 1: Omnichannel Integration (Q1 2026)
+* **[ ] DTC Integration (Shopify):** Cross-channel traffic routing (Amazon vs. DTC).
+* **[ ] Paid Social Attribution:** Correlating Meta/Google spend with Amazon BSR lift.
 
-#### Phase 2: Agentic Execution & Action (Q2 2026)
-* **[ ] Automated Media Control:** Direct write-access to Amazon Ads API to automatically throttle spend on "BLEED" SKUs based on real-time efficiency thresholds.
-* **[ ] Dynamic Bidding Logic:** Adjusting keyword bids autonomously based on proprietary "Inventory Cover" and "Efficiency Score" signals.
+### Phase 2: Agentic Execution & Action (Q2 2026)
+* **[ ] Automated Media Control:** Direct write-access to Ads API to throttle "Terminal Decay" SKUs.
+* **[ ] Dynamic Bidding:** Autonomous bid adjustments based on "Inventory Cover" signals.
 
-#### Phase 3: Validation & Enterprise Scale (Q3 2026)
-* **[ ] Vertical Case Studies:** Documentation of Alpha partner results, focusing on **Contribution Margin expansion** and **Inventory Waste reduction**.
-* **[ ] Multi-Tenant Architecture:** Refactoring Supabase schema to support multiple brand instances within a single secure deployment.
+### Phase 3: Validation & Enterprise Scale (Q3 2026)
+* **[ ] Vertical Case Studies:** Documentation of Contribution Margin expansion.
+* **[ ] Multi-Tenant Architecture:** Support for multiple brand instances within a single secure deployment.
+
+---
 
 ## ⚡ Quick Start (Local Dev)
-
-**1. Clone & Set Up Environment**
-```bash
-git clone [https://github.com/jshuck0/ShelfGuard.git](https://github.com/jshuck0/ShelfGuard.git)
-cd ShelfGuard
-python -m venv .venv
-source .venv/bin/activate 
-pip install -r requirements.txt
-```
-
-**2. Configure Secrets**
-Create a `.streamlit/secrets.toml` file (do NOT commit this):
-```toml
-[supabase]
-url = "your_supabase_url"
-key = "your_supabase_anon_key"
-
-[keepa]
-api_key = "your_keepa_api_key"
-
-[openai]
-api_key = "your_openai_key"
-```
-
-**3. Run the Command Center**
-```bash
-streamlit run app.py
-```
+1. **Clone Repo:** `git clone https://github.com/jshuck0/ShelfGuard.git`
+2. **Install Deps:** `pip install -r requirements.txt`
+3. **Set Secrets:** Configure `.streamlit/secrets.toml` with Supabase and OpenAI keys.
+4. **Launch:** `streamlit run app.py`
 
 ---
 

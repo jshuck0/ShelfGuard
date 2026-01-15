@@ -1,3 +1,8 @@
+![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=Streamlit&logoColor=white)
+![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat&logo=supabase&logoColor=white)
+![License](https://img.shields.io/badge/License-Proprietary-red.svg)
+
 # 🛡️ ShelfGuard: The Financial Operating System for CPG Brands
 
 > **Stop optimizing ROAS. Start optimizing Capital Efficiency.**
@@ -8,7 +13,7 @@ ShelfGuard is an autonomous capital allocation engine for modern consumer brands
 
 ## 📸 Demo
 ### Unified Command Center
-The dashboard provides a real-time "Command Center" view of portfolio health, categorizing SKUs into strategic action zones based on financial performance and inventory risk.
+*Figure 1: Unified Command Center displaying real-time Capital Efficiency and Strategic Action Zones.*
 
 
 
@@ -25,28 +30,34 @@ Current e-commerce tools are fragmented, leading to massive capital inefficiency
 ## 🚀 The Solution: ShelfGuard
 ShelfGuard sits above these silos. It ingests data from all three sources to answer the single most important question: **"Where should my next dollar go?"**
 
-### Core Capabilities
+### 🚀 Core Capabilities
 
 #### 1. 🏰 Strategic Capital Zones
-ShelfGuard classifies your entire catalog into four distinct investment zones:
-* **🏰 FORTRESS (Cash Flow):** High Share, Healthy Stock. *Action: Scale Ad Spend / Test Price +5%.*
-* **🚀 FRONTIER (Growth):** Good Fundamentals, Low Share. *Action: Aggressive Investment.*
-* **📉 DRAG (Waste):** High Spend, Low Return. *Action: Immediate Divestment / ROAS Optimization.*
-* **🩸 BLEED (Negative Margin):** Selling at a loss. *Action: Halt Spend / Price Correction.*
+ShelfGuard classifies your entire catalog into four distinct investment zones. By triangulating **Net Margin**, **Inventory Cover**, and **Sales Velocity**, it assigns every SKU a specific strategic posture:
 
-#### 2. 🚦 The Omni-Channel Traffic Router
-ShelfGuard monitors "Ground Truth" (Buy Box Status & Inventory Levels) to direct external traffic:
-* **Scenario A:** Buy Box is Won & In Stock → **Drive Traffic to Amazon** (Flywheel Effect).
-* **Scenario B:** Buy Box Lost (Price War) → **Divert Traffic to Shopify/DTC** (Protect Margin).
+* **🏰 FORTRESS (Cash Flow):** High-performing assets. *Focus: Margin Protection.*
+* **🚀 FRONTIER (Growth):** High-potential variations. *Focus: Market Share.*
+* **📉 DRAG (Waste):** Underperforming capital. *Focus: Efficiency.*
+* **🩸 BLEED (Negative Margin):** Capital-destructive SKUs. *Focus: Loss Mitigation.*
+
+#### 2. 🚦 Automated Decision Logic
+The "Unified Command Center" translates complex financial data into two clear execution paths for every SKU:
+
+| Execution Path | Purpose | Examples |
+| :--- | :--- | :--- |
+| **Media Directive** | Directs Advertising Spend | `SCALE AD SPEND`, `ROAS OPTIMIZATION`, `HALT SPEND` |
+| **Ops Lever** | Directs Operational Changes | `TEST PRICE (+5%)`, `MAINTAIN`, `INVENTORY REPLENISH` |
+
+
 
 ---
 
-## 🧠 Under the Hood: The Logic Layer
+### 🧠 Under the Hood: The Intelligence Layer
 
-ShelfGuard uses two proprietary algorithms to bridge the gap between "Raw Data" and "Financial Strategy."
+ShelfGuard bridges the gap between raw API data and financial strategy using a proprietary logic engine.
 
-### 1. The Efficiency Score (0-100)
-A dynamic risk metric calculated daily for every SKU to prevent "Empty Calorie" ad spend. It penalizes revenue that doesn't contribute to long-term enterprise value.
+#### The Efficiency Score (0-100)
+A dynamic risk metric calculated for every SKU to prevent "Empty Calorie" ad spend. It penalizes revenue that doesn't contribute to long-term enterprise value.
 
 ```python
 def calculate_efficiency_score(row):

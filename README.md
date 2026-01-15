@@ -132,6 +132,21 @@ graph TD
 
 ---
 
+## 🔮 Product Roadmap: Scaling Capital Intelligence
+
+#### Phase 1: Omnichannel Integration (Q1 2026)
+* **[ ] DTC Integration (Shopify):** Real-time ingestion of Shopify sales and inventory to enable cross-channel traffic routing (Amazon vs. DTC).
+* **[ ] Paid Social Attribution (Meta/Google):** Correlating external ad spend with Amazon BSR lift to identify "True ROAS."
+* **[ ] Walmart Connect:** Expanding the Command Center to include Walmart Marketplace performance and inventory logic.
+
+#### Phase 2: Agentic Execution & Action (Q2 2026)
+* **[ ] Automated Media Control:** Direct write-access to Amazon Ads API to automatically throttle spend on "BLEED" SKUs based on real-time efficiency thresholds.
+* **[ ] Dynamic Bidding Logic:** Adjusting keyword bids autonomously based on proprietary "Inventory Cover" and "Efficiency Score" signals.
+
+#### Phase 3: Validation & Enterprise Scale (Q3 2026)
+* **[ ] Vertical Case Studies:** Documentation of Alpha partner results, focusing on **Contribution Margin expansion** and **Inventory Waste reduction**.
+* **[ ] Multi-Tenant Architecture:** Refactoring Supabase schema to support multiple brand instances within a single secure deployment.
+
 ## ⚡ Quick Start (Local Dev)
 
 **1. Clone & Set Up Environment**

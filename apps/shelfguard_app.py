@@ -1,4 +1,13 @@
 import streamlit as st
+st.set_page_config(page_title="Analytics Pro", page_icon="📊") 
+hide_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_style, unsafe_allow_html=True)
 import pandas as pd
 from data import get_all_data
 from engine import run_weekly_analysis

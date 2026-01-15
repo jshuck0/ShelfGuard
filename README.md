@@ -15,6 +15,7 @@ ShelfGuard is an autonomous capital allocation engine for modern consumer brands
 
 ## 📸 Demo: Predictive Command Center
 ![ShelfGuard Command Center](screenshot.png)
+![ShelfGuard Command Center](screenshot2.png)
 *Unified Command Center displaying 36-month trend sparklines, Predictive Efficiency Scores, and Strategic Action Zones.*
 
 ---

@@ -2,75 +2,94 @@ import pandas as pd
 import numpy as np
 
 def _safe_float(val, default=0.0):
-    """Prevents crashes from dirty data (NoneType > int errors)."""
     try:
         return float(val) if pd.notna(val) else default
     except (ValueError, TypeError):
         return default
 
+def calculate_net_realization(row):
+    """Calibrated for 2026 Amazon Fee structures."""
+    price = _safe_float(row.get('filled_price'))
+    if price <= 0: return 0.0
+    
+    # Fees & Logistics
+    fba_fee = _safe_float(row.get('fba_fees'), default=4.50) 
+    referral_fee = price * 0.15 
+    storage_cost = _safe_float(row.get('package_vol_cf'), default=0.05) * 0.87 
+    cogs = price * 0.25 # Estimated COGS for Starbucks
+    
+    net_profit = price - (fba_fee + referral_fee + storage_cost + cogs)
+    return net_profit / price
+
+def calculate_row_efficiency(bb, gap, weeks_cover, net_margin):
+    """Portfolio efficiency scoring (0-100)."""
+    base_score = bb * 40
+    price_score = max(0, 30 - (gap * 300))
+    margin_score = min(30, max(0, (net_margin - 0.10) * 100))
+    stock_factor = 1.0 if weeks_cover >= 2.0 else 0.2
+    return min(100, int((base_score + price_score + margin_score) * stock_factor))
+
 def analyze_strategic_matrix(row):
-    """
-    The Unified Brain: Generates directives for ALL 3 Personas.
-    """
-    # 1. Sanitize & Normalize Data
+    """Assigns products to Strategic Zones and provides directives."""
     bb = _safe_float(row.get('amazon_bb_share'), default=1.0)
     price = _safe_float(row.get('filled_price'), default=0.0)
-    raw_comp = row.get('new_fba_price')
-    comp = _safe_float(raw_comp, default=price) 
+    comp = _safe_float(row.get('new_fba_price'), default=price) 
     gap = (price - comp) / comp if comp > 0 else 0
     weeks_cover = _safe_float(row.get('weeks_of_cover'), default=4.0)
     
-    # --- STRATEGIC LAYER (CFO) ---
-    # Classify the asset into a Capital Allocation Zone
-    if bb > 0.90 and gap < 0.05:
-        capital_zone = "🏰 FORTRESS (Cash Flow)" # Protect at all costs
-    elif bb > 0.60 and bb < 0.90:
-        capital_zone = "🚀 FRONTIER (Growth)"    # Invest aggressively to win
-    else:
-        capital_zone = "📉 DRAG (Waste)"         # Divest / Fix immediately
+    net_margin = calculate_net_realization(row)
+    efficiency_score = calculate_row_efficiency(bb, gap, weeks_cover, net_margin)
 
-    # --- TACTICAL LAYER: AD MANAGER (Media Execution) ---
-    if bb < 0.50: 
-        ad_action = "🛑 HARD PAUSE (Leakage)"
-    elif bb < 0.85 and gap > 0.05: 
-        ad_action = "🛡️ DEFENSIVE BIDDING"
-    elif bb > 0.95: 
-        ad_action = "🚀 SCALE (High Confidence)"
-    else: 
+    # 1. SEGMENTATION
+    if net_margin < 0.05:
+        capital_zone = "🩸 BLEED (Negative Margin)"
+    elif bb > 0.85 and net_margin > 0.15:
+        capital_zone = "🏰 FORTRESS (Cash Flow)"
+    elif bb > 0.60 and net_margin > 0.10:
+        capital_zone = "🚀 FRONTIER (Growth)"
+    else:
+        capital_zone = "📉 DRAG (Waste)"
+
+    # 2. ACTIONABLE DIRECTIVES
+    if capital_zone == "🩸 BLEED (Negative Margin)":
+        ecom_action = "💀 KILL SKU / REPRICE"
+        ad_action = "🛑 HARD PAUSE"
+    elif gap > 0.08:
+        ecom_action = "🎫 CLIP COUPON"
+        ad_action = "⚖️ MAINTAIN ROAS"
+    elif bb > 0.95 and net_margin > 0.20:
+        ecom_action = "📈 TEST PRICE (+5%)"
+        ad_action = "🚀 SCALE AD SPEND"
+    else:
+        ecom_action = "✅ MAINTAIN"
         ad_action = "⚖️ ROAS OPTIMIZATION"
 
-    # --- TACTICAL LAYER: ECOM MANAGER (Ops Levers) ---
-    if gap > 0.10 and bb < 0.70: 
-        ecom_action = "🎫 CLIP COUPON (Price War)"
-    elif bb < 0.90 and gap <= 0.02: 
-        ecom_action = "📦 AUDIT INVENTORY"
-    elif bb > 0.98:
-        ecom_action = "📈 TEST PRICE (+3%)"
-    else: 
-        ecom_action = "✅ MAINTAIN MSRP"
-
-    return pd.Series([ad_action, ecom_action, capital_zone, gap])
+    return pd.Series([ad_action, ecom_action, capital_zone, gap, efficiency_score, net_margin])
 
 def run_weekly_analysis(rows, week):
-    target_date = pd.to_datetime(week).normalize()
-    df_w = rows[rows["week_start"] == target_date].copy()
+    """Filters data for the selected week and executes the matrix."""
+    # --- THE DATE FIX: Ensuring exact matches between DB and Sidebar ---
+    target_date = pd.to_datetime(week).date()
+    rows = rows.copy()
+    rows["week_start_dt"] = pd.to_datetime(rows["week_start"]).dt.date
+    
+    # Filter for the week
+    df_w = rows[rows["week_start_dt"] == target_date].copy()
+    
+    # Filter for Starbucks Portfolio
     sbux = df_w[df_w["is_starbucks"] == 1].copy()
 
     if sbux.empty: 
         return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0}
 
-    # Clean Revenue/Sales columns before math
-    sbux['weekly_sales_filled'] = sbux['weekly_sales_filled'].apply(lambda x: _safe_float(x))
-    sbux['amazon_bb_share'] = sbux['amazon_bb_share'].apply(lambda x: _safe_float(x, 1.0))
-
-    # RUN THE UNIFIED ANALYSIS
-    sbux[['ad_action', 'ecom_action', 'capital_zone', 'price_gap']] = sbux.apply(analyze_strategic_matrix, axis=1)
+    # Apply calculations
+    sbux[['ad_action', 'ecom_action', 'capital_zone', 'price_gap', 'efficiency_score', 'net_margin']] = sbux.apply(analyze_strategic_matrix, axis=1)
     
-    # AGGREGATE FOR CFO (Summing revenue by zone)
+    # Group for the charts
     capital_flow = sbux.groupby("capital_zone")['weekly_sales_filled'].sum().to_dict()
     
     return {
-        "data": sbux,
-        "capital_flow": capital_flow,
+        "data": sbux, 
+        "capital_flow": capital_flow, 
         "total_rev": sbux['weekly_sales_filled'].sum()
     }

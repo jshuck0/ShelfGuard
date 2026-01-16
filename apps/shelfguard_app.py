@@ -54,7 +54,7 @@ st.markdown("""
 
 try:
     # 2. DATA INGESTION
-    with st.spinner("🔄 Ingesting 36-Month Historical Data..."):
+    with st.spinner("🔄Loading..."):
         df_raw = get_all_data()
     
     if df_raw.empty:

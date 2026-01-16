@@ -4,11 +4,11 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_SERVICE_KEY"]
+supabase_url = st.secrets["url"]
+supabase_key = st.secrets["key"]
 
 # Initialize Supabase Client
-supabase: Client = create_client(url, key)
+supabase: Client = create_client(supabase_url, supabase_key)
 
 @st.cache_data(ttl=3600)
 def get_all_data():

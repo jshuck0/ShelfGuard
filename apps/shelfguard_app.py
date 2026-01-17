@@ -1,24 +1,19 @@
 import streamlit as st
-st.set_page_config(page_title="Analytics Pro", page_icon="📊") 
-hide_style = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-"""
-st.markdown(hide_style, unsafe_allow_html=True)
 import pandas as pd
 from data import get_all_data
 from engine import run_weekly_analysis
 from finance import analyze_capital_efficiency, f_money, f_pct
 
 # 1. PAGE CONFIGURATION
+# Must be the first Streamlit command. 
 st.set_page_config(page_title="ShelfGuard OS", layout="wide", page_icon="🛡️")
 
-# --- CSS CONSOLIDATION (Unified Styling) ---
-st.markdown("""
+# --- UI STYLING (Full CSS Block) ---
+hide_style = """
     <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
     [data-testid="stMetric"] {
         background-color: #ffffff !important;
         border-left: 6px solid #00704A !important;
@@ -50,11 +45,12 @@ st.markdown("""
         object-fit: contain;
     }
     </style>
-    """, unsafe_allow_html=True)
+"""
+st.markdown(hide_style, unsafe_allow_html=True)
 
 try:
     # 2. DATA INGESTION
-    with st.spinner("🔄Loading..."):
+    with st.spinner("🔄 Loading Global Data..."):
         df_raw = get_all_data()
     
     if df_raw.empty:
@@ -72,39 +68,57 @@ try:
     selected_week = st.sidebar.selectbox("Fiscal Period", all_weeks)
     
     # 3. ANALYSIS EXECUTION
-    # We use a spinner here because the 36-month trend math is computationally heavy
+    # This executes the 36-month trend math and the Category Growth benchmarks in engine.py
     with st.spinner("🧠 Executing Predictive Intelligence..."):
         res = run_weekly_analysis(df_raw, selected_week)
         
-    # --- DATA INTEGRITY CHECK ---
-    # Ensure the engine returned the required dataframes
     if res["data"].empty:
         st.info(f"📅 No Starbucks activity recorded for the week of {selected_week}.")
         st.stop()
 
+    # Financial and Efficiency Diagnostics
     fin = analyze_capital_efficiency(res["capital_flow"], res_data=res["data"])
     
     # 4. HEADER
     st.title("🛡️ ShelfGuard: Unified Command Center")
     st.caption(f"Strategy & Analytics Dashboard | Predictive Intelligence Active (36M Lookback)")
     
-    # --- ROW 1: STRATEGIC CAPITAL METRICS ---
+    # --- ROW 1: THE DIRECTOR-LEVEL STRATEGIC TILES ---
     c1, c2, c3, c4 = st.columns(4)
     
-    c1.metric("Weekly Portfolio Rev", f_money(fin["total_rev"]))
+    # TILE 1: Weekly Portfolio Rev (Now including Share Velocity Benchmark)
+    total_rev_curr = res.get("total_rev", 0)
+    share_delta = res.get("share_delta", 0) # Calculated in engine.py vs 6% Category Growth
+    delta_color = "normal" if share_delta >= 0 else "inverse"
     
-    c2.metric("Efficiency Score", f"{fin.get('efficiency_score', 0):.0f}/100", 
-              help="Composite score of margin health and inventory velocity.")
+    c1.metric(
+        label="Weekly Portfolio Rev", 
+        value=f_money(total_rev_curr), 
+        delta=f"{share_delta:+.1%} Share Velocity",
+        delta_color=delta_color,
+        help="Current weekly revenue benchmarked against a 6.0% category growth rate baseline."
+    )
     
-    # Calculate Inefficient Capital dynamically
+    # TILE 2: Portfolio Integrity % (Revenue Quality)
+    # Tracks the percentage of total revenue coming from 'Healthy' Strategic Zones
+    healthy_zones = ["🏰 FORTRESS (Cash Flow)", "🚀 FRONTIER (Growth)"]
+    integrity_score = (res["data"][res["data"]["capital_zone"].isin(healthy_zones)]["weekly_sales_filled"].sum() / total_rev_curr) * 100
+    c2.metric("Portfolio Integrity %", f"{integrity_score:.1f}%", 
+              help="The percentage of total revenue coming from Healthy (Fortress/Frontier) SKUs.")
+    
+    # TILE 3: Contribution Leak (Immediate Waste)
+    # Aggregates operational loss and ad waste from 'Shaky' zones
     bad_zones = ["📉 DRAG (Waste)", "📉 DRAG (Terminal Decay)", "🩸 BLEED (Negative Margin)"]
-    bad_spend = sum(res["capital_flow"].get(zone, 0) for zone in bad_zones)
+    leak_total = res["data"][res["data"]["capital_zone"].isin(bad_zones)]["weekly_sales_filled"].sum()
+    c3.metric("Contribution Leak", f_money(leak_total), 
+              delta=f"{(leak_total/total_rev_curr):.1%} Exposure", delta_color="inverse",
+              help="Immediate weekly dollar loss (Ads + Margin) from operationally broken ASINs.")
     
-    c3.metric("Inefficient Capital", f_money(bad_spend), 
-              delta=f"{fin.get('drag_pct', 0):.1%} Exposure", delta_color="inverse")
-    
-    c4.metric("Annualized Risk", f_money(fin.get("annualized_waste", 0)), 
-              delta=f"{fin.get('avg_velocity_decay', 1.0):.2f}x Velocity Decay", delta_color="inverse")
+    # TILE 4: Net Efficiency Delta (Validation Placeholder)
+    # Will be updated to compare WoW efficiency movement to prove strategic impact
+    c4.metric("Net Efficiency Delta", f"{fin.get('efficiency_score', 0):.0f}/100", 
+              delta="WoW Validation", delta_color="normal",
+              help="The Week-over-Week change in total Portfolio Efficiency.")
     
     st.divider()
 
@@ -124,14 +138,12 @@ try:
     tab1, tab2 = st.tabs(["📊 Performance Matrix", "🖼️ Visual Audit"])
 
     with tab1:
-        # We wrap the dataframe in a try-block because LineChartColumn is sensitive to data types
         try:
-            # Prepare DataFrame for display
+            # Preparing DataFrame using the clean 'Flavor' and 'Count' columns
             final_df = display_df[[
-                "variation_attributes", "capital_zone", "efficiency_score", "velocity_decay", 
+                "Flavor", "Count", "capital_zone", "efficiency_score", "velocity_decay", 
                 "Trend (36M)", "net_margin", "weekly_sales_filled", "ad_action", "ecom_action"
             ]].rename(columns={
-                "variation_attributes": "Product Details",
                 "capital_zone": "Status",
                 "efficiency_score": "Score",
                 "velocity_decay": "Decay",
@@ -161,21 +173,19 @@ try:
                 }
             )
         except Exception as table_err:
-            st.error("Unable to render Performance Matrix. This is usually due to corrupted historical rank data.")
+            st.error("Unable to render Performance Matrix.")
             st.exception(table_err)
 
     with tab2:
         st.write("### Starbucks Visual Portfolio Audit")
-        # Filter for rows that actually have images
+        # Pull products for gallery view sorted by revenue
         gallery_df = display_df[display_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(16)
         
         if not gallery_df.empty:
             cols = st.columns(4)
             for i, (_, row) in enumerate(gallery_df.iterrows()):
                 with cols[i % 4]:
-                    # Truncate title for UI consistency
                     clean_title = (row['title'][:45] + '...') if len(row['title']) > 45 else row['title']
-                    
                     st.markdown(f"""
                         <div class="product-card">
                             <img src="{row['main_image']}" class="product-img">

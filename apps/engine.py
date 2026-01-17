@@ -77,52 +77,69 @@ def analyze_strategic_matrix(row):
 
 def run_weekly_analysis(all_rows, selected_week):
     """
-    Executes the 36-month trend analysis and generates the Strategic Matrix.
+    Executes the 36-month trend analysis, generates the Strategic Matrix,
+    and benchmarks performance against Category Growth for CI context.
     """
     target_date = pd.to_datetime(selected_week).date()
+    # Benchmark Date: Same week last year (minus 364 days for seasonality alignment)
+    ly_date = target_date - pd.Timedelta(days=364)
     
-    # 1. PREDICTIVE ENGINE: Filter for all history up to the target date
+    # --- 1. PREDICTIVE ENGINE: 36M Historical Baseline ---
     history = all_rows[all_rows["week_start"].dt.date <= target_date].copy()
-    
-    # Force Numeric for rank calculations
     history['sales_rank_filled'] = pd.to_numeric(history['sales_rank_filled'], errors='coerce').fillna(0)
     
-    # Calculate Long-Term Average (3-Year Baseline)
+    # Intelligence Layer: Velocity Decay & 36M Trend
     lt_avg = history.groupby('asin')['sales_rank_filled'].mean()
-    
-    # Calculate Recent Average (Last 8 weeks of available data)
     recent = history.sort_values(['asin', 'week_start'], ascending=[True, False])
     rt_avg = recent.groupby('asin').head(8).groupby('asin')['sales_rank_filled'].mean()
-    
-    # THE SPARKLINE FIX: Ensure data is a pure list of floats for st.LineChartColumn
     trend_arrays = history.sort_values('week_start').groupby('asin')['sales_rank_filled'].apply(lambda x: [float(v) for v in x])
     
-    # Create the Intelligence Layer
     velocity_intel = pd.DataFrame({
         'velocity_decay': (rt_avg / lt_avg).fillna(1.0).round(2),
         'Trend (36M)': trend_arrays
     }).reset_index()
 
-    # 2. SNAPSHOT: Filter for the target week
+    # --- 2. SNAPSHOTS: Current Week vs. LY Benchmark ---
     df_snapshot = all_rows[all_rows["week_start"].dt.date == target_date].copy()
     sbux = df_snapshot[df_snapshot["is_starbucks"] == 1].copy()
+    
+    # Calculate LY Revenue for the same SKU set
+    ly_snapshot = all_rows[all_rows["week_start"].dt.date == ly_date].copy()
+    total_rev_ly = ly_snapshot[ly_snapshot["is_starbucks"] == 1]['weekly_sales_filled'].sum()
 
     if sbux.empty: 
-        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0}
+        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0, "total_rev_ly": 0, "share_delta": 0}
 
-    # 3. MERGE & EXECUTE
+    # --- 3. COMPETITIVE INTELLIGENCE (CI) CALCULATIONS ---
+    # Define Category Growth Benchmark (e.g., 6.0% for 2026 CPG/Coffee)
+    category_growth_rate = 0.06 
+    
+    total_rev_curr = sbux['weekly_sales_filled'].sum()
+    yoy_growth = (total_rev_curr - total_rev_ly) / total_rev_ly if total_rev_ly > 0 else 0
+    
+    # Relative Share Delta: Your growth vs. Market growth
+    # Negative = Losing Share; Positive = Gaining Share
+    share_delta = yoy_growth - category_growth_rate
+
+    # --- 4. MERGE, TAXONOMY SPLIT & EXECUTE ---
     sbux = sbux.merge(velocity_intel, on='asin', how='left')
+    
+    # Clean Taxonomy Split to handle "Flavor | Count"
+    split_attr = sbux['variation_attributes'].str.split('|', expand=True)
+    sbux['Flavor'] = split_attr[0].str.strip()
+    sbux['Count'] = split_attr[1].str.strip().fillna("Standard")
     
     sbux[[
         'ad_action', 'ecom_action', 'capital_zone', 'price_gap', 
         'efficiency_score', 'net_margin'
     ]] = sbux.apply(analyze_strategic_matrix, axis=1)
     
-    # Aggregate Portfolio Metrics
     capital_flow = sbux.groupby("capital_zone")['weekly_sales_filled'].sum().to_dict()
     
     return {
         "data": sbux, 
         "capital_flow": capital_flow, 
-        "total_rev": sbux['weekly_sales_filled'].sum()
+        "total_rev": total_rev_curr,
+        "total_rev_ly": total_rev_ly,
+        "share_delta": share_delta
     }

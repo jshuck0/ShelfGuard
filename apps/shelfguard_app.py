@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 from data import get_all_data
-from engine import run_weekly_analysis
+from engine import run_weekly_analysis, run_date_range_analysis
 from finance import analyze_capital_efficiency, f_money, f_pct
 from demo_data import render_asin_upload_ui, get_demo_data, clear_demo_data
 
@@ -104,28 +104,42 @@ hide_style = """
         border-radius: 8px;
         padding: 16px;
         box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        min-height: 200px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
     .custom-metric-label { font-size: 0.875rem; color: #666; margin-bottom: 4px; }
-    .custom-metric-value { font-size: 1.75rem; font-weight: 700; color: #1a1a1a; }
-    
+    .custom-metric-value { font-size: 1.75rem; font-weight: 700; color: #1a1a1a; margin-bottom: auto; }
+
     .benchmark-badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 600; }
     .benchmark-pos, .benchmark-elite { background: #d4edda; color: #155724; }
     .benchmark-neg, .benchmark-atrisk { background: #f8d7da; color: #721c24; }
     .benchmark-neu, .benchmark-standard { background: #fff3cd; color: #856404; }
-    .benchmark-row { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-    
+    .benchmark-row { margin-top: auto; padding-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+
     .pos { color: #28a745; }
     .neg { color: #dc3545; }
     .neu { color: #ffc107; }
-    
+
     .metric-subtext { font-size: 0.8rem; font-weight: 600; margin-top: 6px; }
     .metric-subtext.pos { color: #28a745; }
     .metric-subtext.neg { color: #dc3545; }
     .metric-subtext.neu { color: #f57c00; }
     
-    .alpha-card { background: white; border: 1px solid #e0e0e0; border-left: 4px solid #00704A; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .alpha-card {
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-left: 4px solid #00704A;
+        border-radius: 8px;
+        padding: 16px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        min-height: 200px;
+        display: flex;
+        flex-direction: column;
+    }
     .alpha-label { font-size: 0.875rem; color: #666; margin-bottom: 4px; }
-    .alpha-score { font-size: 2rem; font-weight: 700; color: #1a1a1a; }
+    .alpha-score { font-size: 1.75rem; font-weight: 700; color: #1a1a1a; }
     .alpha-score-suffix { font-size: 1rem; color: #999; }
     .alpha-validation { font-size: 0.9rem; font-weight: 600; margin-top: 6px; }
     .alpha-validation.validated { color: #28a745; }
@@ -279,20 +293,14 @@ try:
         if view_mode == "📊 Weekly View":
             res = run_weekly_analysis(df_raw, selected_week)
         else:
-            # For date range, use the most recent week in range for snapshot comparison
-            # But aggregate data across the range
+            # Date Range Mode: Aggregate data across the entire range
             range_weeks = [w for w in all_weeks if start_date <= w <= end_date]
             if not range_weeks:
                 st.error(f"❌ No data found for date range {start_date} to {end_date}.")
                 st.stop()
-            
-            # Use most recent week in range for analysis (maintains YoY comparison logic)
-            analysis_week = max(range_weeks)
-            res = run_weekly_analysis(df_raw, analysis_week)
-            
-            # Override display to show range
-            res["date_range"] = (start_date, end_date)
-            res["view_mode"] = "range"
+
+            # Run aggregated analysis across the date range
+            res = run_date_range_analysis(df_raw, start_date, end_date)
         
     if res["data"].empty:
         if view_mode == "📊 Weekly View":
@@ -303,24 +311,30 @@ try:
 
     # Financial and Efficiency Diagnostics
     fin = analyze_capital_efficiency(res["capital_flow"], res_data=res["data"])
-    
+
+    # Determine date label for display
+    if view_mode == "📊 Weekly View":
+        date_label = f"Week of {selected_week}"
+    else:
+        date_label = f"{start_date} to {end_date}"
+
     # Build AI context
     portfolio_context = f"""
-    CURRENT PORTFOLIO SNAPSHOT ({selected_week}):
+    CURRENT PORTFOLIO SNAPSHOT ({date_label}):
     - Total Revenue: {f_money(res.get('total_rev', 0))}
     - YoY Growth: {res.get('yoy_delta', 0)*100:.1f}%
     - Share Velocity: {res.get('share_delta', 0)*100:.1f}% vs 6% category benchmark
     - Portfolio Efficiency: {fin.get('efficiency_score', 0):.0f}/100
     - Portfolio Status: {fin.get('portfolio_status', 'Unknown')}
-    
+
     CAPITAL ZONES:
     {chr(10).join([f"- {zone}: {f_money(rev)}" for zone, rev in res.get('capital_flow', {}).items()])}
-    
+
     KEY METRICS:
     - Avg Velocity Decay: {fin.get('avg_velocity_decay', 1.0):.2f}x
     - Annualized Waste: {f_money(fin.get('annualized_waste', 0))}
     - Growth Allocation: {fin.get('growth_alloc', 0)*100:.1f}%
-    
+
     TOP FLAVORS BY REVENUE:
     {chr(10).join([f"- {f}: {f_money(d.get('total_revenue', 0))} ({d.get('health_status', 'N/A')})" for f, d in sorted(res.get('hierarchy', {}).items(), key=lambda x: x[1].get('total_revenue', 0), reverse=True)[:5]])}
     """

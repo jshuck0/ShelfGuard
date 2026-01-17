@@ -427,6 +427,226 @@ def analyze_strategic_matrix(row):
 
     return pd.Series([ad_action, ecom_action, capital_zone, gap, efficiency_score, net_margin, problem_category, problem_reason])
 
+def run_date_range_analysis(all_rows, start_date, end_date):
+    """
+    Executes aggregated analysis across a date range.
+
+    Aggregates revenue and metrics across multiple weeks while maintaining
+    the predictive intelligence features.
+
+    Performance optimizations:
+    - Filter data once for the entire range
+    - Aggregate weekly data efficiently
+    - Reuse velocity analysis infrastructure
+    """
+    # Convert to datetime for comparison
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.tz_localize('UTC')
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.tz_localize('UTC')
+
+    # Filter data for the date range
+    if all_rows["week_start"].dt.tz is not None:
+        range_data = all_rows[
+            (all_rows["week_start"] >= start_dt) &
+            (all_rows["week_start"] <= end_dt)
+        ].copy()
+        history = all_rows[all_rows["week_start"] <= end_dt].copy()
+    else:
+        range_data = all_rows[
+            (all_rows["week_start"].dt.date >= start_date) &
+            (all_rows["week_start"].dt.date <= end_date)
+        ].copy()
+        history = all_rows[all_rows["week_start"].dt.date <= end_date].copy()
+
+    if range_data.empty:
+        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0, "total_rev_ly": 0, "share_delta": 0, "yoy_delta": 0}
+
+    # Aggregate data by ASIN across the date range
+    agg_functions = {
+        'weekly_sales_filled': 'sum',  # Total revenue across range
+        'estimated_units': 'sum',
+        'filled_price': 'mean',  # Average price
+        'sales_rank_filled': 'mean',  # Average rank
+        'amazon_bb_share': 'mean',
+        'new_fba_price': 'mean',
+        'weeks_of_cover': 'mean',
+        'fba_fees': 'mean',
+        'package_vol_cf': 'mean',
+        'title': 'first',
+        'variation_attributes': 'first',
+        'parent_asin': 'first',
+        'is_starbucks': 'first',
+        'main_image': 'first'
+    }
+
+    # Filter only columns that exist
+    available_agg = {k: v for k, v in agg_functions.items() if k in range_data.columns}
+
+    # Aggregate by ASIN
+    sbux_agg = range_data[range_data['is_starbucks'] == 1].groupby('asin').agg(available_agg).reset_index()
+
+    if sbux_agg.empty:
+        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0, "total_rev_ly": 0, "share_delta": 0, "yoy_delta": 0}
+
+    # Calculate velocity using full history
+    history['sales_rank_filled'] = pd.to_numeric(history['sales_rank_filled'], errors='coerce').fillna(0)
+    lt_avg = history.groupby('asin')['sales_rank_filled'].mean()
+
+    history_sorted = history.sort_values(['asin', 'week_start'], ascending=[True, False])
+    rt_avg = history_sorted.groupby('asin').head(8).groupby('asin')['sales_rank_filled'].mean()
+
+    trend_arrays = history.sort_values('week_start').groupby('asin')['sales_rank_filled'].apply(lambda x: x.tolist())
+
+    velocity_intel = pd.DataFrame({
+        'velocity_decay': (rt_avg / lt_avg).fillna(1.0).round(2),
+        'Trend (36M)': trend_arrays
+    }).reset_index()
+
+    # Merge velocity data
+    sbux_agg = sbux_agg.merge(velocity_intel, on='asin', how='left')
+
+    # Calculate demand forecast for the end of range
+    demand_forecast = calculate_demand_forecast(history, end_dt)
+
+    # Add forecast data
+    def get_forecast_data(asin):
+        f = demand_forecast.get(asin, {})
+        return {
+            'forecast_change': f.get('forecast_change_pct', 0),
+            'forecast_signal': f.get('signal', '→ STABLE'),
+            'forecast_action': f.get('action_modifier', 'maintain'),
+            'inventory_action': f.get('inventory_action', '✅ MAINTAIN LEVELS'),
+            'inventory_reason': f.get('inventory_reason', 'Stable demand'),
+            'media_timing': f.get('media_timing', '⚖️ STEADY PACE'),
+            'media_reason': f.get('media_reason', 'Standard allocation'),
+            'pricing_action': f.get('pricing_action', '✅ MAINTAIN PRICE'),
+            'pricing_reason': f.get('pricing_reason', 'No change'),
+            'portfolio_action': f.get('portfolio_action', '📊 MONITOR'),
+            'portfolio_reason': f.get('portfolio_reason', 'Standard tracking'),
+            'seasonal_peak': f.get('seasonal_peak_coming', False),
+            'seasonal_trough': f.get('seasonal_trough_coming', False),
+            'trending_to_zero': f.get('trending_to_zero', False),
+            'accelerating_growth': f.get('accelerating_growth', False)
+        }
+
+    forecast_data = pd.DataFrame([get_forecast_data(asin) for asin in sbux_agg['asin']], index=sbux_agg.index)
+    sbux_agg = pd.concat([sbux_agg, forecast_data], axis=1)
+
+    # Parse variations
+    import re
+    count_pattern = re.compile(r'(\d+)\s*(ct|count|pods?)\b', re.IGNORECASE)
+    KNOWN_FLAVORS = ['Pike Place', 'Breakfast Blend', 'French Roast', 'Sumatra',
+                     'Caramel', 'Caffe Verona', 'Veranda', 'House Blend', 'Espresso']
+
+    def parse_variation(row):
+        attr = str(row.get('variation_attributes', '')).strip()
+        title = str(row.get('title', '')).strip()
+        flavor, count = "Standard", "Standard"
+
+        if '|' in attr:
+            parts = attr.split('|', 1)
+            part0, part1 = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
+            count_match_0 = count_pattern.search(part0)
+            count_match_1 = count_pattern.search(part1)
+
+            if count_match_0:
+                count = f"{count_match_0.group(1)} Count"
+                flavor = part1 if part1 and not count_match_1 else "Standard"
+            elif count_match_1:
+                count = f"{count_match_1.group(1)} Count"
+                flavor = part0 if part0 != "Standard" else "Standard"
+            else:
+                flavor, count = part0, part1 if part1 else "Standard"
+        else:
+            count_match = count_pattern.search(attr)
+            if count_match:
+                count = f"{count_match.group(1)} Count"
+            elif attr and attr != "Standard":
+                flavor = attr
+
+        if flavor == "Standard":
+            title_lower = title.lower()
+            for f in KNOWN_FLAVORS:
+                if f.lower() in title_lower:
+                    flavor = f
+                    break
+
+        return pd.Series([flavor, count])
+
+    sbux_agg[['Flavor', 'Count']] = sbux_agg.apply(parse_variation, axis=1)
+
+    # Enrich with synthetic financials
+    sbux_agg = enrich_synthetic_financials(sbux_agg)
+    sbux_agg = interpolate_keepa_gaps(sbux_agg, history)
+
+    # Strategic analysis
+    sbux_agg[[
+        'ad_action', 'ecom_action', 'capital_zone', 'price_gap',
+        'efficiency_score', 'net_margin', 'problem_category', 'problem_reason'
+    ]] = sbux_agg.apply(analyze_strategic_matrix, axis=1)
+
+    # Capital flow and metrics
+    capital_flow = sbux_agg.groupby("capital_zone")['weekly_sales_filled'].sum().to_dict()
+    total_rev_curr = sbux_agg['weekly_sales_filled'].sum()
+
+    # YoY comparison using same date range last year
+    ly_start_dt = start_dt - pd.Timedelta(days=364)
+    ly_end_dt = end_dt - pd.Timedelta(days=364)
+
+    if all_rows["week_start"].dt.tz is not None:
+        ly_range = all_rows[
+            (all_rows["week_start"] >= ly_start_dt) &
+            (all_rows["week_start"] <= ly_end_dt) &
+            (all_rows["is_starbucks"] == 1)
+        ]
+    else:
+        ly_range = all_rows[
+            (all_rows["week_start"].dt.date >= ly_start_dt.date()) &
+            (all_rows["week_start"].dt.date <= ly_end_dt.date()) &
+            (all_rows["is_starbucks"] == 1)
+        ]
+
+    total_rev_ly = ly_range['weekly_sales_filled'].sum()
+    yoy_delta = (total_rev_curr - total_rev_ly) / total_rev_ly if total_rev_ly > 0 else 0
+    category_growth_rate = 0.06
+    share_delta = yoy_delta - category_growth_rate
+
+    ci_context = {
+        'share_delta': share_delta,
+        'yoy_delta': yoy_delta,
+        'category_growth': category_growth_rate,
+        'is_losing_share': share_delta < 0,
+        'is_growing': yoy_delta > 0,
+        'share_severity': 'critical' if share_delta < -0.10 else 'warning' if share_delta < 0 else 'healthy',
+        'portfolio_forecast_change': sbux_agg['forecast_change'].mean() if 'forecast_change' in sbux_agg.columns else 0,
+        'forecast_trending_up': sbux_agg['forecast_change'].mean() > 0.05 if 'forecast_change' in sbux_agg.columns else False,
+        'forecast_trending_down': sbux_agg['forecast_change'].mean() < -0.05 if 'forecast_change' in sbux_agg.columns else False,
+        'surge_sku_count': len(sbux_agg[sbux_agg['forecast_signal'].str.contains('SURGE', na=False)]) if 'forecast_signal' in sbux_agg.columns else 0,
+        'decline_sku_count': len(sbux_agg[sbux_agg['forecast_signal'].str.contains('DECLINE', na=False)]) if 'forecast_signal' in sbux_agg.columns else 0
+    }
+
+    # Build hierarchy
+    hierarchy = build_pod_hierarchy(sbux_agg, history, ci_context)
+
+    return {
+        "data": sbux_agg,
+        "hierarchy": hierarchy,
+        "capital_flow": capital_flow,
+        "total_rev": total_rev_curr,
+        "total_rev_ly": total_rev_ly,
+        "demand_forecast": demand_forecast,
+        "share_delta": share_delta,
+        "yoy_delta": yoy_delta,
+        "ci_context": ci_context,
+        "date_range": (start_date, end_date),
+        "view_mode": "range"
+    }
+
+
 def run_weekly_analysis(all_rows, selected_week):
     """
     Executes the analysis, benchmarks Category Growth, and fixes taxonomy.

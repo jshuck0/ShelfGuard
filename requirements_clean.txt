@@ -1,0 +1,10 @@
+streamlit
+supabase
+keepa
+pandas
+numpy
+plotly
+python-dotenv
+openpyxl
+requests
+openai

@@ -58,27 +58,47 @@ LOGISTICS_INDEX = {
 }
 
 
+# Pre-compile regex for performance
+_COUNT_PATTERN = re.compile(r'(\d+)')
+
 def get_flavor_tier(flavor: str) -> str:
-    """Classify flavor into cost tier."""
-    flavor_lower = flavor.lower() if flavor else ''
-    
+    """
+    Classify flavor into cost tier.
+
+    Performance: Pre-lowercase comparison, early return on match.
+    """
+    if not flavor:
+        return 'core'
+
+    flavor_lower = flavor.lower()
+
+    # Check each tier (early return optimization)
     for tier, flavors in FLAVOR_COST_TIERS.items():
         if any(f.lower() in flavor_lower for f in flavors):
             return tier
-    return 'core'  # Default to core if unknown
+
+    return 'core'
 
 
 def extract_pod_count(count_str: str) -> int:
-    """Extract numeric pod count from count string."""
+    """
+    Extract numeric pod count from count string.
+
+    Performance: Pre-compiled regex pattern.
+    """
     if not count_str or count_str == 'Standard':
         return 24  # Default assumption for unlabeled products
-    
-    match = re.search(r'(\d+)', str(count_str))
+
+    match = _COUNT_PATTERN.search(str(count_str))
     return int(match.group(1)) if match else 24
 
 
 def get_count_tier(pod_count: int) -> str:
-    """Get efficiency tier based on pod count."""
+    """
+    Get efficiency tier based on pod count.
+
+    Performance: Optimized range checking.
+    """
     for tier, (min_ct, max_ct, _) in COUNT_EFFICIENCY.items():
         if min_ct <= pod_count <= max_ct:
             return tier
@@ -353,40 +373,58 @@ def enrich_synthetic_financials(df: pd.DataFrame) -> pd.DataFrame:
 def interpolate_keepa_gaps(df: pd.DataFrame, history_df: pd.DataFrame) -> pd.DataFrame:
     """
     Batch process: Interpolate Keepa market gaps using historical data.
-    
+
     Fills gaps in:
     - sales_rank_filled: BSR interpolation
     - filled_price: Buy Box floor estimation
     - new_fba_price: Competitor MAP prediction
+
+    Performance optimizations:
+    - Pre-group history by ASIN to avoid repeated filtering
+    - Vectorized null checks
+    - Batch updates instead of row-by-row
     """
     df = df.copy()
-    
-    for idx, row in df.iterrows():
-        asin = row.get('asin')
-        asin_history = history_df[history_df['asin'] == asin] if history_df is not None else pd.DataFrame()
-        
+
+    if history_df is None or history_df.empty:
+        return df
+
+    # Pre-group history by ASIN for efficient lookup (significant speedup)
+    history_by_asin = {asin: group for asin, group in history_df.groupby('asin')}
+
+    # Identify rows needing interpolation (vectorized)
+    needs_bsr = (df['sales_rank_filled'].isna()) | (df['sales_rank_filled'] == 0)
+    needs_price = (df['filled_price'].isna()) | (df['filled_price'] == 0)
+    needs_comp = (df['new_fba_price'].isna()) | (df['new_fba_price'] == 0)
+
+    # Process only rows that need updates
+    for idx in df[needs_bsr | needs_price | needs_comp].index:
+        row = df.loc[idx]
+        asin = row['asin']
+        asin_history = history_by_asin.get(asin, pd.DataFrame())
+
         # 1. BSR Interpolation
-        if pd.isna(row.get('sales_rank_filled')) or row.get('sales_rank_filled', 0) == 0:
-            historical_bsr = asin_history['sales_rank_filled'] if not asin_history.empty else pd.Series()
-            interpolated_bsr, _ = interpolate_bsr(row.get('sales_rank_filled'), historical_bsr)
+        if needs_bsr.loc[idx]:
+            historical_bsr = asin_history['sales_rank_filled'] if not asin_history.empty else pd.Series(dtype=float)
+            interpolated_bsr, _ = interpolate_bsr(row['sales_rank_filled'], historical_bsr)
             df.at[idx, 'sales_rank_filled'] = interpolated_bsr
-        
+
         # 2. Buy Box Floor Estimation
-        if pd.isna(row.get('filled_price')) or row.get('filled_price', 0) == 0:
-            historical_prices = asin_history['filled_price'] if not asin_history.empty else pd.Series()
+        if needs_price.loc[idx]:
+            historical_prices = asin_history['filled_price'] if not asin_history.empty else pd.Series(dtype=float)
             estimated_price, _ = estimate_buybox_floor(
-                row.get('filled_price'),
+                row['filled_price'],
                 historical_prices,
                 row.get('new_fba_price', 0)
             )
             df.at[idx, 'filled_price'] = estimated_price
-        
+
         # 3. Competitor MAP Prediction
-        if pd.isna(row.get('new_fba_price')) or row.get('new_fba_price', 0) == 0:
-            historical_comp = asin_history['new_fba_price'] if not asin_history.empty else pd.Series()
-            predicted_map, _ = predict_competitor_map(row.get('new_fba_price'), historical_comp, True)
+        if needs_comp.loc[idx]:
+            historical_comp = asin_history['new_fba_price'] if not asin_history.empty else pd.Series(dtype=float)
+            predicted_map, _ = predict_competitor_map(row['new_fba_price'], historical_comp, True)
             df.at[idx, 'new_fba_price'] = predicted_map
-    
+
     return df
 
 

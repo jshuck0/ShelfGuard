@@ -13,23 +13,31 @@ except Exception:
     openai_client = None
 
 import hashlib
+import re
+
+# Pre-compile regex for performance
+_METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 def _hash_portfolio_data(portfolio_summary: str) -> str:
-    """Create a hash of key portfolio metrics to use as cache key."""
-    # Extract key numbers from summary for hashing
-    import re
-    # Find revenue, percentages, counts
-    key_metrics = re.findall(r'\$[\d,]+|\d+\.\d+%|\d+ products', portfolio_summary)
+    """
+    Create a hash of key portfolio metrics to use as cache key.
+
+    Performance: Pre-compiled regex pattern, optimized string operations.
+    """
+    # Extract key numbers from summary for hashing (using pre-compiled pattern)
+    key_metrics = _METRICS_PATTERN.findall(portfolio_summary)
     metrics_str = '|'.join(key_metrics)
-    return hashlib.md5(metrics_str.encode()).hexdigest()
+    return hashlib.md5(metrics_str.encode(), usedforsecurity=False).hexdigest()
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
     """
     Generate an LLM-powered strategic brief for the portfolio.
-    
+
     Cached by data_hash (portfolio metrics), not by date, to avoid
     unnecessary API calls when only the date range changes.
+
+    Performance: Cached results reduce API calls and latency.
     """
     if openai_client is None:
         return None
@@ -173,9 +181,11 @@ try:
         st.warning("⚠️ No data found. Please upload ASINs or check your Supabase connection.")
         st.stop()
 
-    # Normalize dates and handle empty states
-    df_raw["week_start"] = pd.to_datetime(df_raw["week_start"])
-    all_weeks = sorted(df_raw["week_start"].dt.date.dropna().unique(), reverse=True)
+    # Normalize dates and handle empty states (optimized)
+    df_raw["week_start"] = pd.to_datetime(df_raw["week_start"], utc=True)
+    # Vectorized operation - get unique weeks directly
+    unique_weeks = df_raw["week_start"].dropna().dt.date.unique()
+    all_weeks = sorted(unique_weeks, reverse=True)
     
     if not all_weeks:
         st.error("❌ No valid weeks found in dataset.")

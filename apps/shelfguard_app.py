@@ -5,6 +5,7 @@ from data import get_all_data
 from engine import run_weekly_analysis, run_date_range_analysis
 from finance import analyze_capital_efficiency, f_money, f_pct
 from demo_data import render_asin_upload_ui, get_demo_data, clear_demo_data
+from search_to_state_ui import render_discovery_ui, render_project_dashboard, render_project_selector
 
 # Initialize OpenAI client
 try:
@@ -807,7 +808,7 @@ CONTEXT:
         """, unsafe_allow_html=True)
     
     # --- AI ACTION QUEUE ---
-    tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit", "🔍 Market Discovery", "📂 My Projects"])
 
     with tab1:
         # AI ACTION QUEUE - Unified view with AI-prioritized actions
@@ -1032,6 +1033,18 @@ CONTEXT:
                     """, unsafe_allow_html=True)
         else:
             st.info("No product images available.")
+
+    with tab3:
+        # Market Discovery UI
+        render_discovery_ui()
+
+    with tab4:
+        # My Projects Dashboard
+        project_id = render_project_selector()
+        if project_id:
+            render_project_dashboard(project_id)
+        else:
+            st.info("💡 Create your first project using the Market Discovery tab!")
 
 except Exception as e:
     st.error(f"🛡️ Command Center Offline: {e}")

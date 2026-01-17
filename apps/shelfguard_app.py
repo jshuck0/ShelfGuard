@@ -1,6 +1,12 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
 from data import get_all_data
 from engine import run_weekly_analysis, run_date_range_analysis
 from finance import analyze_capital_efficiency, f_money, f_pct

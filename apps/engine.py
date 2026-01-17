@@ -16,6 +16,60 @@ def _safe_float(val, default=0.0):
         return default
 
 
+def get_historical_context(history_df: pd.DataFrame, asin: str, current_value: float, metric_name='weekly_sales_filled') -> dict:
+    """
+    Analyze 36-month history to provide context for current metric.
+    
+    Returns:
+    - percentile: Where current value ranks (0-100)
+    - all_time_high/low: Historical extremes
+    - median: Typical value
+    - volatility: How much it varies
+    - is_anomaly: Is current value unusual?
+    - trend: Overall direction over 36M
+    """
+    asin_history = history_df[history_df['asin'] == asin].sort_values('week_start')
+    
+    if len(asin_history) < 12:
+        return {'insufficient_data': True}
+    
+    # Check if metric exists in history
+    if metric_name not in asin_history.columns:
+        return {'insufficient_data': True, 'missing_column': True}
+    
+    historical_values = asin_history[metric_name].fillna(0).values
+    
+    # Calculate percentile rank
+    percentile = (historical_values < current_value).mean() * 100
+    
+    # Calculate volatility (coefficient of variation)
+    mean_val = historical_values.mean()
+    volatility = (historical_values.std() / mean_val) if mean_val > 0 else 0
+    
+    # Detect anomalies (> 2 standard deviations from mean)
+    is_anomaly = abs(current_value - mean_val) > 2 * historical_values.std()
+    
+    # Calculate long-term trend
+    if len(historical_values) >= 24:
+        first_half = historical_values[:len(historical_values)//2].mean()
+        second_half = historical_values[len(historical_values)//2:].mean()
+        trend_direction = (second_half - first_half) / first_half if first_half > 0 else 0
+    else:
+        trend_direction = 0
+    
+    return {
+        'percentile': round(percentile, 1),
+        'all_time_high': float(historical_values.max()),
+        'all_time_low': float(historical_values.min()),
+        'median': float(np.median(historical_values)),
+        'mean': float(mean_val),
+        'volatility': round(volatility, 2),
+        'is_anomaly': bool(is_anomaly),
+        'trend_direction': round(trend_direction, 3),
+        'data_points': len(historical_values)
+    }
+
+
 def calculate_demand_forecast(history_df: pd.DataFrame, target_date) -> dict:
     """
     Calculate 8-week forward demand projections with actionable intelligence.
@@ -71,43 +125,92 @@ def calculate_demand_forecast(history_df: pd.DataFrame, target_date) -> dict:
         else:
             growth_rate = 0
         
-        # YoY comparison for seasonality
-        ly_date = target_dt - pd.Timedelta(days=364)
-        ly_data = asin_history[
-            (asin_history['week_start'] >= ly_date - pd.Timedelta(days=28)) &
-            (asin_history['week_start'] <= ly_date + pd.Timedelta(days=28))
-        ]
+        # === ENHANCED MULTI-YEAR SEASONAL ANALYSIS ===
+        # Analyze all 3 years (not just 1) for more accurate seasonal patterns
+        lookahead_samples = []
+        seasonal_confidence = 0
         
-        if len(ly_data) > 0:
-            ly_avg = ly_data['weekly_sales_filled'].mean()
-            seasonal_factor = recent_avg / ly_avg if ly_avg > 0 else 1.0
+        for years_back in [1, 2, 3]:
+            ly_date = target_dt - pd.Timedelta(days=365*years_back)
+            
+            # Current period comparison
+            ly_data = asin_history[
+                (asin_history['week_start'] >= ly_date - pd.Timedelta(days=28)) &
+                (asin_history['week_start'] <= ly_date + pd.Timedelta(days=28))
+            ]
+            
+            # Look-ahead 8 weeks from this same period in past years
+            ly_lookahead_start = ly_date + pd.Timedelta(days=7)
+            ly_lookahead_end = ly_date + pd.Timedelta(days=63)
+            ly_lookahead = asin_history[
+                (asin_history['week_start'] >= ly_lookahead_start) &
+                (asin_history['week_start'] <= ly_lookahead_end)
+            ]
+            
+            if len(ly_lookahead) > 0:
+                lookahead_samples.append(ly_lookahead['weekly_sales_filled'].mean())
+        
+        # Calculate expected value from all available years
+        if len(lookahead_samples) > 0:
+            expected_8w_avg = np.mean(lookahead_samples)
+            seasonal_std = np.std(lookahead_samples) if len(lookahead_samples) > 1 else expected_8w_avg * 0.2
+            
+            # Confidence based on consistency across years
+            if len(lookahead_samples) >= 2:
+                cv = seasonal_std / expected_8w_avg if expected_8w_avg > 0 else 1.0
+                if cv < 0.15:
+                    seasonal_confidence = 0.95  # High confidence
+                elif cv < 0.30:
+                    seasonal_confidence = 0.75  # Medium confidence
+                else:
+                    seasonal_confidence = 0.50  # Low confidence
+            else:
+                seasonal_confidence = 0.60
+            
+            # Detect seasonal patterns
+            if recent_avg > 0:
+                seasonal_change = (expected_8w_avg - recent_avg) / recent_avg
+                seasonal_peak_coming = seasonal_change > 0.25
+                seasonal_trough_coming = seasonal_change < -0.20
+            else:
+                seasonal_change = 0
+                seasonal_peak_coming = False
+                seasonal_trough_coming = False
+            
+            seasonal_factor = expected_8w_avg / recent_avg if recent_avg > 0 else 1.0
         else:
+            # Fallback to simple method if insufficient history
+            expected_8w_avg = recent_avg
             seasonal_factor = 1.0
+            seasonal_confidence = 0.30
+            seasonal_peak_coming = False
+            seasonal_trough_coming = False
         
-        # Look-ahead seasonal detection (what happened 8 weeks from now last year?)
-        ly_lookahead_start = ly_date + pd.Timedelta(days=7)
-        ly_lookahead_end = ly_date + pd.Timedelta(days=63)  # 8 weeks ahead
-        ly_lookahead = asin_history[
-            (asin_history['week_start'] >= ly_lookahead_start) &
-            (asin_history['week_start'] <= ly_lookahead_end)
-        ]
+        # === ENHANCED PROJECTION WITH CONFIDENCE ===
+        # Blend recent trends with historical seasonal patterns
+        trend_projection = recent_avg * (1 + (growth_rate * 0.5))
+        seasonal_projection = expected_8w_avg if 'expected_8w_avg' in locals() else recent_avg
         
-        seasonal_peak_coming = False
-        seasonal_trough_coming = False
-        if len(ly_lookahead) > 0 and len(ly_data) > 0:
-            ly_lookahead_avg = ly_lookahead['weekly_sales_filled'].mean()
-            ly_current_avg = ly_data['weekly_sales_filled'].mean()
-            if ly_current_avg > 0:
-                seasonal_change = (ly_lookahead_avg - ly_current_avg) / ly_current_avg
-                seasonal_peak_coming = seasonal_change > 0.25  # 25%+ spike last year
-                seasonal_trough_coming = seasonal_change < -0.20  # 20%+ drop last year
+        # Weight by confidence
+        weight_seasonal = seasonal_confidence if 'seasonal_confidence' in locals() else 0.5
+        weight_trend = 1 - weight_seasonal
         
-        # Project 8 weeks forward
-        projected_weekly = recent_avg * (1 + (growth_rate * 0.5))
+        projected_weekly = (trend_projection * weight_trend) + (seasonal_projection * weight_seasonal)
         projected_8w_total = projected_weekly * 8
         current_8w_total = recent_avg * 8
         
         forecast_change = (projected_8w_total - current_8w_total) / current_8w_total if current_8w_total > 0 else 0
+        
+        # Calculate confidence level for display
+        if 'seasonal_confidence' in locals():
+            if seasonal_confidence >= 0.90:
+                confidence_label = "HIGH"
+            elif seasonal_confidence >= 0.70:
+                confidence_label = "MEDIUM"
+            else:
+                confidence_label = "LOW"
+        else:
+            confidence_label = "LOW"
         
         # Determine demand trajectory (trending to zero detection)
         trending_to_zero = growth_rate < -0.25 and wow_trend < -0.15
@@ -204,6 +307,10 @@ def calculate_demand_forecast(history_df: pd.DataFrame, target_date) -> dict:
             'signal': signal,
             'action_modifier': action_modifier,
             'projected_8w_total': round(projected_8w_total, 2),
+            # === 36M INTELLIGENCE ===
+            'confidence': confidence_label,
+            'years_analyzed': len(lookahead_samples) if 'lookahead_samples' in locals() else 1,
+            'historical_pattern': f"Based on {len(lookahead_samples)} year(s) of data" if 'lookahead_samples' in locals() else "Limited history",
             # Actionable Intelligence
             'inventory_action': inventory_action,
             'inventory_reason': inventory_reason,
@@ -490,9 +597,9 @@ def run_weekly_analysis(all_rows, selected_week):
         'decline_sku_count': decline_count
     }
     
-    # 8. HIERARCHICAL POD AGGREGATION with CI + Forecast
+    # 8. HIERARCHICAL POD AGGREGATION with CI + Forecast + 36M History
     # Create L1 (Flavor), L2 (Count), L3 (ASIN) hierarchy
-    hierarchy = build_pod_hierarchy(sbux, ci_context)
+    hierarchy = build_pod_hierarchy(sbux, history, ci_context)
     
     return {
         "data": sbux, 
@@ -507,7 +614,7 @@ def run_weekly_analysis(all_rows, selected_week):
     }
 
 
-def build_pod_hierarchy(df: pd.DataFrame, ci_context: dict = None) -> dict:
+def build_pod_hierarchy(df: pd.DataFrame, history_df: pd.DataFrame = None, ci_context: dict = None) -> dict:
     """
     Build hierarchical Pod structure for Director-level analysis.
     
@@ -517,10 +624,11 @@ def build_pod_hierarchy(df: pd.DataFrame, ci_context: dict = None) -> dict:
     - L3: ASIN (Individual Listing) - Media Directive
     
     Metrics are rolled up from ASIN → Count → Flavor.
-    CI Context is incorporated into directives.
+    CI Context and 36-month Historical Intelligence are incorporated into directives.
     """
     hierarchy = {}
     ci_context = ci_context or {}
+    history_df = history_df if history_df is not None else pd.DataFrame()
     
     for flavor in df['Flavor'].unique():
         flavor_df = df[df['Flavor'] == flavor]
@@ -558,7 +666,7 @@ def build_pod_hierarchy(df: pd.DataFrame, ci_context: dict = None) -> dict:
             # Forecast Metrics
             'forecast_change': avg_forecast_change,
             'forecast_signal': forecast_signal,
-            'strategic_action': _get_flavor_directive(flavor_df, ci_context),
+            'strategic_action': _get_flavor_directive(flavor_df, history_df, ci_context),
             # Actionable Intelligence (aggregated)
             **flavor_actionable,
             'counts': {}
@@ -601,9 +709,9 @@ def build_pod_hierarchy(df: pd.DataFrame, ci_context: dict = None) -> dict:
                 # Forecast Metrics
                 'forecast_change': count_forecast_change,
                 'forecast_signal': count_forecast_signal,
-                # Directives (now informed by forecast)
-                'ops_action': _get_count_directive(count_df, ci_context),
-                'media_action': _get_media_directive(count_df, ci_context),
+                # Directives (now informed by forecast + 36M history)
+                'ops_action': _get_count_directive(count_df, history_df, ci_context),
+                'media_action': _get_media_directive(count_df, history_df, ci_context),
                 # Actionable Intelligence (aggregated)
                 **count_actionable,
                 'asins': []
@@ -828,20 +936,44 @@ def _calculate_pod_health(df: pd.DataFrame) -> str:
         return "🟡 MONITOR"
 
 
-def _get_flavor_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+def _get_flavor_directive(df: pd.DataFrame, history_df: pd.DataFrame = None, ci_context: dict = None) -> str:
     """
     Get strategic directive for Flavor level (L1).
-    Incorporates Competitive Intelligence + Demand Forecast for market-aware decisions.
+    Incorporates Competitive Intelligence + Demand Forecast + 36M Historical Context for market-aware decisions.
     """
     if df.empty:
         return "📊 ANALYZE"
     
     ci_context = ci_context or {}
+    history_df = history_df if history_df is not None else pd.DataFrame()
     
     # Handle NaN values with sensible defaults
     avg_decay = df['velocity_decay'].fillna(1.0).mean()
     avg_margin = df['net_margin'].fillna(0).mean()
     total_rev = df['weekly_sales_filled'].sum()
+    
+    # === 36M HISTORICAL CONTEXT ===
+    # Get representative ASIN for historical analysis
+    historical_context_available = False
+    revenue_is_anomaly = False
+    historically_strong_revenue = False
+    revenue_percentile = 50
+    revenue_trend = 0
+    
+    if not history_df.empty and 'asin' in df.columns:
+        # Use highest revenue ASIN as representative
+        rep_asin = df.nlargest(1, 'weekly_sales_filled')['asin'].iloc[0] if len(df) > 0 else None
+        
+        if rep_asin:
+            # Analyze revenue history (this exists in raw historical data)
+            rev_ctx = get_historical_context(history_df, rep_asin, total_rev, 'weekly_sales_filled')
+            if not rev_ctx.get('insufficient_data', False):
+                historical_context_available = True
+                revenue_percentile = rev_ctx['percentile']
+                revenue_is_anomaly = rev_ctx['is_anomaly']
+                revenue_trend = rev_ctx['trend_direction']
+                # Consider historically strong if revenue is typically high
+                historically_strong_revenue = rev_ctx['mean'] > rev_ctx['median'] * 1.2
     
     # CI Metrics
     avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
@@ -866,12 +998,18 @@ def _get_flavor_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
     drag_pct = drag_rev / total_rev if total_rev > 0 else 0
     healthy_pct = (fortress_rev + frontier_rev) / total_rev if total_rev > 0 else 0
     
-    # === FORECAST-ENHANCED DECISION TREE ===
+    # === 36M + FORECAST-ENHANCED DECISION TREE ===
     
     # CRITICAL: Decline forecast compounds exit signals
+    # BUT: Historical context can override if revenue is anomalously low
     if bleed_pct > 0.25 and forecast_declining:
+        if historical_context_available and revenue_percentile > 60 and revenue_is_anomaly:
+            return "⚠️ INVESTIGATE DROP (historically top 40%, unusual dip)"
         return "💀 ACCELERATE EXIT (Forecast: Decline)"
+    
     if bleed_pct > 0.30 or avg_decay > 1.5:
+        if historical_context_available and historically_strong_revenue and revenue_trend > 0:
+            return "⏳ HOLD & MONITOR (strong historical trend, temporary dip)"
         return "💀 EXIT FLAVOR LINE"
     
     # CI PRIORITY: Buy Box Crisis overrides other signals
@@ -902,10 +1040,12 @@ def _get_flavor_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
         else:
             return "📢 INCREASE VISIBILITY"
     
-    # Standard health checks with forecast context
+    # Standard health checks with forecast + historical context
     if drag_pct > 0.40 or avg_decay > 1.3:
         if forecast_strong:
             return "⏳ HOLD (Forecast: Improving)"
+        elif historical_context_available and revenue_percentile > 75:
+            return "⏳ HOLD (Top 25% historical performance)"
         else:
             return "⚠️ HOLD & EVALUATE"
     elif avg_decay > 1.1:
@@ -928,15 +1068,16 @@ def _get_flavor_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
         return "📊 STRATEGIC REVIEW"
 
 
-def _get_count_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+def _get_count_directive(df: pd.DataFrame, history_df: pd.DataFrame = None, ci_context: dict = None) -> str:
     """
     Get ops directive for Count level (L2).
-    Incorporates Competitive Intelligence + Demand Forecast for pricing and market decisions.
+    Incorporates Competitive Intelligence + Demand Forecast + 36M Historical Context.
     """
     if df.empty:
         return "📊 ANALYZE"
     
     ci_context = ci_context or {}
+    history_df = history_df if history_df is not None else pd.DataFrame()
     
     # Handle NaN values
     avg_margin = df['net_margin'].fillna(0).mean()
@@ -944,6 +1085,20 @@ def _get_count_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
     avg_cogs = df['synthetic_cogs'].mean() if 'synthetic_cogs' in df.columns else 0
     avg_price = df['filled_price'].mean() if 'filled_price' in df.columns else 0
     total_rev = df['weekly_sales_filled'].sum()
+    
+    # === 36M HISTORICAL CONTEXT ===
+    historical_context_available = False
+    revenue_percentile = 50
+    historically_strong = False
+    
+    if not history_df.empty and 'asin' in df.columns:
+        rep_asin = df.nlargest(1, 'weekly_sales_filled')['asin'].iloc[0] if len(df) > 0 else None
+        if rep_asin:
+            rev_ctx = get_historical_context(history_df, rep_asin, total_rev, 'weekly_sales_filled')
+            if not rev_ctx.get('insufficient_data', False):
+                historical_context_available = True
+                revenue_percentile = rev_ctx['percentile']
+                historically_strong = rev_ctx['mean'] > rev_ctx['median'] * 1.15
     
     # CI Metrics
     avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
@@ -966,12 +1121,16 @@ def _get_count_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
     bleed_pct = bleed_rev / total_rev if total_rev > 0 else 0
     drag_pct = drag_rev / total_rev if total_rev > 0 else 0
     
-    # === FORECAST-ENHANCED DECISION TREE ===
+    # === 36M + FORECAST-ENHANCED DECISION TREE ===
     
-    # CRITICAL: Exit conditions (accelerated by forecast)
+    # CRITICAL: Exit conditions (but check 36M history first)
     if avg_margin < 0.05 and forecast_declining:
+        if historical_context_available and revenue_percentile > 70:
+            return "⚠️ INVESTIGATE MARGIN (historically top 30%)"
         return "💀 ACCELERATE EXIT (Forecast: Decline)"
     if avg_margin < 0.05 or bleed_pct > 0.40:
+        if historical_context_available and historically_strong:
+            return "⏳ HOLD & FIX (historically strong performer)"
         return "💀 EXIT COUNT SIZE"
     
     # CI PRIORITY: Buy Box lost - immediate action needed
@@ -1035,15 +1194,16 @@ def _get_count_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
         return "📊 REVIEW METRICS"
 
 
-def _get_media_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+def _get_media_directive(df: pd.DataFrame, history_df: pd.DataFrame = None, ci_context: dict = None) -> str:
     """
     Get media/advertising directive for Pod level.
-    Determines ad spend strategy based on margins, velocity, CI signals, and demand forecast.
+    Determines ad spend strategy based on margins, velocity, CI signals, demand forecast, and 36M history.
     """
     if df.empty:
         return "⏸️ HOLD SPEND"
     
     ci_context = ci_context or {}
+    history_df = history_df if history_df is not None else pd.DataFrame()
     
     # Handle NaN values
     avg_margin = df['net_margin'].fillna(0).mean()
@@ -1062,18 +1222,34 @@ def _get_media_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
     forecast_declining = avg_forecast_change < -0.10
     forecast_strong = avg_forecast_change > 0.05
     
+    # === 36M HISTORICAL CONTEXT ===
+    historical_context_available = False
+    historically_strong = False
+    
+    if not history_df.empty and 'asin' in df.columns:
+        rep_asin = df.nlargest(1, 'weekly_sales_filled')['asin'].iloc[0] if len(df) > 0 else None
+        if rep_asin:
+            rev_ctx = get_historical_context(history_df, rep_asin, total_rev, 'weekly_sales_filled')
+            if not rev_ctx.get('insufficient_data', False):
+                historical_context_available = True
+                historically_strong = rev_ctx['mean'] > rev_ctx['median'] * 1.15
+    
     # Zone distribution
     bleed_rev = df[df['capital_zone'].str.contains('BLEED', na=False)]['weekly_sales_filled'].sum()
     fortress_rev = df[df['capital_zone'].str.contains('FORTRESS', na=False)]['weekly_sales_filled'].sum()
     bleed_pct = bleed_rev / total_rev if total_rev > 0 else 0
     fortress_pct = fortress_rev / total_rev if total_rev > 0 else 0
     
-    # === FORECAST-ENHANCED MEDIA DECISION TREE ===
+    # === 36M + FORECAST-ENHANCED MEDIA DECISION TREE ===
     
-    # CRITICAL: Stop all spend on bleeding products (faster if declining forecast)
+    # CRITICAL: Stop all spend on bleeding products (but check history first)
     if forecast_declining and (bleed_pct > 0.20 or avg_margin < 0.08):
+        if historical_context_available and historically_strong:
+            return "⚠️ REDUCE & MONITOR (historically strong)"
         return "🛑 IMMEDIATE PAUSE (Decline)"
     if bleed_pct > 0.30 or avg_margin < 0.05:
+        if historical_context_available and historically_strong:
+            return "⏸️ PAUSE & INVESTIGATE (historically strong)"
         return "🛑 HARD PAUSE ALL"
     
     # Buy Box crisis - no point advertising

@@ -12,9 +12,25 @@ try:
 except Exception:
     openai_client = None
 
+import hashlib
+
+def _hash_portfolio_data(portfolio_summary: str) -> str:
+    """Create a hash of key portfolio metrics to use as cache key."""
+    # Extract key numbers from summary for hashing
+    import re
+    # Find revenue, percentages, counts
+    key_metrics = re.findall(r'\$[\d,]+|\d+\.\d+%|\d+ products', portfolio_summary)
+    metrics_str = '|'.join(key_metrics)
+    return hashlib.md5(metrics_str.encode()).hexdigest()
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def generate_ai_brief(portfolio_summary: str, week: str) -> str:
-    """Generate an LLM-powered strategic brief for the portfolio."""
+def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
+    """
+    Generate an LLM-powered strategic brief for the portfolio.
+    
+    Cached by data_hash (portfolio metrics), not by date, to avoid
+    unnecessary API calls when only the date range changes.
+    """
     if openai_client is None:
         return None
     
@@ -24,12 +40,13 @@ def generate_ai_brief(portfolio_summary: str, week: str) -> str:
             messages=[
                 {
                     "role": "system",
-                    "content": """You are ShelfGuard's AI strategist. Generate a brief, actionable executive summary for an e-commerce portfolio manager.
+                    "content": """You are ShelfGuard's AI strategist, powered by 36 months of historical data analysis. Generate a brief, actionable executive summary for an e-commerce portfolio manager.
 
 Rules:
 - Be direct and specific. No fluff.
 - Lead with the most urgent issue.
 - Quantify everything ($ amounts, counts, percentages).
+- When relevant, reference historical context (e.g., "lowest margin in 36 months" or "top 10% revenue historically").
 - End with one clear action to take this week.
 - Keep it under 100 words.
 - Use plain language, not jargon."""
@@ -163,8 +180,83 @@ try:
     if not all_weeks:
         st.error("❌ No valid weeks found in dataset.")
         st.stop()
+    
+    # === DATE RANGE SELECTOR ===
+    st.sidebar.markdown("### 📅 Date Range")
+    
+    # View mode selector
+    view_mode = st.sidebar.radio(
+        "View Mode",
+        ["📊 Weekly View", "📈 Date Range"],
+        index=0,
+        help="Weekly View: Single week snapshot | Date Range: Aggregate across multiple weeks"
+    )
+    
+    selected_week = None
+    date_range = None
+    
+    if view_mode == "📊 Weekly View":
+        # Default to most recent week
+        default_week_idx = 0
+        selected_week = st.sidebar.selectbox(
+            "Select Week",
+            all_weeks,
+            index=default_week_idx,
+            format_func=lambda x: f"{x.strftime('%b %d, %Y')} (Most Recent)" if x == all_weeks[0] else x.strftime('%b %d, %Y')
+        )
+    else:
+        # Date Range View
+        min_date = min(all_weeks)
+        max_date = max(all_weeks)
         
-    selected_week = st.sidebar.selectbox("Fiscal Period", all_weeks)
+        # Quick presets
+        st.sidebar.markdown("**Quick Presets:**")
+        col1, col2 = st.sidebar.columns(2)
+        
+        preset = None
+        with col1:
+            if st.button("Last 4 Weeks", use_container_width=True):
+                preset = "4w"
+            if st.button("Last 3 Months", use_container_width=True):
+                preset = "3m"
+        with col2:
+            if st.button("Last 6 Months", use_container_width=True):
+                preset = "6m"
+            if st.button("YTD", use_container_width=True):
+                preset = "ytd"
+        
+        # Calculate preset dates
+        if preset == "4w":
+            end_date = max_date
+            start_date = max_date - pd.Timedelta(days=28)
+        elif preset == "3m":
+            end_date = max_date
+            start_date = max_date - pd.Timedelta(days=90)
+        elif preset == "6m":
+            end_date = max_date
+            start_date = max_date - pd.Timedelta(days=180)
+        elif preset == "ytd":
+            end_date = max_date
+            start_date = pd.Timestamp(max_date.year, 1, 1).date()
+        else:
+            start_date = min_date
+            end_date = max_date
+        
+        # Date range picker
+        date_range = st.sidebar.date_input(
+            "Select Date Range",
+            value=(start_date, end_date),
+            min_value=min_date,
+            max_value=max_date,
+            help="Select start and end dates to analyze aggregate performance"
+        )
+        
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+        else:
+            # Single date selected, use as end date
+            end_date = date_range if date_range else max_date
+            start_date = end_date - pd.Timedelta(days=28)  # Default to 4 weeks back
     
     # Initialize chat state
     if "chat_messages" not in st.session_state:
@@ -174,10 +266,29 @@ try:
     
     # 3. ANALYSIS EXECUTION
     with st.spinner("🧠 Executing Predictive Intelligence..."):
-        res = run_weekly_analysis(df_raw, selected_week)
+        if view_mode == "📊 Weekly View":
+            res = run_weekly_analysis(df_raw, selected_week)
+        else:
+            # For date range, use the most recent week in range for snapshot comparison
+            # But aggregate data across the range
+            range_weeks = [w for w in all_weeks if start_date <= w <= end_date]
+            if not range_weeks:
+                st.error(f"❌ No data found for date range {start_date} to {end_date}.")
+                st.stop()
+            
+            # Use most recent week in range for analysis (maintains YoY comparison logic)
+            analysis_week = max(range_weeks)
+            res = run_weekly_analysis(df_raw, analysis_week)
+            
+            # Override display to show range
+            res["date_range"] = (start_date, end_date)
+            res["view_mode"] = "range"
         
     if res["data"].empty:
-        st.info(f"📅 No Starbucks activity recorded for the week of {selected_week}.")
+        if view_mode == "📊 Weekly View":
+            st.info(f"📅 No Starbucks activity recorded for the week of {selected_week}.")
+        else:
+            st.info(f"📅 No Starbucks activity recorded for the date range {start_date} to {end_date}.")
         st.stop()
 
     # Financial and Efficiency Diagnostics
@@ -334,6 +445,53 @@ try:
     else:
         top_action = "OPTIMIZE efficiency"
     
+    # === CALCULATE FORECAST METRICS (for AI Brief) ===
+    demand_forecast = res.get("demand_forecast", {})
+    if demand_forecast:
+        # Calculate weighted average forecast change
+        total_forecast_rev = sum(f.get('current_weekly_avg', 0) for f in demand_forecast.values())
+        if total_forecast_rev > 0:
+            portfolio_forecast = sum(
+                f.get('current_weekly_avg', 0) * f.get('forecast_change_pct', 0) 
+                for f in demand_forecast.values()
+            ) / total_forecast_rev
+            
+            # Calculate confidence (weighted by revenue)
+            high_conf_count = sum(1 for f in demand_forecast.values() if f.get('confidence', 'LOW') == 'HIGH')
+            med_conf_count = sum(1 for f in demand_forecast.values() if f.get('confidence', 'LOW') == 'MEDIUM')
+            total_count = len(demand_forecast)
+            
+            if total_count > 0:
+                if high_conf_count / total_count > 0.5:
+                    forecast_confidence = "HIGH"
+                elif (high_conf_count + med_conf_count) / total_count > 0.5:
+                    forecast_confidence = "MED"
+                else:
+                    forecast_confidence = "LOW"
+            else:
+                forecast_confidence = "LOW"
+                
+            # Get max years analyzed
+            max_years = max((f.get('years_analyzed', 1) for f in demand_forecast.values()), default=1)
+        else:
+            portfolio_forecast = 0
+            forecast_confidence = "LOW"
+            max_years = 1
+    else:
+        portfolio_forecast = 0
+        forecast_confidence = "LOW"
+        max_years = 1
+    
+    # === DETERMINE DATE DISPLAY ===
+    view_mode = res.get("view_mode", "weekly")
+    if view_mode == "range":
+        date_range = res.get("date_range", (None, None))
+        date_display = f"{date_range[0].strftime('%b %d')} - {date_range[1].strftime('%b %d, %Y')}" if date_range[0] and date_range[1] else "Date Range"
+        date_label = "Date Range"
+    else:
+        date_display = selected_week.strftime('%b %d, %Y') if selected_week else "Week"
+        date_label = "Week of"
+    
     # === AI-GENERATED WEEKLY BRIEF (LLM-Powered) ===
     data_df = res.get("data", pd.DataFrame())
     
@@ -350,12 +508,13 @@ try:
         scale_winners = problem_counts.get('🚀 Scale Winner', {'weekly_sales_filled': 0, 'asin': 0})
         healthy = problem_counts.get('✅ Healthy', {'weekly_sales_filled': 0, 'asin': 0})
         
-        # Build summary for LLM
+        # Build summary for LLM (with 36M intelligence)
         portfolio_summary = f"""
-PORTFOLIO SNAPSHOT (Week of {selected_week}):
+PORTFOLIO SNAPSHOT ({date_label} {date_display}):
 - Total Revenue: {f_money(total_rev_curr)}/week
 - YoY Change: {yoy_delta*100:+.1f}%
 - Market Share Change: {share_delta*100:+.1f}%
+- 8W Forecast: {portfolio_forecast*100:+.1f}% (Confidence: {forecast_confidence}, based on {max_years} year(s) of historical data)
 
 PROBLEM BREAKDOWN:
 - Losing Money: {int(losing_money['asin'])} products, {f_money(losing_money['weekly_sales_filled'])}/wk (negative margin - every sale loses money)
@@ -367,10 +526,24 @@ PROBLEM BREAKDOWN:
 CONTEXT:
 - Waste (Losing Money + Losing Share): {waste_pct:.1f}% of portfolio
 - Portfolio Status: {status_text}
+- Analysis based on 36 months of historical performance data
 """
         
-        # Try LLM-powered brief first
-        llm_brief = generate_ai_brief(portfolio_summary, str(selected_week))
+        # Hash portfolio data for smart caching (only regenerates if metrics actually change)
+        portfolio_hash = _hash_portfolio_data(portfolio_summary)
+        
+        # Check if user wants to force refresh
+        if "force_refresh_brief" not in st.session_state:
+            st.session_state.force_refresh_brief = False
+        
+        # Try LLM-powered brief first (cached by data hash, not date)
+        # If force refresh, use a unique hash to bypass cache
+        cache_key = portfolio_hash + ("_refresh" if st.session_state.force_refresh_brief else "")
+        llm_brief = generate_ai_brief(portfolio_summary, cache_key)
+        
+        # Reset force refresh flag after use
+        if st.session_state.force_refresh_brief:
+            st.session_state.force_refresh_brief = False
         
         if llm_brief:
             ai_brief = llm_brief
@@ -409,33 +582,56 @@ CONTEXT:
     else:
         share_context = "Market share is stable."
     
-    # Render the AI brief
-    st.markdown(f"""
-    <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
-                margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
-            <div>
-                <div style="font-size: 12px; color: #666; margin-bottom: 4px;">Week of {selected_week}</div>
-                <div style="font-size: 22px; font-weight: 700; color: #1a1a1a;">
-                    {status_emoji} {status_text}: {top_action}
+    # 36M Intelligence context
+    if 'velocity_decay' in data_df.columns:
+        accelerating_count = len(data_df[data_df['velocity_decay'] < 0.9])
+        decaying_count = len(data_df[data_df['velocity_decay'] > 1.2])
+        total_products = len(data_df)
+        
+        if accelerating_count > decaying_count:
+            intel_36m = f"📊 36M: {accelerating_count}/{total_products} products accelerating vs historical avg."
+        elif decaying_count > 3:
+            intel_36m = f"⚠️ 36M: {decaying_count}/{total_products} products decaying vs historical avg."
+        else:
+            intel_36m = f"📊 36M: Velocity stable across portfolio."
+    else:
+        intel_36m = ""
+    
+    # Render the AI brief with refresh button
+    brief_col1, brief_col2 = st.columns([4, 1])
+    with brief_col1:
+        st.markdown(f"""
+        <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
+                    margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                <div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 4px;">{date_label} {date_display}</div>
+                    <div style="font-size: 22px; font-weight: 700; color: #1a1a1a;">
+                        {status_emoji} {status_text}: {top_action}
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 28px; font-weight: 700; color: #00704A;">{f_money(total_rev_curr)}</div>
+                    <div style="font-size: 11px; color: #666;">Weekly Revenue</div>
                 </div>
             </div>
-            <div style="text-align: right;">
-                <div style="font-size: 28px; font-weight: 700; color: #00704A;">{f_money(total_rev_curr)}</div>
-                <div style="font-size: 11px; color: #666;">Weekly Revenue</div>
+            <div style="background: #f8f9fa; padding: 14px; border-radius: 6px; margin-top: 10px;">
+                <div style="font-size: 11px; color: #00704A; font-weight: 600; margin-bottom: 6px;">{brief_source}</div>
+                <div style="font-size: 14px; color: #333; line-height: 1.5;">
+                    {ai_brief}
+                </div>
+                <div style="font-size: 12px; color: #666; margin-top: 10px;">
+                    {yoy_context} {share_context} {intel_36m}
+                </div>
             </div>
         </div>
-        <div style="background: #f8f9fa; padding: 14px; border-radius: 6px; margin-top: 10px;">
-            <div style="font-size: 11px; color: #00704A; font-weight: 600; margin-bottom: 6px;">{brief_source}</div>
-            <div style="font-size: 14px; color: #333; line-height: 1.5;">
-                {ai_brief}
-            </div>
-            <div style="font-size: 12px; color: #666; margin-top: 10px;">
-                {yoy_context} {share_context}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+    with brief_col2:
+        if brief_source == "🤖 AI STRATEGIST":
+            st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+            if st.button("🔄 Regenerate", key="refresh_brief", help="Force regenerate AI brief (bypasses cache)"):
+                st.session_state.force_refresh_brief = True
+                st.rerun()
     
     # --- STRATEGIC TILES ---
     c1, c2, c3, c4 = st.columns(4)
@@ -445,20 +641,7 @@ CONTEXT:
         share_delta = res.get("share_delta", 0) # Relative: vs 6% Category
         yoy_delta = res.get("yoy_delta", 0)     # Absolute: vs LY
         
-        # Portfolio-level forecast from AI engine
-        demand_forecast = res.get("demand_forecast", {})
-        if demand_forecast:
-            # Calculate weighted average forecast change
-            total_forecast_rev = sum(f.get('current_weekly_avg', 0) for f in demand_forecast.values())
-            if total_forecast_rev > 0:
-                portfolio_forecast = sum(
-                    f.get('current_weekly_avg', 0) * f.get('forecast_change_pct', 0) 
-                    for f in demand_forecast.values()
-                ) / total_forecast_rev
-            else:
-                portfolio_forecast = 0
-        else:
-            portfolio_forecast = 0
+        # Forecast metrics already calculated above for AI brief
         
         # Define color classes and icons
         yoy_class = "pos" if yoy_delta > 0 else "neg" if yoy_delta < 0 else "neu"
@@ -476,7 +659,7 @@ CONTEXT:
                 <div class="benchmark-row" style="flex-wrap: wrap; gap: 6px;">
                     <span class="benchmark-badge benchmark-{yoy_class}">{yoy_icon} {yoy_delta:+.1%} vs 1Y</span>
                     <span class="benchmark-badge benchmark-{share_class}">{share_icon} {share_delta:+.1%} Share</span>
-                    <span class="benchmark-badge benchmark-{forecast_class}">{forecast_icon} {portfolio_forecast:+.1%} 8W Forecast</span>
+                    <span class="benchmark-badge benchmark-{forecast_class}" title="Based on {max_years} year(s) of data | Confidence: {forecast_confidence}">{forecast_icon} {portfolio_forecast:+.1%} 8W Forecast</span>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -678,8 +861,16 @@ CONTEXT:
         st.caption(f"Showing **{len(display_df)}** products" + (f" in **{selected_problem}**" if selected_problem != "All Products" else "") + " — sorted by revenue")
         
         try:
-            # Streamlined columns: Product, Context, Action, Revenue
+            # Streamlined columns: Product, Context, 36M Intelligence, Action, Revenue
             cols_to_show = ["asin", "Flavor", "Count", "weekly_sales_filled"]
+            
+            # Add 36M velocity decay (key historical metric)
+            if "velocity_decay" in display_df.columns:
+                cols_to_show.append("velocity_decay")
+            
+            # Add forecast signal
+            if "forecast_signal" in display_df.columns:
+                cols_to_show.append("forecast_signal")
             
             # Add action columns if available
             if "ecom_action" in display_df.columns:
@@ -690,6 +881,8 @@ CONTEXT:
             final_df = display_df[cols_to_show].rename(columns={
                 "asin": "ASIN", 
                 "weekly_sales_filled": "Revenue",
+                "velocity_decay": "📊 36M Decay",
+                "forecast_signal": "📈 8W Forecast",
                 "ecom_action": "Action",
                 "ad_action": "Media"
             }).drop_duplicates(subset=["ASIN"]).sort_values("Revenue", ascending=False)
@@ -700,6 +893,10 @@ CONTEXT:
                 hide_index=True,
                 column_config={
                     "Revenue": st.column_config.NumberColumn(format="$%.0f"),
+                    "📊 36M Decay": st.column_config.NumberColumn(
+                        format="%.2fx",
+                        help="Velocity Decay: <1.0 = accelerating, >1.0 = slowing (based on 36M average)"
+                    ),
                 }
             )
             
@@ -786,6 +983,12 @@ CONTEXT:
                     else:
                         badge_color = "#666"
                     
+                    # Get 36M metrics
+                    velocity = row.get('velocity_decay', 1.0)
+                    velocity_color = "#28a745" if velocity < 0.9 else "#dc3545" if velocity > 1.2 else "#666"
+                    velocity_label = "🚀 Accelerating" if velocity < 0.9 else "📉 Decaying" if velocity > 1.2 else "→ Stable"
+                    forecast = row.get('forecast_signal', '→ STABLE')
+                    
                     st.markdown(f"""
                         <div class="product-card">
                             <img src="{row['main_image']}" class="product-img">
@@ -796,7 +999,11 @@ CONTEXT:
                                 {f_money(row['weekly_sales_filled'])}
                             </div>
                             <div style="font-size: 0.7rem; color: {badge_color}; font-weight: 600; margin-top: 4px;">{problem}</div>
-                            <div style="font-size: 0.65rem; color: #999; margin-top: 2px;">{row['asin']}</div>
+                            <div style="font-size: 0.65rem; color: {velocity_color}; margin-top: 4px;">
+                                <strong>36M:</strong> {velocity:.2f}x ({velocity_label})
+                            </div>
+                            <div style="font-size: 0.65rem; color: #666; margin-top: 2px;">{forecast}</div>
+                            <div style="font-size: 0.6rem; color: #999; margin-top: 2px;">{row['asin']}</div>
                         </div>
                     """, unsafe_allow_html=True)
         else:

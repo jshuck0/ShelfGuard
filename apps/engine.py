@@ -1,5 +1,12 @@
 import pandas as pd
 import numpy as np
+from synthetic_intel import (
+    calculate_synthetic_cogs, 
+    calculate_synthetic_volume,
+    calculate_landed_logistics,
+    enrich_synthetic_financials,
+    interpolate_keepa_gaps
+)
 
 def _safe_float(val, default=0.0):
     """Bulletproof float conversion for financial calculations."""
@@ -8,18 +15,241 @@ def _safe_float(val, default=0.0):
     except (ValueError, TypeError):
         return default
 
-def calculate_net_realization(row):
-    """Calibrated for 2026 Amazon Fee structures (Referral 15% + FBA Hikes)."""
+
+def calculate_demand_forecast(history_df: pd.DataFrame, target_date) -> dict:
+    """
+    Calculate 8-week forward demand projections with actionable intelligence.
+    
+    Uses:
+    - Recent velocity trends (8-week momentum)
+    - YoY seasonal patterns (same period last year)
+    - Growth rate extrapolation
+    - Spike/trough detection for timing
+    
+    Returns dict of ASIN -> comprehensive forecast data
+    """
+    forecast = {}
+    
+    if history_df.empty:
+        return forecast
+    
+    # Ensure timezone-aware datetime for comparison with UTC timestamps
+    target_dt = pd.to_datetime(target_date)
+    if hasattr(target_dt, 'tzinfo') and target_dt.tzinfo is None:
+        target_dt = target_dt.tz_localize('UTC')
+    
+    # Ensure week_start is timezone-aware if needed
+    if 'week_start' in history_df.columns:
+        if history_df['week_start'].dt.tz is None:
+            # Localize to UTC if naive
+            history_df = history_df.copy()
+            history_df['week_start'] = history_df['week_start'].dt.tz_localize('UTC')
+    
+    # Get unique ASINs
+    for asin in history_df['asin'].unique():
+        asin_history = history_df[history_df['asin'] == asin].sort_values('week_start')
+        
+        if len(asin_history) < 4:
+            continue
+        
+        # Recent 8 weeks revenue
+        recent_8w = asin_history.tail(8)['weekly_sales_filled']
+        recent_avg = recent_8w.mean() if len(recent_8w) > 0 else 0
+        
+        # Week-over-week trend (last 4 weeks)
+        recent_4w = asin_history.tail(4)['weekly_sales_filled'].tolist()
+        if len(recent_4w) >= 3:
+            wow_trend = (recent_4w[-1] - recent_4w[0]) / recent_4w[0] if recent_4w[0] > 0 else 0
+        else:
+            wow_trend = 0
+        
+        # Calculate growth rate from trend
+        if len(asin_history) >= 12:
+            older_8w = asin_history.iloc[-16:-8]['weekly_sales_filled'] if len(asin_history) >= 16 else asin_history.head(8)['weekly_sales_filled']
+            older_avg = older_8w.mean() if len(older_8w) > 0 else recent_avg
+            growth_rate = (recent_avg - older_avg) / older_avg if older_avg > 0 else 0
+        else:
+            growth_rate = 0
+        
+        # YoY comparison for seasonality
+        ly_date = target_dt - pd.Timedelta(days=364)
+        ly_data = asin_history[
+            (asin_history['week_start'] >= ly_date - pd.Timedelta(days=28)) &
+            (asin_history['week_start'] <= ly_date + pd.Timedelta(days=28))
+        ]
+        
+        if len(ly_data) > 0:
+            ly_avg = ly_data['weekly_sales_filled'].mean()
+            seasonal_factor = recent_avg / ly_avg if ly_avg > 0 else 1.0
+        else:
+            seasonal_factor = 1.0
+        
+        # Look-ahead seasonal detection (what happened 8 weeks from now last year?)
+        ly_lookahead_start = ly_date + pd.Timedelta(days=7)
+        ly_lookahead_end = ly_date + pd.Timedelta(days=63)  # 8 weeks ahead
+        ly_lookahead = asin_history[
+            (asin_history['week_start'] >= ly_lookahead_start) &
+            (asin_history['week_start'] <= ly_lookahead_end)
+        ]
+        
+        seasonal_peak_coming = False
+        seasonal_trough_coming = False
+        if len(ly_lookahead) > 0 and len(ly_data) > 0:
+            ly_lookahead_avg = ly_lookahead['weekly_sales_filled'].mean()
+            ly_current_avg = ly_data['weekly_sales_filled'].mean()
+            if ly_current_avg > 0:
+                seasonal_change = (ly_lookahead_avg - ly_current_avg) / ly_current_avg
+                seasonal_peak_coming = seasonal_change > 0.25  # 25%+ spike last year
+                seasonal_trough_coming = seasonal_change < -0.20  # 20%+ drop last year
+        
+        # Project 8 weeks forward
+        projected_weekly = recent_avg * (1 + (growth_rate * 0.5))
+        projected_8w_total = projected_weekly * 8
+        current_8w_total = recent_avg * 8
+        
+        forecast_change = (projected_8w_total - current_8w_total) / current_8w_total if current_8w_total > 0 else 0
+        
+        # Determine demand trajectory (trending to zero detection)
+        trending_to_zero = growth_rate < -0.25 and wow_trend < -0.15
+        accelerating_growth = growth_rate > 0.15 and wow_trend > 0.10
+        
+        # Determine forecast signal
+        if forecast_change > 0.20:
+            signal = "📈 SURGE"
+            action_modifier = "pre_scale"
+        elif forecast_change > 0.08:
+            signal = "↗️ GROWTH"
+            action_modifier = "invest"
+        elif forecast_change < -0.15:
+            signal = "📉 DECLINE"
+            action_modifier = "reduce"
+        elif forecast_change < -0.05:
+            signal = "↘️ SOFTENING"
+            action_modifier = "caution"
+        else:
+            signal = "→ STABLE"
+            action_modifier = "maintain"
+        
+        # === ACTIONABLE DIRECTIVES ===
+        
+        # 1. INVENTORY INTELLIGENCE
+        if forecast_change > 0.20:
+            inventory_action = "🚨 REORDER NOW"
+            inventory_reason = f"Demand ↑{forecast_change*100:.0f}% next 8 weeks"
+        elif forecast_change < -0.15:
+            inventory_action = "⚠️ REDUCE PO"
+            inventory_reason = f"Demand ↓{abs(forecast_change)*100:.0f}% projected"
+        elif trending_to_zero:
+            inventory_action = "🛑 STOP REPLENISHMENT"
+            inventory_reason = "Trajectory approaching zero"
+        else:
+            inventory_action = "✅ MAINTAIN LEVELS"
+            inventory_reason = "Stable demand pattern"
+        
+        # 2. MEDIA SPEND TIMING
+        if seasonal_peak_coming:
+            media_timing = "🎯 SCALE 2 WEEKS EARLY"
+            media_reason = "Seasonal peak detected (YoY pattern)"
+        elif forecast_change > 0.15:
+            media_timing = "📈 PRE-POSITION SPEND"
+            media_reason = "Capture demand wave, don't chase"
+        elif seasonal_trough_coming:
+            media_timing = "⏸️ CONSERVE BUDGET"
+            media_reason = "Seasonal trough approaching"
+        elif forecast_change < -0.10:
+            media_timing = "⏸️ REDUCE & WAIT"
+            media_reason = "Save spend for better ROI period"
+        else:
+            media_timing = "⚖️ STEADY PACE"
+            media_reason = "Maintain current allocation"
+        
+        # 3. PRICING OPTIMIZATION (stored for use with inventory context)
+        if forecast_change > 0.20:
+            pricing_action = "📈 RAISE PRICE (+10%)"
+            pricing_reason = "High demand supports premium"
+        elif forecast_change < -0.15:
+            pricing_action = "🎫 PROMO TO CLEAR"
+            pricing_reason = "Convert inventory before decay"
+        elif accelerating_growth:
+            pricing_action = "💰 HOLD PREMIUM"
+            pricing_reason = "Momentum supports price"
+        else:
+            pricing_action = "✅ MAINTAIN PRICE"
+            pricing_reason = "No forecast-driven change"
+        
+        # 4. PORTFOLIO STRATEGY
+        if trending_to_zero:
+            portfolio_action = "💀 ACCELERATE EXIT"
+            portfolio_reason = "Pod trending to zero"
+        elif accelerating_growth and forecast_change > 0.15:
+            portfolio_action = "🚀 DOUBLE DOWN"
+            portfolio_reason = "Validate expansion investment"
+        elif seasonal_peak_coming:
+            portfolio_action = "📅 PLAN SEASONAL ALLOCATION"
+            portfolio_reason = "Pre-position for peak"
+        elif seasonal_trough_coming and forecast_change < -0.10:
+            portfolio_action = "⏳ HIBERNATE POSITION"
+            portfolio_reason = "Ride out seasonal low"
+        else:
+            portfolio_action = "📊 MONITOR"
+            portfolio_reason = "Standard tracking"
+        
+        forecast[asin] = {
+            'current_weekly_avg': round(recent_avg, 2),
+            'projected_weekly_avg': round(projected_weekly, 2),
+            'forecast_change_pct': round(forecast_change, 3),
+            'growth_rate': round(growth_rate, 3),
+            'wow_trend': round(wow_trend, 3),
+            'seasonal_factor': round(seasonal_factor, 2),
+            'signal': signal,
+            'action_modifier': action_modifier,
+            'projected_8w_total': round(projected_8w_total, 2),
+            # Actionable Intelligence
+            'inventory_action': inventory_action,
+            'inventory_reason': inventory_reason,
+            'media_timing': media_timing,
+            'media_reason': media_reason,
+            'pricing_action': pricing_action,
+            'pricing_reason': pricing_reason,
+            'portfolio_action': portfolio_action,
+            'portfolio_reason': portfolio_reason,
+            # Flags
+            'seasonal_peak_coming': seasonal_peak_coming,
+            'seasonal_trough_coming': seasonal_trough_coming,
+            'trending_to_zero': trending_to_zero,
+            'accelerating_growth': accelerating_growth
+        }
+    
+    return forecast
+
+def calculate_net_realization(row, use_synthetic=True):
+    """
+    Calibrated for 2026 Amazon Fee structures (Referral 15% + FBA Hikes).
+    
+    Now uses AI Synthetic Intelligence for COGS, Volume, and Logistics
+    instead of hardcoded defaults.
+    """
     price = _safe_float(row.get('filled_price'))
     if price <= 0: return 0.0
     
     # Updated Fee Logic
     fba_fee = _safe_float(row.get('fba_fees'), default=4.50) 
     referral_fee = price * 0.15 
-    storage_cost = _safe_float(row.get('package_vol_cf'), default=0.05) * 0.87 
-    cogs = price * 0.25 # Estimated COGS for CPG/Starbucks portfolio
     
-    net_profit = price - (fba_fee + referral_fee + storage_cost + cogs)
+    if use_synthetic:
+        # AI Synthetic: Use intelligent estimates
+        storage_vol = _safe_float(row.get('synthetic_vol_cf'), default=_safe_float(row.get('package_vol_cf'), default=0.15))
+        cogs = _safe_float(row.get('synthetic_cogs'), default=price * 0.25)
+        logistics = _safe_float(row.get('landed_logistics'), default=0.0)
+    else:
+        # Fallback: Original hardcoded defaults
+        storage_vol = _safe_float(row.get('package_vol_cf'), default=0.05)
+        cogs = price * 0.25
+        logistics = 0.0
+    
+    storage_cost = storage_vol * 0.87  # FBA storage rate per CF
+    
+    net_profit = price - (fba_fee + referral_fee + storage_cost + cogs + logistics)
     return net_profit / price
 
 def calculate_row_efficiency(bb, gap, weeks_cover, net_margin, velocity_factor):
@@ -28,7 +258,7 @@ def calculate_row_efficiency(bb, gap, weeks_cover, net_margin, velocity_factor):
     price_score = max(0, 30 - (gap * 300))
     margin_score = min(30, max(0, (net_margin - 0.10) * 100))
     
-    # Momentum Penalty: If velocity is decaying (factor > 1.1), penalize the capital efficiency
+    # Momentum Penalty: If velocity is decaying (factor > 1.1), penalize efficiency
     momentum_penalty = 1 / velocity_factor if velocity_factor > 1.1 else 1.0
     stock_factor = 1.0 if weeks_cover >= 2.0 else 0.2
     
@@ -46,49 +276,77 @@ def analyze_strategic_matrix(row):
     net_margin = calculate_net_realization(row)
     efficiency_score = calculate_row_efficiency(bb, gap, weeks_cover, net_margin, velocity_decay)
 
-    # 1. PREDICTIVE SEGMENTATION LOGIC
+    # 1. PROBLEM-BASED SEGMENTATION (Clear, actionable categories)
+    # Primary problem determines category
     if net_margin < 0.05:
-        capital_zone = "🩸 BLEED (Negative Margin)"
+        problem_category = "🔥 Losing Money"
+        problem_reason = "Negative margin"
     elif velocity_decay > 1.5:
-        # High Decay (worsening rank) triggers Terminal Status regardless of current margin
+        problem_category = "📉 Losing Share" 
+        problem_reason = "Velocity decay >1.5x"
+    elif gap > 0.08 or bb < 0.70:
+        problem_category = "💰 Price Problem"
+        problem_reason = "Price gap or low Buy Box"
+    elif velocity_decay < 0.9 and net_margin > 0.15 and bb > 0.85:
+        problem_category = "🚀 Scale Winner"
+        problem_reason = "Growing + high margin + strong BB"
+    elif net_margin > 0.12 and bb > 0.75:
+        problem_category = "✅ Healthy"
+        problem_reason = "On track"
+    else:
+        problem_category = "📊 Monitor"
+        problem_reason = "Watch closely"
+    
+    # Keep legacy capital_zone for backwards compatibility
+    if "Losing Money" in problem_category:
+        capital_zone = "🩸 BLEED (Negative Margin)"
+    elif "Losing Share" in problem_category:
         capital_zone = "📉 DRAG (Terminal Decay)"
-    elif bb > 0.85 and net_margin > 0.15 and velocity_decay < 1.1:
+    elif "Scale Winner" in problem_category:
         capital_zone = "🏰 FORTRESS (Cash Flow)"
-    elif bb > 0.60 and net_margin > 0.10:
+    elif "Healthy" in problem_category:
         capital_zone = "🚀 FRONTIER (Growth)"
     else:
         capital_zone = "📉 DRAG (Waste)"
 
-    # 2. ACTIONABLE DIRECTIVES (Agentic Execution)
-    if "BLEED" in capital_zone or velocity_decay > 1.8:
-        ecom_action = "💀 LIQUIDATE / EXIT"
-        ad_action = "🛑 HARD PAUSE"
-    elif gap > 0.08:
-        ecom_action = "🎫 CLIP COUPON"
-        ad_action = "⚖️ MAINTAIN ROAS"
-    elif "FORTRESS" in capital_zone and velocity_decay < 0.9:
-        ecom_action = "📈 TEST PRICE (+5%)"
-        ad_action = "🚀 SCALE AD SPEND"
+    # 2. ACTIONABLE DIRECTIVES (tied to problem)
+    if "Losing Money" in problem_category:
+        ecom_action = "💀 EXIT — Stop bleeding"
+        ad_action = "🛑 PAUSE ADS"
+    elif "Losing Share" in problem_category:
+        ecom_action = "🚨 FIX VISIBILITY"
+        ad_action = "📢 INCREASE BIDS"
+    elif "Price Problem" in problem_category:
+        ecom_action = "🎫 CLIP COUPON / REPRICE"
+        ad_action = "⚖️ HOLD SPEND"
+    elif "Scale Winner" in problem_category:
+        ecom_action = "📈 RAISE PRICE (+5%)"
+        ad_action = "🚀 SCALE +25%"
     else:
         ecom_action = "✅ MAINTAIN"
-        ad_action = "⚖️ ROAS OPTIMIZATION"
+        ad_action = "⚖️ OPTIMIZE ROAS"
 
-    return pd.Series([ad_action, ecom_action, capital_zone, gap, efficiency_score, net_margin])
+    return pd.Series([ad_action, ecom_action, capital_zone, gap, efficiency_score, net_margin, problem_category, problem_reason])
 
 def run_weekly_analysis(all_rows, selected_week):
-    """
-    Executes the 36-month trend analysis, generates the Strategic Matrix,
-    and benchmarks performance against Category Growth for CI context.
-    """
-    target_date = pd.to_datetime(selected_week).date()
-    # Benchmark Date: Same week last year (minus 364 days for seasonality alignment)
-    ly_date = target_date - pd.Timedelta(days=364)
+    """Executes the analysis, benchmarks Category Growth, and fixes taxonomy."""
+    # Use timezone-aware datetime for consistent comparisons
+    target_dt = pd.to_datetime(selected_week)
+    if target_dt.tzinfo is None:
+        target_dt = target_dt.tz_localize('UTC')
     
-    # --- 1. PREDICTIVE ENGINE: 36M Historical Baseline ---
-    history = all_rows[all_rows["week_start"].dt.date <= target_date].copy()
+    target_date = target_dt.date()
+    ly_dt = target_dt - pd.Timedelta(days=364)  # Seasonal Benchmark
+    ly_date = ly_dt.date()
+    
+    # 1. PREDICTIVE ENGINE
+    # Normalize week_start for comparison if needed
+    if all_rows["week_start"].dt.tz is not None:
+        history = all_rows[all_rows["week_start"] <= target_dt].copy()
+    else:
+        history = all_rows[all_rows["week_start"].dt.date <= target_date].copy()
+    
     history['sales_rank_filled'] = pd.to_numeric(history['sales_rank_filled'], errors='coerce').fillna(0)
-    
-    # Intelligence Layer: Velocity Decay & 36M Trend
     lt_avg = history.groupby('asin')['sales_rank_filled'].mean()
     recent = history.sort_values(['asin', 'week_start'], ascending=[True, False])
     rt_avg = recent.groupby('asin').head(8).groupby('asin')['sales_rank_filled'].mean()
@@ -98,48 +356,780 @@ def run_weekly_analysis(all_rows, selected_week):
         'velocity_decay': (rt_avg / lt_avg).fillna(1.0).round(2),
         'Trend (36M)': trend_arrays
     }).reset_index()
-
-    # --- 2. SNAPSHOTS: Current Week vs. LY Benchmark ---
-    df_snapshot = all_rows[all_rows["week_start"].dt.date == target_date].copy()
-    sbux = df_snapshot[df_snapshot["is_starbucks"] == 1].copy()
     
-    # Calculate LY Revenue for the same SKU set
-    ly_snapshot = all_rows[all_rows["week_start"].dt.date == ly_date].copy()
+    # 1b. DEMAND FORECASTING ENGINE
+    # Calculate 8-week forward projections based on velocity trends and seasonality
+    demand_forecast = calculate_demand_forecast(history, target_dt)
+
+    # 2. SNAPSHOTS
+    if all_rows["week_start"].dt.tz is not None:
+        df_snapshot = all_rows[all_rows["week_start"].dt.date == target_date].copy()
+        ly_snapshot = all_rows[all_rows["week_start"].dt.date == ly_date].copy()
+    else:
+        df_snapshot = all_rows[all_rows["week_start"].dt.date == target_date].copy()
+        ly_snapshot = all_rows[all_rows["week_start"].dt.date == ly_date].copy()
+    
+    sbux = df_snapshot[df_snapshot["is_starbucks"] == 1].copy()
     total_rev_ly = ly_snapshot[ly_snapshot["is_starbucks"] == 1]['weekly_sales_filled'].sum()
 
     if sbux.empty: 
-        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0, "total_rev_ly": 0, "share_delta": 0}
+        return {"data": pd.DataFrame(), "capital_flow": {}, "total_rev": 0, "total_rev_ly": 0, "share_delta": 0, "yoy_delta": 0}
 
-    # --- 3. COMPETITIVE INTELLIGENCE (CI) CALCULATIONS ---
-    # Define Category Growth Benchmark (e.g., 6.0% for 2026 CPG/Coffee)
-    category_growth_rate = 0.06 
-    
+    # 3. AI SYNTHETIC INTELLIGENCE: Keepa Gap Interpolation
+    # Fill missing BSR, Buy Box prices, and Competitor MAP using historical patterns
+    sbux = interpolate_keepa_gaps(sbux, history)
+
+    # 4. COMPETITIVE INTELLIGENCE (CI)
+    category_growth_rate = 0.06 # Fixed benchmark for 2026 Starbucks Portfolio
     total_rev_curr = sbux['weekly_sales_filled'].sum()
-    yoy_growth = (total_rev_curr - total_rev_ly) / total_rev_ly if total_rev_ly > 0 else 0
-    
-    # Relative Share Delta: Your growth vs. Market growth
-    # Negative = Losing Share; Positive = Gaining Share
-    share_delta = yoy_growth - category_growth_rate
+    yoy_delta = (total_rev_curr - total_rev_ly) / total_rev_ly if total_rev_ly > 0 else 0
+    share_delta = yoy_delta - category_growth_rate
 
-    # --- 4. MERGE, TAXONOMY SPLIT & EXECUTE ---
+    # 5. TAXONOMY FIX
     sbux = sbux.merge(velocity_intel, on='asin', how='left')
     
-    # Clean Taxonomy Split to handle "Flavor | Count"
-    split_attr = sbux['variation_attributes'].str.split('|', expand=True)
-    sbux['Flavor'] = split_attr[0].str.strip()
-    sbux['Count'] = split_attr[1].str.strip().fillna("Standard")
+    # 5b. ADD FORECAST DATA TO EACH ASIN (Full Actionable Intelligence)
+    sbux['forecast_change'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('forecast_change_pct', 0))
+    sbux['forecast_signal'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('signal', '→ STABLE'))
+    sbux['forecast_action'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('action_modifier', 'maintain'))
+    # Actionable Intelligence
+    sbux['inventory_action'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('inventory_action', '✅ MAINTAIN LEVELS'))
+    sbux['inventory_reason'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('inventory_reason', 'Stable demand'))
+    sbux['media_timing'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('media_timing', '⚖️ STEADY PACE'))
+    sbux['media_reason'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('media_reason', 'Standard allocation'))
+    sbux['pricing_action'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('pricing_action', '✅ MAINTAIN PRICE'))
+    sbux['pricing_reason'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('pricing_reason', 'No change'))
+    sbux['portfolio_action'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('portfolio_action', '📊 MONITOR'))
+    sbux['portfolio_reason'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('portfolio_reason', 'Standard tracking'))
+    # Flags
+    sbux['seasonal_peak'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('seasonal_peak_coming', False))
+    sbux['seasonal_trough'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('seasonal_trough_coming', False))
+    sbux['trending_to_zero'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('trending_to_zero', False))
+    sbux['accelerating_growth'] = sbux['asin'].map(lambda x: demand_forecast.get(x, {}).get('accelerating_growth', False))
+    
+    # Parse variation_attributes with intelligent flavor/count detection
+    def parse_variation(row):
+        attr = str(row.get('variation_attributes', '')).strip()
+        title = str(row.get('title', '')).strip()
+        
+        # Known flavor keywords (prioritized)
+        flavors = ['Pike Place', 'Breakfast Blend', 'French Roast', 'Sumatra', 
+                   'Caramel', 'Caffe Verona', 'Veranda', 'House Blend', 'Espresso']
+        
+        # Count pattern: matches "10 CT", "24 Count", "96 pods", "44ct", etc.
+        import re
+        count_pattern = re.compile(r'(\d+)\s*(ct|count|pods?)\b', re.IGNORECASE)
+        
+        flavor = "Standard"
+        count = "Standard"
+        
+        if '|' in attr:
+            parts = [p.strip() for p in attr.split('|')]
+            part0, part1 = parts[0], parts[1] if len(parts) > 1 else ""
+            
+            # Check if part0 is a count (misplaced)
+            if count_pattern.search(part0):
+                count_match = count_pattern.search(part0)
+                count = f"{count_match.group(1)} Count"
+                flavor = part1 if part1 and not count_pattern.search(part1) else "Standard"
+            elif count_pattern.search(part1):
+                count_match = count_pattern.search(part1)
+                count = f"{count_match.group(1)} Count"
+                flavor = part0 if part0 != "Standard" else "Standard"
+            else:
+                flavor = part0
+                count = part1 if part1 else "Standard"
+        else:
+            # No separator - check if it's a count or flavor
+            if count_pattern.search(attr):
+                count_match = count_pattern.search(attr)
+                count = f"{count_match.group(1)} Count"
+            elif attr and attr != "Standard":
+                flavor = attr
+        
+        # If flavor is still "Standard", try to extract from title
+        if flavor == "Standard":
+            for f in flavors:
+                if f.lower() in title.lower():
+                    flavor = f
+                    break
+        
+        return pd.Series([flavor, count])
+    
+    sbux[['Flavor', 'Count']] = sbux.apply(parse_variation, axis=1)
+    
+    # 6. AI SYNTHETIC INTELLIGENCE: Financial Enrichment
+    # Add synthetic COGS, Volumetric CF, and Landed Logistics
+    sbux = enrich_synthetic_financials(sbux)
     
     sbux[[
         'ad_action', 'ecom_action', 'capital_zone', 'price_gap', 
-        'efficiency_score', 'net_margin'
+        'efficiency_score', 'net_margin', 'problem_category', 'problem_reason'
     ]] = sbux.apply(analyze_strategic_matrix, axis=1)
     
     capital_flow = sbux.groupby("capital_zone")['weekly_sales_filled'].sum().to_dict()
     
+    # 7. COMPETITIVE INTELLIGENCE CONTEXT + FORECAST
+    # Portfolio-level forecast summary
+    portfolio_forecast_change = sbux['forecast_change'].mean() if 'forecast_change' in sbux.columns else 0
+    surge_count = len(sbux[sbux['forecast_signal'].str.contains('SURGE', na=False)])
+    decline_count = len(sbux[sbux['forecast_signal'].str.contains('DECLINE', na=False)])
+    
+    ci_context = {
+        'share_delta': share_delta,        # vs 6% category benchmark
+        'yoy_delta': yoy_delta,             # absolute YoY change
+        'category_growth': category_growth_rate,
+        'is_losing_share': share_delta < 0,
+        'is_growing': yoy_delta > 0,
+        'share_severity': 'critical' if share_delta < -0.10 else 'warning' if share_delta < 0 else 'healthy',
+        # Forecast signals
+        'portfolio_forecast_change': portfolio_forecast_change,
+        'forecast_trending_up': portfolio_forecast_change > 0.05,
+        'forecast_trending_down': portfolio_forecast_change < -0.05,
+        'surge_sku_count': surge_count,
+        'decline_sku_count': decline_count
+    }
+    
+    # 8. HIERARCHICAL POD AGGREGATION with CI + Forecast
+    # Create L1 (Flavor), L2 (Count), L3 (ASIN) hierarchy
+    hierarchy = build_pod_hierarchy(sbux, ci_context)
+    
     return {
         "data": sbux, 
+        "hierarchy": hierarchy,
         "capital_flow": capital_flow, 
         "total_rev": total_rev_curr,
         "total_rev_ly": total_rev_ly,
-        "share_delta": share_delta
+        "demand_forecast": demand_forecast,
+        "share_delta": share_delta,
+        "yoy_delta": yoy_delta,
+        "ci_context": ci_context
     }
+
+
+def build_pod_hierarchy(df: pd.DataFrame, ci_context: dict = None) -> dict:
+    """
+    Build hierarchical Pod structure for Director-level analysis.
+    
+    Hierarchy:
+    - L1: Flavor (Brand Health) - Portfolio Strategy
+    - L2: Count (Logistics/P&L) - Ops Strategy  
+    - L3: ASIN (Individual Listing) - Media Directive
+    
+    Metrics are rolled up from ASIN → Count → Flavor.
+    CI Context is incorporated into directives.
+    """
+    hierarchy = {}
+    ci_context = ci_context or {}
+    
+    for flavor in df['Flavor'].unique():
+        flavor_df = df[df['Flavor'] == flavor]
+        
+        # CI Metrics at Flavor Level
+        avg_bb_share = flavor_df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in flavor_df else 1.0
+        avg_price_gap = flavor_df['price_gap'].fillna(0).mean() if 'price_gap' in flavor_df else 0
+        
+        # Forecast Metrics at Flavor Level
+        avg_forecast_change = flavor_df['forecast_change'].mean() if 'forecast_change' in flavor_df.columns else 0
+        surge_count = len(flavor_df[flavor_df['forecast_signal'].str.contains('SURGE', na=False)]) if 'forecast_signal' in flavor_df.columns else 0
+        decline_count = len(flavor_df[flavor_df['forecast_signal'].str.contains('DECLINE', na=False)]) if 'forecast_signal' in flavor_df.columns else 0
+        forecast_signal = _get_aggregate_forecast_signal(avg_forecast_change, surge_count, decline_count, len(flavor_df))
+        
+        # Aggregate Actionable Intelligence at Flavor Level
+        flavor_actionable = _aggregate_actionable_intel(flavor_df)
+        
+        # L1: Flavor-level aggregation with CI + Forecast + Actionable Intel
+        flavor_metrics = {
+            'level': 'L1_Flavor',
+            'name': flavor,
+            'total_revenue': flavor_df['weekly_sales_filled'].sum(),
+            'avg_margin': flavor_df['net_margin'].mean(),
+            'avg_efficiency': flavor_df['efficiency_score'].mean(),
+            'avg_velocity_decay': flavor_df['velocity_decay'].mean(),
+            'sku_count': len(flavor_df),
+            'synthetic_cogs_total': flavor_df['synthetic_cogs'].sum() if 'synthetic_cogs' in flavor_df else 0,
+            'dominant_zone': flavor_df.groupby('capital_zone')['weekly_sales_filled'].sum().idxmax(),
+            'health_status': _calculate_pod_health(flavor_df),
+            # CI Metrics
+            'avg_bb_share': avg_bb_share,
+            'avg_price_gap': avg_price_gap,
+            'ci_share_delta': ci_context.get('share_delta', 0),
+            'ci_alert': _get_ci_alert(flavor_df, ci_context),
+            # Forecast Metrics
+            'forecast_change': avg_forecast_change,
+            'forecast_signal': forecast_signal,
+            'strategic_action': _get_flavor_directive(flavor_df, ci_context),
+            # Actionable Intelligence (aggregated)
+            **flavor_actionable,
+            'counts': {}
+        }
+        
+        # L2: Count-level aggregation within each Flavor
+        for count in flavor_df['Count'].unique():
+            count_df = flavor_df[flavor_df['Count'] == count]
+            
+            # CI Metrics at Count Level
+            count_avg_bb = count_df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in count_df else 1.0
+            count_avg_gap = count_df['price_gap'].fillna(0).mean() if 'price_gap' in count_df else 0
+            
+            # Forecast Metrics at Count Level
+            count_forecast_change = count_df['forecast_change'].mean() if 'forecast_change' in count_df.columns else 0
+            count_surge = len(count_df[count_df['forecast_signal'].str.contains('SURGE', na=False)]) if 'forecast_signal' in count_df.columns else 0
+            count_decline = len(count_df[count_df['forecast_signal'].str.contains('DECLINE', na=False)]) if 'forecast_signal' in count_df.columns else 0
+            count_forecast_signal = _get_aggregate_forecast_signal(count_forecast_change, count_surge, count_decline, len(count_df))
+            
+            # Aggregate Actionable Intelligence at Count Level
+            count_actionable = _aggregate_actionable_intel(count_df)
+            
+            count_metrics = {
+                'level': 'L2_Count',
+                'name': count,
+                'pod_id': f"{flavor}|{count}",
+                'total_revenue': count_df['weekly_sales_filled'].sum(),
+                'avg_margin': count_df['net_margin'].mean(),
+                'avg_efficiency': count_df['efficiency_score'].mean(),
+                'avg_velocity_decay': count_df['velocity_decay'].mean(),
+                'sku_count': len(count_df),
+                'synthetic_cogs_avg': count_df['synthetic_cogs'].mean() if 'synthetic_cogs' in count_df else 0,
+                'synthetic_vol_cf_avg': count_df['synthetic_vol_cf'].mean() if 'synthetic_vol_cf' in count_df else 0,
+                'dominant_zone': count_df.groupby('capital_zone')['weekly_sales_filled'].sum().idxmax() if not count_df.empty else 'Unknown',
+                'health_status': _calculate_pod_health(count_df),
+                # CI Metrics
+                'avg_bb_share': count_avg_bb,
+                'avg_price_gap': count_avg_gap,
+                'ci_alert': _get_ci_alert(count_df, ci_context),
+                # Forecast Metrics
+                'forecast_change': count_forecast_change,
+                'forecast_signal': count_forecast_signal,
+                # Directives (now informed by forecast)
+                'ops_action': _get_count_directive(count_df, ci_context),
+                'media_action': _get_media_directive(count_df, ci_context),
+                # Actionable Intelligence (aggregated)
+                **count_actionable,
+                'asins': []
+            }
+            
+            # L3: ASIN-level detail with CI
+            for _, row in count_df.iterrows():
+                asin_detail = {
+                    'level': 'L3_ASIN',
+                    'asin': row['asin'],
+                    'title': row.get('title', '')[:50],
+                    'revenue': row['weekly_sales_filled'],
+                    'margin': row['net_margin'],
+                    'efficiency': row['efficiency_score'],
+                    'velocity_decay': row['velocity_decay'],
+                    'capital_zone': row['capital_zone'],
+                    'ad_action': row['ad_action'],
+                    'ecom_action': row['ecom_action'],
+                    'synthetic_cogs': row.get('synthetic_cogs', 0),
+                    'synthetic_vol_cf': row.get('synthetic_vol_cf', 0),
+                    'trend': row.get('Trend (36M)', []),
+                    # CI Metrics
+                    'bb_share': row.get('amazon_bb_share', 1.0),
+                    'price_gap': row.get('price_gap', 0),
+                    'comp_price': row.get('new_fba_price', 0)
+                }
+                count_metrics['asins'].append(asin_detail)
+            
+            flavor_metrics['counts'][count] = count_metrics
+        
+        hierarchy[flavor] = flavor_metrics
+    
+    return hierarchy
+
+
+def _get_aggregate_forecast_signal(avg_change: float, surge_count: int, decline_count: int, total_count: int) -> str:
+    """Get aggregate forecast signal for a Pod."""
+    if total_count == 0:
+        return "→ NO DATA"
+    
+    surge_pct = surge_count / total_count
+    decline_pct = decline_count / total_count
+    
+    if avg_change > 0.15 or surge_pct > 0.5:
+        return "📈 SURGE AHEAD"
+    elif avg_change > 0.05:
+        return "↗️ GROWING"
+    elif avg_change < -0.15 or decline_pct > 0.5:
+        return "📉 DECLINE AHEAD"
+    elif avg_change < -0.05:
+        return "↘️ SOFTENING"
+    else:
+        return "→ STABLE"
+
+
+def _aggregate_actionable_intel(df: pd.DataFrame) -> dict:
+    """
+    Aggregate actionable intelligence for a Pod (Flavor or Count level).
+    
+    Uses revenue-weighted voting to determine dominant action for each category.
+    """
+    if df.empty:
+        return {
+            'inventory_intel': {'action': '✅ MAINTAIN LEVELS', 'reason': 'No data', 'urgency': 'low'},
+            'media_intel': {'action': '⚖️ STEADY PACE', 'reason': 'No data', 'timing': 'now'},
+            'pricing_intel': {'action': '✅ MAINTAIN PRICE', 'reason': 'No data', 'confidence': 'low'},
+            'portfolio_intel': {'action': '📊 MONITOR', 'reason': 'No data', 'horizon': 'long'},
+            'seasonal_alert': None,
+            'critical_flags': []
+        }
+    
+    total_rev = df['weekly_sales_filled'].sum()
+    if total_rev == 0:
+        total_rev = 1  # Avoid division by zero
+    
+    # Critical flags detection
+    critical_flags = []
+    
+    # Check for trending to zero SKUs
+    if 'trending_to_zero' in df.columns:
+        zero_trending_rev = df[df['trending_to_zero'] == True]['weekly_sales_filled'].sum()
+        if zero_trending_rev / total_rev > 0.20:
+            critical_flags.append("💀 20%+ revenue trending to zero")
+    
+    # Check for accelerating growth
+    if 'accelerating_growth' in df.columns:
+        accel_rev = df[df['accelerating_growth'] == True]['weekly_sales_filled'].sum()
+        if accel_rev / total_rev > 0.30:
+            critical_flags.append("🚀 30%+ revenue in acceleration")
+    
+    # Seasonal alerts
+    seasonal_alert = None
+    if 'seasonal_peak' in df.columns:
+        peak_rev = df[df['seasonal_peak'] == True]['weekly_sales_filled'].sum()
+        if peak_rev / total_rev > 0.25:
+            seasonal_alert = "📅 SEASONAL PEAK INCOMING"
+    
+    if 'seasonal_trough' in df.columns and seasonal_alert is None:
+        trough_rev = df[df['seasonal_trough'] == True]['weekly_sales_filled'].sum()
+        if trough_rev / total_rev > 0.25:
+            seasonal_alert = "⏸️ SEASONAL TROUGH APPROACHING"
+    
+    # Revenue-weighted action voting
+    def get_dominant_action(action_col, reason_col):
+        """Get the most impactful action by revenue weight."""
+        if action_col not in df.columns:
+            return None, None
+        
+        action_weights = df.groupby(action_col)['weekly_sales_filled'].sum()
+        if action_weights.empty:
+            return None, None
+        
+        dominant = action_weights.idxmax()
+        dominant_df = df[df[action_col] == dominant]
+        reason = dominant_df[reason_col].iloc[0] if reason_col in dominant_df.columns and len(dominant_df) > 0 else ""
+        return dominant, reason
+    
+    # Aggregate each intelligence category
+    inv_action, inv_reason = get_dominant_action('inventory_action', 'inventory_reason')
+    media_action, media_reason = get_dominant_action('media_timing', 'media_reason')
+    price_action, price_reason = get_dominant_action('pricing_action', 'pricing_reason')
+    port_action, port_reason = get_dominant_action('portfolio_action', 'portfolio_reason')
+    
+    # Determine urgency levels
+    inv_urgency = 'critical' if inv_action and ('REORDER' in inv_action or 'STOP' in inv_action) else 'normal'
+    media_timing = 'pre-position' if media_action and ('EARLY' in media_action or 'PRE-POSITION' in media_action) else 'now'
+    price_confidence = 'high' if price_action and ('RAISE' in price_action or 'PROMO' in price_action) else 'moderate'
+    port_horizon = 'immediate' if port_action and ('EXIT' in port_action or 'DOUBLE' in port_action) else 'strategic'
+    
+    return {
+        'inventory_intel': {
+            'action': inv_action or '✅ MAINTAIN LEVELS',
+            'reason': inv_reason or 'Stable demand',
+            'urgency': inv_urgency
+        },
+        'media_intel': {
+            'action': media_action or '⚖️ STEADY PACE',
+            'reason': media_reason or 'Standard allocation',
+            'timing': media_timing
+        },
+        'pricing_intel': {
+            'action': price_action or '✅ MAINTAIN PRICE',
+            'reason': price_reason or 'No change needed',
+            'confidence': price_confidence
+        },
+        'portfolio_intel': {
+            'action': port_action or '📊 MONITOR',
+            'reason': port_reason or 'Standard tracking',
+            'horizon': port_horizon
+        },
+        'seasonal_alert': seasonal_alert,
+        'critical_flags': critical_flags
+    }
+
+
+def _get_ci_alert(df: pd.DataFrame, ci_context: dict) -> str:
+    """
+    Generate Competitive Intelligence alert based on market signals.
+    
+    Analyzes: Buy Box share, Price gaps, Share velocity, Competitor pricing
+    """
+    if df.empty:
+        return ""
+    
+    # Extract CI signals
+    avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
+    avg_gap = df['price_gap'].fillna(0).mean() if 'price_gap' in df.columns else 0
+    share_delta = ci_context.get('share_delta', 0)
+    is_losing_share = ci_context.get('is_losing_share', False)
+    
+    alerts = []
+    
+    # Buy Box Loss Alert
+    if avg_bb < 0.70:
+        alerts.append("🔴 BB CRISIS (<70%)")
+    elif avg_bb < 0.85:
+        alerts.append("🟡 BB EROSION")
+    
+    # Price War Detection
+    if avg_gap > 0.12:
+        alerts.append("⚔️ PRICE WAR (+12% gap)")
+    elif avg_gap > 0.08:
+        alerts.append("💰 PREMIUM RISK")
+    elif avg_gap < -0.05:
+        alerts.append("📉 UNDERPRICED")
+    
+    # Share Velocity Alert
+    if share_delta < -0.15:
+        alerts.append("🚨 SHARE COLLAPSE")
+    elif share_delta < -0.05:
+        alerts.append("📉 LOSING SHARE")
+    elif share_delta > 0.05:
+        alerts.append("📈 GAINING SHARE")
+    
+    return " | ".join(alerts) if alerts else "✅ CI STABLE"
+
+
+def _calculate_pod_health(df: pd.DataFrame) -> str:
+    """Calculate health status for a pod (Flavor or Count level)."""
+    if df.empty:
+        return "⚪ NO DATA"
+    
+    # Weight by revenue
+    total_rev = df['weekly_sales_filled'].sum()
+    if total_rev == 0:
+        return "⚪ NO DATA"
+    
+    # Check zone distribution
+    bleed_pct = df[df['capital_zone'].str.contains('BLEED', na=False)]['weekly_sales_filled'].sum() / total_rev
+    drag_pct = df[df['capital_zone'].str.contains('DRAG', na=False)]['weekly_sales_filled'].sum() / total_rev
+    fortress_pct = df[df['capital_zone'].str.contains('FORTRESS', na=False)]['weekly_sales_filled'].sum() / total_rev
+    
+    avg_decay = df['velocity_decay'].mean()
+    
+    if bleed_pct > 0.3 or avg_decay > 1.5:
+        return "🔴 CRITICAL"
+    elif drag_pct > 0.4 or avg_decay > 1.2:
+        return "🟡 AT RISK"
+    elif fortress_pct > 0.5 and avg_decay < 1.0:
+        return "🟢 HEALTHY"
+    else:
+        return "🟡 MONITOR"
+
+
+def _get_flavor_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+    """
+    Get strategic directive for Flavor level (L1).
+    Incorporates Competitive Intelligence + Demand Forecast for market-aware decisions.
+    """
+    if df.empty:
+        return "📊 ANALYZE"
+    
+    ci_context = ci_context or {}
+    
+    # Handle NaN values with sensible defaults
+    avg_decay = df['velocity_decay'].fillna(1.0).mean()
+    avg_margin = df['net_margin'].fillna(0).mean()
+    total_rev = df['weekly_sales_filled'].sum()
+    
+    # CI Metrics
+    avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
+    avg_gap = df['price_gap'].fillna(0).mean() if 'price_gap' in df.columns else 0
+    share_delta = ci_context.get('share_delta', 0)
+    is_losing_share = ci_context.get('is_losing_share', False)
+    
+    # FORECAST METRICS
+    avg_forecast_change = df['forecast_change'].fillna(0).mean() if 'forecast_change' in df.columns else 0
+    forecast_surging = avg_forecast_change > 0.10
+    forecast_declining = avg_forecast_change < -0.10
+    forecast_strong = avg_forecast_change > 0.05
+    forecast_weak = avg_forecast_change < -0.05
+    
+    # Zone distribution analysis
+    bleed_rev = df[df['capital_zone'].str.contains('BLEED', na=False)]['weekly_sales_filled'].sum()
+    drag_rev = df[df['capital_zone'].str.contains('DRAG', na=False)]['weekly_sales_filled'].sum()
+    fortress_rev = df[df['capital_zone'].str.contains('FORTRESS', na=False)]['weekly_sales_filled'].sum()
+    frontier_rev = df[df['capital_zone'].str.contains('FRONTIER', na=False)]['weekly_sales_filled'].sum()
+    
+    bleed_pct = bleed_rev / total_rev if total_rev > 0 else 0
+    drag_pct = drag_rev / total_rev if total_rev > 0 else 0
+    healthy_pct = (fortress_rev + frontier_rev) / total_rev if total_rev > 0 else 0
+    
+    # === FORECAST-ENHANCED DECISION TREE ===
+    
+    # CRITICAL: Decline forecast compounds exit signals
+    if bleed_pct > 0.25 and forecast_declining:
+        return "💀 ACCELERATE EXIT (Forecast: Decline)"
+    if bleed_pct > 0.30 or avg_decay > 1.5:
+        return "💀 EXIT FLAVOR LINE"
+    
+    # CI PRIORITY: Buy Box Crisis overrides other signals
+    if avg_bb < 0.60:
+        return "🚨 RECOVER BUY BOX"
+    
+    # CI PRIORITY: Severe share loss with poor margins
+    if share_delta < -0.15 and avg_margin < 0.12 and not forecast_strong:
+        return "💀 EXIT FLAVOR LINE"
+    
+    # FORECAST OPPORTUNITY: Surge forecast with healthy metrics
+    if forecast_surging and healthy_pct > 0.50 and avg_margin > 0.12:
+        return "🚀 PRE-SCALE (Forecast: Surge)"
+    
+    # CI: Active price war detection
+    if avg_gap > 0.12:
+        if forecast_declining:
+            return "⚔️ DISENGAGE PRICE WAR"
+        else:
+            return "⚔️ PRICE WAR DEFENSE"
+    
+    # CI: Losing share but healthy fundamentals - defend
+    if is_losing_share and healthy_pct > 0.50:
+        if forecast_strong:
+            return "💪 DEFEND & INVEST (Forecast: Growing)"
+        elif avg_gap > 0.05:
+            return "🎫 MATCH PRICE (DEFEND)"
+        else:
+            return "📢 INCREASE VISIBILITY"
+    
+    # Standard health checks with forecast context
+    if drag_pct > 0.40 or avg_decay > 1.3:
+        if forecast_strong:
+            return "⏳ HOLD (Forecast: Improving)"
+        else:
+            return "⚠️ HOLD & EVALUATE"
+    elif avg_decay > 1.1:
+        return "📉 DEFEND SHARE"
+    
+    # CI: Gaining share with strong fundamentals - aggressive growth
+    if share_delta > 0.05 and healthy_pct > 0.60 and avg_margin > 0.15:
+        if forecast_surging:
+            return "🔥 MAX SCALE (Share + Forecast)"
+        return "🚀 AGGRESSIVE EXPANSION"
+    
+    # Standard growth conditions (tightened)
+    if healthy_pct > 0.70 and avg_margin > 0.18 and avg_decay < 0.85 and avg_bb > 0.90:
+        return "🚀 EXPAND FLAVOR LINE"
+    elif healthy_pct > 0.50 and avg_margin > 0.12:
+        return "✅ MAINTAIN ALLOCATION"
+    elif avg_margin < 0.10:
+        return "📈 TEST PRICE INCREASE"
+    else:
+        return "📊 STRATEGIC REVIEW"
+
+
+def _get_count_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+    """
+    Get ops directive for Count level (L2).
+    Incorporates Competitive Intelligence + Demand Forecast for pricing and market decisions.
+    """
+    if df.empty:
+        return "📊 ANALYZE"
+    
+    ci_context = ci_context or {}
+    
+    # Handle NaN values
+    avg_margin = df['net_margin'].fillna(0).mean()
+    avg_decay = df['velocity_decay'].fillna(1.0).mean()
+    avg_cogs = df['synthetic_cogs'].mean() if 'synthetic_cogs' in df.columns else 0
+    avg_price = df['filled_price'].mean() if 'filled_price' in df.columns else 0
+    total_rev = df['weekly_sales_filled'].sum()
+    
+    # CI Metrics
+    avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
+    avg_gap = df['price_gap'].fillna(0).mean() if 'price_gap' in df.columns else 0
+    avg_comp_price = df['new_fba_price'].fillna(0).mean() if 'new_fba_price' in df.columns else 0
+    share_delta = ci_context.get('share_delta', 0)
+    
+    # FORECAST METRICS
+    avg_forecast_change = df['forecast_change'].fillna(0).mean() if 'forecast_change' in df.columns else 0
+    forecast_surging = avg_forecast_change > 0.10
+    forecast_declining = avg_forecast_change < -0.10
+    forecast_strong = avg_forecast_change > 0.05
+    forecast_weak = avg_forecast_change < -0.05
+    
+    cogs_ratio = avg_cogs / avg_price if avg_price > 0 else 0.25
+    
+    # Zone distribution
+    bleed_rev = df[df['capital_zone'].str.contains('BLEED', na=False)]['weekly_sales_filled'].sum()
+    drag_rev = df[df['capital_zone'].str.contains('DRAG', na=False)]['weekly_sales_filled'].sum()
+    bleed_pct = bleed_rev / total_rev if total_rev > 0 else 0
+    drag_pct = drag_rev / total_rev if total_rev > 0 else 0
+    
+    # === FORECAST-ENHANCED DECISION TREE ===
+    
+    # CRITICAL: Exit conditions (accelerated by forecast)
+    if avg_margin < 0.05 and forecast_declining:
+        return "💀 ACCELERATE EXIT (Forecast: Decline)"
+    if avg_margin < 0.05 or bleed_pct > 0.40:
+        return "💀 EXIT COUNT SIZE"
+    
+    # CI PRIORITY: Buy Box lost - immediate action needed
+    if avg_bb < 0.50:
+        if avg_gap > 0.10:
+            return "🎫 EMERGENCY REPRICE"
+        else:
+            return "🚨 INVESTIGATE BB LOSS"
+    
+    # FORECAST: Surge predicted with good Buy Box - pre-stock
+    if forecast_surging and avg_bb > 0.80 and avg_margin > 0.10:
+        return "📦 PRE-STOCK INVENTORY (Surge)"
+    
+    # CI: Competitor significantly undercutting
+    if avg_gap > 0.15:
+        if forecast_strong and avg_margin > 0.15:
+            return "🎫 DEFEND PRICE (Forecast Strong)"
+        elif avg_margin > 0.15:
+            return "🎫 CLIP COUPON (-10%)"
+        else:
+            return "⚔️ PRICE WAR ALERT"
+    
+    # CI: We're underpriced - opportunity to raise (especially if demand surging)
+    if avg_gap < -0.08 and avg_bb > 0.90:
+        if forecast_surging:
+            return "📈 AGGRESSIVE PRICE (+12%)"
+        return "📈 RAISE PRICE (+8%)"
+    
+    # CI: Moderate price gap with share loss
+    if avg_gap > 0.08 and share_delta < -0.05:
+        if forecast_weak:
+            return "⚠️ REDUCE INVENTORY"
+        return "🎫 MATCH COMPETITOR"
+    
+    # Supply chain check
+    if cogs_ratio > 0.32:
+        return "🏭 RENEGOTIATE COGS"
+    
+    # Standard margin check with forecast context
+    if avg_margin < 0.10:
+        if forecast_strong:
+            return "📈 RAISE PRICE (+8%)"
+        return "📈 TEST PRICE (+5%)"
+    
+    # Velocity issues
+    if avg_decay > 1.4:
+        return "🎫 PROMOTIONAL CLEAR"
+    elif drag_pct > 0.30:
+        return "⚠️ OPTIMIZE LISTINGS"
+    
+    # CI: Strong position with market gains
+    if share_delta > 0.03 and avg_margin > 0.18 and avg_bb > 0.90:
+        return "🚀 SCALE COUNT SIZE"
+    
+    # Standard success conditions
+    if avg_margin > 0.20 and avg_decay < 0.85 and bleed_pct == 0 and avg_bb > 0.85:
+        return "🚀 SCALE COUNT SIZE"
+    elif avg_margin > 0.15 and avg_decay < 1.0:
+        return "✅ MAINTAIN OPS"
+    else:
+        return "📊 REVIEW METRICS"
+
+
+def _get_media_directive(df: pd.DataFrame, ci_context: dict = None) -> str:
+    """
+    Get media/advertising directive for Pod level.
+    Determines ad spend strategy based on margins, velocity, CI signals, and demand forecast.
+    """
+    if df.empty:
+        return "⏸️ HOLD SPEND"
+    
+    ci_context = ci_context or {}
+    
+    # Handle NaN values
+    avg_margin = df['net_margin'].fillna(0).mean()
+    avg_decay = df['velocity_decay'].fillna(1.0).mean()
+    avg_efficiency = df['efficiency_score'].fillna(0).mean()
+    
+    # CI Metrics
+    avg_bb = df['amazon_bb_share'].fillna(1.0).mean() if 'amazon_bb_share' in df.columns else 1.0
+    avg_gap = df['price_gap'].fillna(0).mean() if 'price_gap' in df.columns else 0
+    share_delta = ci_context.get('share_delta', 0)
+    total_rev = df['weekly_sales_filled'].sum()
+    
+    # FORECAST METRICS
+    avg_forecast_change = df['forecast_change'].fillna(0).mean() if 'forecast_change' in df.columns else 0
+    forecast_surging = avg_forecast_change > 0.10
+    forecast_declining = avg_forecast_change < -0.10
+    forecast_strong = avg_forecast_change > 0.05
+    
+    # Zone distribution
+    bleed_rev = df[df['capital_zone'].str.contains('BLEED', na=False)]['weekly_sales_filled'].sum()
+    fortress_rev = df[df['capital_zone'].str.contains('FORTRESS', na=False)]['weekly_sales_filled'].sum()
+    bleed_pct = bleed_rev / total_rev if total_rev > 0 else 0
+    fortress_pct = fortress_rev / total_rev if total_rev > 0 else 0
+    
+    # === FORECAST-ENHANCED MEDIA DECISION TREE ===
+    
+    # CRITICAL: Stop all spend on bleeding products (faster if declining forecast)
+    if forecast_declining and (bleed_pct > 0.20 or avg_margin < 0.08):
+        return "🛑 IMMEDIATE PAUSE (Decline)"
+    if bleed_pct > 0.30 or avg_margin < 0.05:
+        return "🛑 HARD PAUSE ALL"
+    
+    # Buy Box crisis - no point advertising
+    if avg_bb < 0.50:
+        return "🛑 PAUSE (FIX BB FIRST)"
+    
+    # FORECAST: Surge coming with strong fundamentals - pre-invest
+    if forecast_surging and avg_margin > 0.12 and avg_bb > 0.75:
+        return "🚀 PRE-SCALE SPEND (Surge)"
+    
+    # Severe price gap - ads won't convert
+    if avg_gap > 0.15:
+        if forecast_declining:
+            return "🛑 PAUSE (Price + Decline)"
+        return "⏸️ REDUCE (-50%)"
+    
+    # Losing share with good fundamentals - increase visibility
+    if share_delta < -0.10 and avg_margin > 0.12 and avg_bb > 0.80:
+        if forecast_strong:
+            return "🔥 MAX VISIBILITY (Recover Share)"
+        return "📢 AGGRESSIVE VISIBILITY"
+    
+    # Velocity decay but strong margins - defensive spend
+    if avg_decay > 1.2 and avg_margin > 0.15:
+        if forecast_strong:
+            return "💪 DEFEND + INVEST (Forecast Up)"
+        return "🎯 DEFENSIVE ROAS"
+    
+    # FORECAST: Strong performance with surge forecast - maximum scale
+    if forecast_surging and fortress_pct > 0.50 and avg_margin > 0.15:
+        return "🔥 MAX SCALE (Surge Predicted)"
+    
+    # Strong performance - scale aggressively
+    if fortress_pct > 0.60 and avg_margin > 0.18 and avg_decay < 0.9 and avg_bb > 0.85:
+        if forecast_strong:
+            return "🚀 SCALE SPEND (+40%)"
+        return "🚀 SCALE SPEND (+25%)"
+    
+    # Good margins, gaining share - invest for growth
+    if share_delta > 0.03 and avg_margin > 0.15:
+        if forecast_strong:
+            return "🔥 AGGRESSIVE INVEST"
+        return "📈 INVEST FOR SHARE"
+    
+    # FORECAST: Declining forecast with moderate metrics - reduce proactively
+    if forecast_declining and avg_margin < 0.15:
+        return "⚠️ REDUCE (Forecast Soft)"
+    
+    # Moderate conditions - optimize
+    if avg_margin > 0.12 and avg_bb > 0.75:
+        return "⚖️ OPTIMIZE ROAS"
+    
+    # Default - maintain cautiously
+    if avg_margin > 0.10:
+        if forecast_declining:
+            return "⏸️ CAUTIOUS HOLD"
+        return "✅ MAINTAIN SPEND"
+    else:
+        return "⏸️ REDUCE SPEND"

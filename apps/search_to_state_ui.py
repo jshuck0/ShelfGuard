@@ -30,135 +30,287 @@ from src.recommendations import generate_resolution_cards, render_resolution_car
 
 def render_discovery_ui() -> None:
     """
-    Main Discovery UI component.
+    Main Discovery UI component with Two-Phase Architecture.
+
+    Phase 1: Lightweight seed discovery (25-50 results)
+    Phase 2: Dynamic category mapping (fetch until 90% revenue captured)
 
     Renders:
-    1. Keyword/brand search OR manual ASIN input
-    2. Market snapshot visualization
-    3. Pin to State button
-    4. Mission profile selector
+    1. Keyword search for seed products
+    2. Seed product selection
+    3. Dynamic category market mapping
+    4. Market snapshot visualization
+    5. Pin to State button
     """
-    st.markdown("### 🔍 Market Discovery")
-    st.markdown("Search for products by keyword, brand, or category to discover market opportunities.")
+    st.markdown("### 🔍 Two-Phase Market Discovery")
+    st.markdown("**Phase 1**: Find seed products → **Phase 2**: Map full competitive market")
 
     # Input mode selector
     input_mode = st.radio(
         "Search Method",
-        ["🔎 Keyword Search", "📋 Manual ASINs"],
+        ["🔎 Two-Phase Discovery", "📋 Manual ASINs"],
         horizontal=True
     )
 
-    asins_to_analyze = []
-    search_keyword = None
-
-    if input_mode == "🔎 Keyword Search":
-        # Keyword search input
-        col1, col2 = st.columns([3, 1])
-
-        with col1:
-            search_keyword = st.text_input(
-                "Search Query",
-                placeholder="e.g., Starbucks, Dunkin, almond milk, organic coffee",
-                help="Search for products by brand name, keyword, or category"
-            )
-
-        with col2:
-            max_results = st.selectbox(
-                "Max Results",
-                [100, 250, 500],
-                index=2,
-                help="Maximum number of products to fetch"
-            )
-
-        if not search_keyword:
-            st.info("💡 Enter a search term above (e.g., 'Starbucks', 'Kraft', 'Dunkin', 'almond')")
-            return
-
-        # Search button
-        if not st.button("🔍 Search Products", type="primary"):
-            return
-
-        # Execute search with category intelligence
-        try:
-            from src.discovery import search_with_category_intelligence
-
-            asins_to_analyze, category_context = search_with_category_intelligence(
-                keyword=search_keyword,
-                limit=max_results,
-                include_rivals=True,  # Search rivals to define full market
-                domain="US"
-            )
-
-            if not asins_to_analyze:
-                st.error(f"❌ No products found for '{search_keyword}'. Try a different keyword.")
-                return
-
-        except Exception as e:
-            st.error(f"❌ Search failed: {str(e)}")
-            st.exception(e)
-            return
-
-    else:  # Manual ASIN input
+    if input_mode == "📋 Manual ASINs":
+        # Manual ASIN input (legacy path)
         asin_text = st.text_area(
             "Enter ASINs (one per line or comma-separated)",
             placeholder="B07GMLSQG5\nB0928F3QZ7\nB07PQLHFQ1",
             height=150
         )
 
-        if asin_text:
-            # Parse ASINs - support both newline and comma separation
-            raw_asins = asin_text.replace(",", "\n").split("\n")
-            asins_to_analyze = [a.strip().upper() for a in raw_asins if a.strip()]
-
-            st.caption(f"✅ {len(asins_to_analyze)} ASINs ready to analyze")
-        else:
+        if not asin_text:
             st.info("💡 Paste ASINs above to analyze specific products")
             return
 
-        # Analyze button
+        # Parse ASINs
+        raw_asins = asin_text.replace(",", "\n").split("\n")
+        asins_to_analyze = [a.strip().upper() for a in raw_asins if a.strip()]
+        st.caption(f"✅ {len(asins_to_analyze)} ASINs ready to analyze")
+
         if not st.button("🚀 Analyze Products", type="primary"):
             return
 
-    # Fetch product data from Keepa
-    with st.spinner(f"📊 Fetching data for {len(asins_to_analyze)} products from Keepa..."):
-        try:
-            from src.discovery import fetch_asins_from_keepa, prune_to_90_percent
+        # Fetch using legacy path (no category context)
+        with st.spinner(f"📊 Fetching data for {len(asins_to_analyze)} products..."):
+            try:
+                from src.discovery import fetch_asins_from_keepa, prune_to_90_percent
 
-            # Pass category context for validation if available
-            if 'category_context' in locals() and category_context:
-                market_snapshot = fetch_asins_from_keepa(
-                    asins_to_analyze,
-                    category_context=category_context,
-                    original_keyword=search_keyword
-                )
-            else:
                 market_snapshot = fetch_asins_from_keepa(asins_to_analyze)
 
-            if market_snapshot.empty:
-                st.error("❌ No data returned from Keepa. Check your API key or ASINs.")
+                if market_snapshot.empty:
+                    st.error("❌ No data returned from Keepa.")
+                    return
+
+                market_snapshot, stats = prune_to_90_percent(market_snapshot)
+                stats["query"] = f"{len(asins_to_analyze)} Products"
+                stats["total_asins"] = len(asins_to_analyze)
+
+            except Exception as e:
+                st.error(f"❌ Data fetch failed: {str(e)}")
+                st.exception(e)
                 return
 
-            # Prune to 90%
-            market_snapshot, stats = prune_to_90_percent(market_snapshot)
+    else:  # Two-Phase Discovery
+        # ========== CATEGORY SELECTION (OPTIONAL) ==========
+        st.markdown("#### 🎯 Step 1: Define Your Market")
 
-            # Set display name with category context
-            if 'category_context' in locals() and category_context:
-                stats["query"] = f'"{search_keyword}" ({category_context["category"]})'
-                stats["category"] = category_context["category"]
-                stats["category_description"] = category_context["category_description"]
-            elif search_keyword:
-                stats["query"] = f'"{search_keyword}"'
+        search_mode = st.radio(
+            "How would you like to search?",
+            ["🔍 Keyword Search (I'm exploring)", "📂 Category-First (I know my market)"],
+            horizontal=True,
+            help="Category-first gives cleaner results for known markets"
+        )
+
+        category_filter = None
+
+        if search_mode == "📂 Category-First (I know my market)":
+            # Category selector for power users
+            st.markdown("**Select Amazon Category:**")
+
+            # Common categories for CPG/ecommerce users
+            category_options = {
+                "Grocery & Gourmet Food": 16310101,
+                "Health & Household": 3760901,
+                "Beauty & Personal Care": 3760911,
+                "Pet Supplies": 2619533011,
+                "Home & Kitchen": 1055398,
+                "Sports & Outdoors": 3375251,
+                "Baby Products": 165796011,
+                "Toys & Games": 165793011,
+                "Electronics": 172282,
+                "Clothing, Shoes & Jewelry": 7141123011,
+                "Office Products": 1064954,
+                "Industrial & Scientific": 16310091,
+            }
+
+            selected_category = st.selectbox(
+                "Amazon Root Category",
+                options=list(category_options.keys()),
+                help="Select the primary market category for your analysis"
+            )
+
+            category_filter = category_options[selected_category]
+            st.caption(f"📂 Category ID: {category_filter}")
+
+        # ========== PHASE 1: SEED DISCOVERY ==========
+        st.markdown("#### 🌱 Phase 1: Find Seed Product")
+
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            if category_filter:
+                search_keyword = st.text_input(
+                    f"Search within {selected_category}",
+                    placeholder="e.g., Starbucks, organic, premium brand",
+                    help="Search for products within the selected category"
+                )
             else:
-                stats["query"] = f"{len(asins_to_analyze)} Products"
+                search_keyword = st.text_input(
+                    "Search Query",
+                    placeholder="e.g., Windex, Starbucks, Kraft, almond milk",
+                    help="Search for products to find a seed product that defines your market"
+                )
 
-            stats["total_asins"] = len(asins_to_analyze)
+        with col2:
+            seed_limit = st.selectbox(
+                "Seed Results",
+                [10, 25, 50],
+                index=1,
+                help="Number of seed candidates to show"
+            )
 
-        except Exception as e:
-            st.error(f"❌ Data fetch failed: {str(e)}")
-            st.exception(e)
+        if not search_keyword:
+            st.info("💡 Enter a search term to find seed products (e.g., 'Windex', 'Starbucks', 'Dunkin')")
             return
 
-    # Display stats
+        # Phase 1 Search Button
+        search_key = f"{search_keyword}_{category_filter}"  # Unique key per category
+        if "seed_products_df" not in st.session_state or st.session_state.get("last_search") != search_key:
+            if st.button("🔍 Find Seed Products", type="primary"):
+                with st.spinner(f"🌱 Searching for '{search_keyword}' seed products..."):
+                    try:
+                        from src.two_phase_discovery import phase1_seed_discovery
+
+                        seed_df = phase1_seed_discovery(
+                            keyword=search_keyword,
+                            limit=seed_limit,
+                            domain="US",
+                            category_filter=category_filter  # Pass category filter
+                        )
+
+                        if seed_df.empty:
+                            st.error(f"❌ No seed products found for '{search_keyword}'")
+                            return
+
+                        st.session_state["seed_products_df"] = seed_df
+                        st.session_state["last_search"] = search_key
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"❌ Phase 1 failed: {str(e)}")
+                        st.exception(e)
+                        return
+
+        # Display seed products if available
+        if "seed_products_df" in st.session_state:
+            seed_df = st.session_state["seed_products_df"]
+
+            st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
+
+            # Check for category ambiguity (keyword-only mode)
+            if not category_filter and not seed_df.empty and "category_id" in seed_df.columns:
+                unique_categories = seed_df["category_id"].nunique()
+                if unique_categories > 2:
+                    # Show disambiguation warning
+                    top_categories = seed_df.groupby("category_path").size().sort_values(ascending=False).head(4)
+
+                    st.warning(
+                        f"⚠️ **Multiple Markets Detected**: Found products in {unique_categories} different categories.\n\n"
+                        f"For better results, consider using **Category-First** mode above."
+                    )
+
+                    with st.expander("📂 See Category Breakdown"):
+                        for cat_path, count in top_categories.items():
+                            st.caption(f"• {cat_path}: {count} products")
+
+            # Show category breadcrumb from first result
+            if not seed_df.empty and "category_path" in seed_df.columns:
+                st.caption(f"📂 Category: **{seed_df.iloc[0]['category_path']}**")
+
+            # Seed selection table
+            st.markdown("**Select a seed product to define the market:**")
+
+            # Format for display
+            display_df = seed_df.head(20)[["title", "brand", "price", "bsr", "category_path"]].copy()
+            display_df["price"] = display_df["price"].apply(lambda x: f"${x:.2f}")
+            display_df["bsr"] = display_df["bsr"].apply(lambda x: f"{int(x):,}" if x > 0 else "N/A")
+
+            # Radio button selection
+            if len(seed_df) > 0:
+                selected_idx = st.radio(
+                    "Choose seed product:",
+                    range(min(20, len(seed_df))),
+                    format_func=lambda i: f"{seed_df.iloc[i]['title'][:80]}... | {seed_df.iloc[i]['brand']} | BSR: {int(seed_df.iloc[i]['bsr']):,}",
+                    label_visibility="collapsed"
+                )
+
+                seed_product = seed_df.iloc[selected_idx]
+
+                # ========== PHASE 2: CATEGORY MAPPING ==========
+                st.markdown("---")
+                st.markdown("#### 🗺️ Phase 2: Map Competitive Market")
+
+                st.info(
+                    f"**Seed**: {seed_product['title'][:100]}\n\n"
+                    f"**Category**: {seed_product['category_path']}\n\n"
+                    f"ShelfGuard will now fetch products from this category until 90% of revenue is captured."
+                )
+
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    if st.button("🚀 Map Full Market", type="primary"):
+                        st.session_state["trigger_phase2"] = True
+                        st.rerun()
+
+                with col2:
+                    max_products = st.number_input(
+                        "Max Products",
+                        min_value=100,
+                        max_value=1000,
+                        value=500,
+                        step=100,
+                        help="Safety limit for category fetch"
+                    )
+
+                # Execute Phase 2 if triggered
+                if st.session_state.get("trigger_phase2"):
+                    with st.spinner("🗺️ Mapping competitive market (dynamic 90% fetch)..."):
+                        try:
+                            from src.two_phase_discovery import phase2_category_market_mapping
+
+                            market_snapshot, market_stats = phase2_category_market_mapping(
+                                category_id=int(seed_product["category_id"]),
+                                seed_product_title=seed_product["title"],
+                                target_revenue_pct=90.0,
+                                max_products=max_products,
+                                batch_size=100,
+                                domain="US"
+                            )
+
+                            if market_snapshot.empty:
+                                st.error("❌ No products found in category")
+                                return
+
+                            # Prepare stats for display
+                            stats = {
+                                "query": f'"{search_keyword}" ({seed_product["category_path"]})',
+                                "category": seed_product["category_path"],
+                                "total_asins": market_stats["total_products"],
+                                "pruned_asins": market_stats["validated_products"],
+                                "pruned_pct": (market_stats["validated_products"] / market_stats["total_products"] * 100) if market_stats["total_products"] > 0 else 0,
+                                "revenue_captured_pct": 90.0,  # By design
+                                "total_revenue_proxy": market_stats["validated_revenue"]
+                            }
+
+                            # Clear trigger
+                            st.session_state["trigger_phase2"] = False
+
+                        except Exception as e:
+                            st.error(f"❌ Phase 2 failed: {str(e)}")
+                            st.exception(e)
+                            st.session_state["trigger_phase2"] = False
+                            return
+                else:
+                    return  # Wait for Phase 2 trigger
+            else:
+                return
+        else:
+            return  # Wait for Phase 1 search
+
+    # ========== RESULTS VISUALIZATION ==========
     st.markdown("---")
     st.markdown(f"### 📊 Market Snapshot: **{stats['query']}**")
 

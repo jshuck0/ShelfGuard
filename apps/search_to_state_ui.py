@@ -33,54 +33,84 @@ def render_discovery_ui() -> None:
     Main Discovery UI component.
 
     Renders:
-    1. Search input (brand/category)
+    1. ASIN input (paste ASINs or use demo data)
     2. Market snapshot visualization
     3. Pin to State button
     4. Mission profile selector
     """
     st.markdown("### 🔍 Market Discovery")
-    st.markdown("Search for brands or categories to discover the top revenue-driving ASINs.")
+    st.markdown("Paste ASINs or use demo data to analyze market snapshots.")
 
-    # Search input
-    col1, col2 = st.columns([3, 1])
+    # Input mode selector
+    input_mode = st.radio(
+        "Data Source",
+        ["📋 Paste ASINs", "🎯 Demo Data (Starbucks K-Cups)"],
+        horizontal=True
+    )
 
-    with col1:
-        query = st.text_input(
-            "Search Query",
-            placeholder="e.g., Starbucks, Keurig, etc.",
-            label_visibility="collapsed"
+    asins_to_analyze = []
+
+    if input_mode == "📋 Paste ASINs":
+        asin_text = st.text_area(
+            "Enter ASINs (one per line or comma-separated)",
+            placeholder="B07GMLSQG5\nB0928F3QZ7\nB07PQLHFQ1",
+            height=150
         )
 
-    with col2:
-        search_type = st.selectbox(
-            "Type",
-            ["brand", "category"],
-            label_visibility="collapsed"
-        )
+        if asin_text:
+            # Parse ASINs - support both newline and comma separation
+            raw_asins = asin_text.replace(",", "\n").split("\n")
+            asins_to_analyze = [a.strip().upper() for a in raw_asins if a.strip()]
 
-    if not query:
-        st.info("💡 Enter a brand name or category to start your market scan.")
+            st.caption(f"✅ {len(asins_to_analyze)} ASINs ready to analyze")
+
+    else:  # Demo Data
+        # Hardcoded Starbucks K-Cup ASINs for demo
+        demo_asins = [
+            "B07GMLSQG5",  # Pike Place
+            "B0928F3QZ7",  # French Roast
+            "B07PQLHFQ1",  # Breakfast Blend
+            "B08P41BQV9",  # Caramel
+            "B07H9D7M2V",  # Veranda
+            "B0B1F3KZFT",  # House Blend
+            "B07JYMF8D8",  # Medium Roast
+            "B07PQQMN53",  # Sumatra
+        ]
+        asins_to_analyze = demo_asins
+        st.info(f"🎯 Demo mode: Analyzing {len(demo_asins)} Starbucks K-Cup ASINs")
+
+    if not asins_to_analyze:
+        st.info("💡 Paste ASINs above or select demo data to begin analysis.")
         return
 
-    # Execute discovery
-    with st.spinner("🔎 Scanning market... (this may take 10-15 seconds)"):
+    # Analyze button
+    if not st.button("🚀 Analyze Market", type="primary"):
+        return
+
+    # Execute discovery (fetch from Keepa)
+    with st.spinner(f"🔎 Fetching data for {len(asins_to_analyze)} ASINs from Keepa..."):
         try:
-            market_snapshot, stats = execute_market_discovery(
-                query=query,
-                search_type=search_type,
-                limit=500
-            )
+            from src.discovery import fetch_asins_from_keepa, prune_to_90_percent
+
+            market_snapshot = fetch_asins_from_keepa(asins_to_analyze)
+
+            if market_snapshot.empty:
+                st.error("❌ No data returned from Keepa. Check your API key or try different ASINs.")
+                return
+
+            # Prune to 90%
+            market_snapshot, stats = prune_to_90_percent(market_snapshot)
+            stats["query"] = f"{len(asins_to_analyze)} ASINs"
+            stats["total_asins"] = len(asins_to_analyze)
+
         except Exception as e:
             st.error(f"❌ Discovery failed: {str(e)}")
+            st.exception(e)
             return
-
-    if market_snapshot.empty:
-        st.warning(f"No products found for '{query}'. Try a different search term.")
-        return
 
     # Display stats
     st.markdown("---")
-    st.markdown(f"### 📊 Market Snapshot: **{query}**")
+    st.markdown(f"### 📊 Market Snapshot: **{stats['query']}**")
 
     col1, col2, col3, col4 = st.columns(4)
 

@@ -14,12 +14,91 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import os
+import json
 from typing import Dict, List, Tuple, Optional
-import requests
+import keepa
 
 # Keepa API Configuration
-KEEPA_API_KEY = os.getenv("KEEPA_API_KEY")
-KEEPA_BASE_URL = "https://api.keepa.com"
+KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
+
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
+    """
+    Fetch product data for specific ASINs using the Keepa Python library.
+
+    Args:
+        asins: List of ASIN strings
+
+    Returns:
+        DataFrame with [asin, title, price, monthly_units, revenue_proxy, bsr, main_image]
+    """
+    if not KEEPA_API_KEY:
+        raise ValueError("KEEPA_API_KEY not found in environment variables")
+
+    # Initialize Keepa API
+    api = keepa.Keepa(KEEPA_API_KEY)
+
+    # Fetch products (handles chunking automatically)
+    try:
+        products = api.query(asins, stats=90, rating=True)
+    except Exception as e:
+        st.error(f"Keepa API error: {str(e)}")
+        return pd.DataFrame()
+
+    records = []
+
+    for product in products:
+        asin = product.get("asin", "UNK")
+        title = product.get("title", "Unknown Product")
+
+        # Get current price (Buy Box > Amazon > New FBA)
+        price = 0
+        csv = product.get("csv")
+        if csv and len(csv) > 18 and csv[18]:  # Buy Box (index 18)
+            price_cents = csv[18][-1] if csv[18] and len(csv[18]) > 0 else 0
+            price = (price_cents / 100.0) if price_cents and price_cents > 0 else 0
+
+        if price == 0 and csv and len(csv) > 0 and csv[0]:  # Amazon (index 0)
+            price_cents = csv[0][-1] if csv[0] and len(csv[0]) > 0 else 0
+            price = (price_cents / 100.0) if price_cents and price_cents > 0 else 0
+
+        # Get current BSR (Sales Rank index 3)
+        bsr = 0
+        if csv and len(csv) > 3 and csv[3]:
+            bsr = csv[3][-1] if csv[3] and len(csv[3]) > 0 and csv[3][-1] != -1 else 0
+
+        # Get monthly units from stats
+        monthly_sold = 0
+        stats = product.get("stats")
+        if stats and "current" in stats:
+            current_stats = stats["current"]
+            if isinstance(current_stats, dict) and "avg30" in current_stats:
+                monthly_sold = current_stats["avg30"] or 0
+
+        # Calculate revenue proxy
+        revenue_proxy = monthly_sold * price
+
+        # Get main image
+        images_csv = product.get("imagesCSV", "")
+        main_image = None
+        if images_csv:
+            images = images_csv.split(",")
+            if images:
+                main_image = f"https://m.media-amazon.com/images/I/{images[0]}"
+
+        records.append({
+            "asin": asin,
+            "title": title,
+            "price": price,
+            "monthly_units": monthly_sold,
+            "revenue_proxy": revenue_proxy,
+            "bsr": bsr,
+            "main_image": main_image
+        })
+
+    df = pd.DataFrame(records)
+    return df.sort_values("revenue_proxy", ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=86400)  # Cache for 24 hours to conserve API tokens
@@ -47,43 +126,60 @@ def search_keepa_market(
         raise ValueError("KEEPA_API_KEY not found in environment variables")
 
     # Build Keepa Product Finder request
+    # Keepa uses /query endpoint for product searches, not /product
     if search_type == "brand":
         # Search by brand name
         params = {
             "key": KEEPA_API_KEY,
             "domain": domain,
-            "brand": query,
-            "sort": "current_SALES desc",  # Sort by current sales rank (best sellers first)
-            "range": f"0-{limit}",
+            "selection": json.dumps({
+                "brand": [query],
+                "current_SALES": {
+                    "min": 0,
+                    "max": 100000  # Top 100k products
+                }
+            }),
+            "page": 0,
+            "perPage": limit,
             "stats": 90,  # Request 90-day stats
-            "buybox": 1,  # Include buy box data
-            "history": 0,  # Don't fetch full history yet (save tokens)
         }
     else:  # category search
         params = {
             "key": KEEPA_API_KEY,
             "domain": domain,
-            "category": query,
-            "sort": "current_SALES desc",
-            "range": f"0-{limit}",
+            "selection": json.dumps({
+                "categoryTree": [query],
+                "current_SALES": {
+                    "min": 0,
+                    "max": 100000
+                }
+            }),
+            "page": 0,
+            "perPage": limit,
             "stats": 90,
-            "buybox": 1,
-            "history": 0,
         }
 
     try:
         response = requests.get(
-            f"{KEEPA_BASE_URL}/product",
+            f"{KEEPA_BASE_URL}/query",  # Use /query endpoint
             params=params,
             timeout=60
         )
         response.raise_for_status()
         data = response.json()
 
-        return data.get("products", [])
+        # Debug logging
+        if "products" not in data or not data["products"]:
+            st.warning(f"⚠️ Keepa returned no products for '{query}'. Try a different search term.")
+            st.caption(f"Debug: API response keys: {list(data.keys())}")
+
+        return data.get("products", {}).get("asinList", [])
 
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Keepa API Error: {str(e)}")
+        return []
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {str(e)}")
         return []
 
 

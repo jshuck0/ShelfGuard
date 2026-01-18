@@ -78,25 +78,25 @@ def render_discovery_ui() -> None:
         if not st.button("🔍 Search Products", type="primary"):
             return
 
-        # Execute search
-        with st.spinner(f"🔎 Searching Keepa for '{search_keyword}'..."):
-            try:
-                from src.discovery import search_products_by_keyword
+        # Execute search with category intelligence
+        try:
+            from src.discovery import search_with_category_intelligence
 
-                asins_to_analyze = search_products_by_keyword(
-                    keyword=search_keyword,
-                    limit=max_results,
-                    domain="US"
-                )
+            asins_to_analyze, category_context = search_with_category_intelligence(
+                keyword=search_keyword,
+                limit=max_results,
+                include_rivals=True,  # Search rivals to define full market
+                domain="US"
+            )
 
-                if not asins_to_analyze:
-                    st.error(f"❌ No products found for '{search_keyword}'. Try a different keyword.")
-                    return
-
-            except Exception as e:
-                st.error(f"❌ Search failed: {str(e)}")
-                st.exception(e)
+            if not asins_to_analyze:
+                st.error(f"❌ No products found for '{search_keyword}'. Try a different keyword.")
                 return
+
+        except Exception as e:
+            st.error(f"❌ Search failed: {str(e)}")
+            st.exception(e)
+            return
 
     else:  # Manual ASIN input
         asin_text = st.text_area(
@@ -124,7 +124,15 @@ def render_discovery_ui() -> None:
         try:
             from src.discovery import fetch_asins_from_keepa, prune_to_90_percent
 
-            market_snapshot = fetch_asins_from_keepa(asins_to_analyze)
+            # Pass category context for validation if available
+            if 'category_context' in locals() and category_context:
+                market_snapshot = fetch_asins_from_keepa(
+                    asins_to_analyze,
+                    category_context=category_context,
+                    original_keyword=search_keyword
+                )
+            else:
+                market_snapshot = fetch_asins_from_keepa(asins_to_analyze)
 
             if market_snapshot.empty:
                 st.error("❌ No data returned from Keepa. Check your API key or ASINs.")
@@ -133,8 +141,12 @@ def render_discovery_ui() -> None:
             # Prune to 90%
             market_snapshot, stats = prune_to_90_percent(market_snapshot)
 
-            # Set display name
-            if search_keyword:
+            # Set display name with category context
+            if 'category_context' in locals() and category_context:
+                stats["query"] = f'"{search_keyword}" ({category_context["category"]})'
+                stats["category"] = category_context["category"]
+                stats["category_description"] = category_context["category_description"]
+            elif search_keyword:
                 stats["query"] = f'"{search_keyword}"'
             else:
                 stats["query"] = f"{len(asins_to_analyze)} Products"

@@ -22,6 +22,61 @@ import keepa
 KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
 
 
+def search_with_category_intelligence(
+    keyword: str,
+    limit: int = 500,
+    include_rivals: bool = True,
+    domain: str = "US"
+) -> Tuple[List[str], Dict]:
+    """
+    Enhanced search that uses LLM to define the competitive universe.
+
+    Two-step process:
+    1. Map keyword to strategic category + rival brands
+    2. Search for original brand + rivals to define full market
+
+    Args:
+        keyword: User's search term
+        limit: Max products per brand
+        include_rivals: If True, also search rival brands
+        domain: Amazon marketplace
+
+    Returns:
+        Tuple of (asins, category_context)
+    """
+    from src.category_intelligence import map_keyword_to_category, expand_search_to_rivals
+
+    # Step 1: Get category intelligence
+    with st.spinner(f"🧠 Analyzing '{keyword}' market context..."):
+        category_context = map_keyword_to_category(keyword)
+
+    st.info(f"📊 **Category**: {category_context['category']} | **Rivals**: {', '.join(category_context['rival_brands'][:5])}")
+
+    # Step 2: Decide search strategy
+    if include_rivals and category_context["rival_brands"]:
+        # Search original keyword + top 3 rivals
+        search_keywords = expand_search_to_rivals(keyword, category_context, max_brands=3)
+        st.caption(f"🔍 Searching: {', '.join(search_keywords)}")
+    else:
+        search_keywords = [keyword]
+
+    # Step 3: Execute searches
+    all_asins = []
+
+    for search_term in search_keywords:
+        asins = search_products_by_keyword(
+            keyword=search_term,
+            limit=limit // len(search_keywords),  # Distribute limit across brands
+            domain=domain
+        )
+        all_asins.extend(asins)
+
+    # Remove duplicates while preserving order
+    unique_asins = list(dict.fromkeys(all_asins))
+
+    return unique_asins, category_context
+
+
 @st.cache_data(ttl=86400)  # Cache for 24 hours
 def search_products_by_keyword(
     keyword: str,
@@ -74,15 +129,21 @@ def search_products_by_keyword(
 
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
+def fetch_asins_from_keepa(
+    asins: List[str],
+    category_context: Optional[Dict] = None,
+    original_keyword: Optional[str] = None
+) -> pd.DataFrame:
     """
     Fetch product data for specific ASINs using the Keepa Python library.
 
     Args:
         asins: List of ASIN strings
+        category_context: Optional category intelligence for filtering
+        original_keyword: Original search term for relevance validation
 
     Returns:
-        DataFrame with [asin, title, price, monthly_units, revenue_proxy, bsr, main_image]
+        DataFrame with [asin, title, price, monthly_units, revenue_proxy, bsr, main_image, brand]
     """
     if not KEEPA_API_KEY:
         raise ValueError("KEEPA_API_KEY not found in environment variables")
@@ -98,10 +159,19 @@ def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
         return pd.DataFrame()
 
     records = []
+    filtered_count = 0
 
     for product in products:
         asin = product.get("asin", "UNK")
         title = product.get("title", "Unknown Product")
+
+        # Validate relevance if category context provided
+        if category_context and original_keyword:
+            from src.category_intelligence import validate_asin_relevance
+
+            if not validate_asin_relevance(title, category_context, original_keyword):
+                filtered_count += 1
+                continue  # Skip this product (bundle/accessory/irrelevant)
 
         # Get current price (Buy Box > Amazon > New FBA)
         price = 0
@@ -138,9 +208,13 @@ def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
             if images:
                 main_image = f"https://m.media-amazon.com/images/I/{images[0]}"
 
+        # Extract brand (simple heuristic: first word of title)
+        brand = title.split()[0] if title else "Unknown"
+
         records.append({
             "asin": asin,
             "title": title,
+            "brand": brand,
             "price": price,
             "monthly_units": monthly_sold,
             "revenue_proxy": revenue_proxy,
@@ -149,6 +223,11 @@ def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
         })
 
     df = pd.DataFrame(records)
+
+    # Show filtering results if validation was applied
+    if category_context and filtered_count > 0:
+        st.caption(f"🧹 Filtered out {filtered_count} non-core products (bundles, accessories, etc.)")
+
     return df.sort_values("revenue_proxy", ascending=False).reset_index(drop=True)
 
 

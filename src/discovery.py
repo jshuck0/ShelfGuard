@@ -22,6 +22,59 @@ import keepa
 KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
 
 
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def search_products_by_keyword(
+    keyword: str,
+    limit: int = 500,
+    domain: str = "US"
+) -> List[str]:
+    """
+    Search for products by keyword/brand using Keepa Product Finder.
+
+    Args:
+        keyword: Search term (e.g., "Starbucks", "Dunkin", "almond milk")
+        limit: Maximum number of ASINs to return
+        domain: Amazon marketplace (US, GB, DE, etc.)
+
+    Returns:
+        List of ASINs matching the search criteria
+    """
+    if not KEEPA_API_KEY:
+        raise ValueError("KEEPA_API_KEY not found in environment variables")
+
+    # Initialize Keepa API
+    api = keepa.Keepa(KEEPA_API_KEY)
+
+    # Build search parameters
+    # Using 'title' field to search by keyword/brand
+    product_params = {
+        "title": keyword,  # Search in product title
+        "perPage": limit,  # Results per page
+        "page": 0,  # First page
+        # Sort by sales rank (best sellers first)
+        "sort": [["current_SALES", "asc"]],
+        # Only include products with valid sales rank (active listings)
+        "current_SALES_gte": 1,
+        "current_SALES_lte": 500000,  # Top 500k products
+    }
+
+    try:
+        # Use product_finder to search
+        asins = api.product_finder(product_params, domain=domain)
+
+        if not asins:
+            st.warning(f"⚠️ No products found for '{keyword}'. Try a different search term.")
+            return []
+
+        st.success(f"✅ Found {len(asins)} products matching '{keyword}'")
+        return asins
+
+    except Exception as e:
+        st.error(f"❌ Keepa Product Finder error: {str(e)}")
+        st.caption("Note: Product Finder requires a Keepa API plan that includes this feature.")
+        return []
+
+
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_asins_from_keepa(asins: List[str]) -> pd.DataFrame:
     """

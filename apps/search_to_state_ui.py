@@ -33,24 +33,72 @@ def render_discovery_ui() -> None:
     Main Discovery UI component.
 
     Renders:
-    1. ASIN input (paste ASINs or use demo data)
+    1. Keyword/brand search OR manual ASIN input
     2. Market snapshot visualization
     3. Pin to State button
     4. Mission profile selector
     """
     st.markdown("### 🔍 Market Discovery")
-    st.markdown("Paste ASINs or use demo data to analyze market snapshots.")
+    st.markdown("Search for products by keyword, brand, or category to discover market opportunities.")
 
     # Input mode selector
     input_mode = st.radio(
-        "Data Source",
-        ["📋 Paste ASINs", "🎯 Demo Data (Starbucks K-Cups)"],
+        "Search Method",
+        ["🔎 Keyword Search", "📋 Manual ASINs"],
         horizontal=True
     )
 
     asins_to_analyze = []
+    search_keyword = None
 
-    if input_mode == "📋 Paste ASINs":
+    if input_mode == "🔎 Keyword Search":
+        # Keyword search input
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            search_keyword = st.text_input(
+                "Search Query",
+                placeholder="e.g., Starbucks, Dunkin, almond milk, organic coffee",
+                help="Search for products by brand name, keyword, or category"
+            )
+
+        with col2:
+            max_results = st.selectbox(
+                "Max Results",
+                [100, 250, 500],
+                index=2,
+                help="Maximum number of products to fetch"
+            )
+
+        if not search_keyword:
+            st.info("💡 Enter a search term above (e.g., 'Starbucks', 'Kraft', 'Dunkin', 'almond')")
+            return
+
+        # Search button
+        if not st.button("🔍 Search Products", type="primary"):
+            return
+
+        # Execute search
+        with st.spinner(f"🔎 Searching Keepa for '{search_keyword}'..."):
+            try:
+                from src.discovery import search_products_by_keyword
+
+                asins_to_analyze = search_products_by_keyword(
+                    keyword=search_keyword,
+                    limit=max_results,
+                    domain="US"
+                )
+
+                if not asins_to_analyze:
+                    st.error(f"❌ No products found for '{search_keyword}'. Try a different keyword.")
+                    return
+
+            except Exception as e:
+                st.error(f"❌ Search failed: {str(e)}")
+                st.exception(e)
+                return
+
+    else:  # Manual ASIN input
         asin_text = st.text_area(
             "Enter ASINs (one per line or comma-separated)",
             placeholder="B07GMLSQG5\nB0928F3QZ7\nB07PQLHFQ1",
@@ -63,48 +111,38 @@ def render_discovery_ui() -> None:
             asins_to_analyze = [a.strip().upper() for a in raw_asins if a.strip()]
 
             st.caption(f"✅ {len(asins_to_analyze)} ASINs ready to analyze")
+        else:
+            st.info("💡 Paste ASINs above to analyze specific products")
+            return
 
-    else:  # Demo Data
-        # Hardcoded Starbucks K-Cup ASINs for demo
-        demo_asins = [
-            "B07GMLSQG5",  # Pike Place
-            "B0928F3QZ7",  # French Roast
-            "B07PQLHFQ1",  # Breakfast Blend
-            "B08P41BQV9",  # Caramel
-            "B07H9D7M2V",  # Veranda
-            "B0B1F3KZFT",  # House Blend
-            "B07JYMF8D8",  # Medium Roast
-            "B07PQQMN53",  # Sumatra
-        ]
-        asins_to_analyze = demo_asins
-        st.info(f"🎯 Demo mode: Analyzing {len(demo_asins)} Starbucks K-Cup ASINs")
+        # Analyze button
+        if not st.button("🚀 Analyze Products", type="primary"):
+            return
 
-    if not asins_to_analyze:
-        st.info("💡 Paste ASINs above or select demo data to begin analysis.")
-        return
-
-    # Analyze button
-    if not st.button("🚀 Analyze Market", type="primary"):
-        return
-
-    # Execute discovery (fetch from Keepa)
-    with st.spinner(f"🔎 Fetching data for {len(asins_to_analyze)} ASINs from Keepa..."):
+    # Fetch product data from Keepa
+    with st.spinner(f"📊 Fetching data for {len(asins_to_analyze)} products from Keepa..."):
         try:
             from src.discovery import fetch_asins_from_keepa, prune_to_90_percent
 
             market_snapshot = fetch_asins_from_keepa(asins_to_analyze)
 
             if market_snapshot.empty:
-                st.error("❌ No data returned from Keepa. Check your API key or try different ASINs.")
+                st.error("❌ No data returned from Keepa. Check your API key or ASINs.")
                 return
 
             # Prune to 90%
             market_snapshot, stats = prune_to_90_percent(market_snapshot)
-            stats["query"] = f"{len(asins_to_analyze)} ASINs"
+
+            # Set display name
+            if search_keyword:
+                stats["query"] = f'"{search_keyword}"'
+            else:
+                stats["query"] = f"{len(asins_to_analyze)} Products"
+
             stats["total_asins"] = len(asins_to_analyze)
 
         except Exception as e:
-            st.error(f"❌ Discovery failed: {str(e)}")
+            st.error(f"❌ Data fetch failed: {str(e)}")
             st.exception(e)
             return
 

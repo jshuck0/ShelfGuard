@@ -51,11 +51,9 @@ def search_products_by_keyword(
         "title": keyword,  # Search in product title
         "perPage": limit,  # Results per page
         "page": 0,  # First page
-        # Sort by sales rank (best sellers first)
-        "sort": [["current_SALES", "asc"]],
         # Only include products with valid sales rank (active listings)
         "current_SALES_gte": 1,
-        "current_SALES_lte": 500000,  # Top 500k products
+        "current_SALES_lte": 100000,  # Top 100k products (best sellers)
     }
 
     try:

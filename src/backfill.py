@@ -4,7 +4,7 @@ ShelfGuard Historical Backfill Engine
 Phase 3: Day 1 Historical Data Population
 
 This module ensures new projects never show empty charts by:
-1. Fetching 90 days of historical Price & BSR data from Keepa
+1. Fetching 3 months (90 days) of historical Price & BSR data from Keepa
 2. Converting Keepa minutes to Unix timestamps
 3. Batch-inserting into historical_metrics table
 """
@@ -60,13 +60,14 @@ def keepa_minutes_to_datetime(keepa_minutes: int) -> datetime:
     return datetime.utcfromtimestamp(unix_ms / 1000.0)
 
 
-def fetch_90day_history(asins: List[str], domain: int = 1) -> List[Dict]:
+def fetch_90day_history(asins: List[str], domain: int = 1, days: int = 90) -> List[Dict]:
     """
-    Fetch 90-day historical data for a list of ASINs from Keepa.
+    Fetch historical data for a list of ASINs from Keepa.
 
     Args:
         asins: List of ASIN strings (max ~100 per API call)
         domain: Amazon marketplace (1 = US)
+        days: Number of days of history to fetch (default: 90 days = ~3 months)
 
     Returns:
         List of product dictionaries with full csv history
@@ -89,7 +90,7 @@ def fetch_90day_history(asins: List[str], domain: int = 1) -> List[Dict]:
             "domain": domain,
             "asin": asin_str,
             "history": 1,  # Request full history
-            "days": 90,    # Last 90 days only
+            "days": days,  # Number of days of history (default: 90 = 3 months)
             "stats": 0,    # Don't need stats (we have history)
         }
 
@@ -217,6 +218,31 @@ def build_historical_metrics(products: List[Dict]) -> pd.DataFrame:
     # Sort by datetime
     df_full = df_full.sort_values(["asin", "datetime"]).reset_index(drop=True)
 
+    # === PRICE AND BSR INTERPOLATION (similar to keepa_client.py) ===
+    # Constants for interpolation limits (in data points - covers ~4 weeks even with sparse data)
+    MAX_PRICE_FFILL_LIMIT = 50  # Forward fill prices up to ~4 weeks
+    MAX_RANK_GAP_LIMIT = 30     # Interpolate BSR gaps up to ~3 weeks
+
+    # Calculate effective price (fallback chain: buy_box → amazon → new_fba)
+    if "buy_box_price" in df_full.columns or "amazon_price" in df_full.columns or "new_fba_price" in df_full.columns:
+        df_full["eff_p"] = (
+            df_full.get("buy_box_price", pd.Series(dtype=float))
+            .fillna(df_full.get("amazon_price", pd.Series(dtype=float)))
+            .fillna(df_full.get("new_fba_price", pd.Series(dtype=float)))
+        )
+        
+        # Forward fill price (limit covers ~4 weeks of data)
+        df_full["filled_price"] = df_full.groupby("asin")["eff_p"].ffill(limit=MAX_PRICE_FFILL_LIMIT)
+    
+    # Interpolate BSR (sales rank)
+    if "sales_rank" in df_full.columns:
+        # Use interpolation to fill gaps (limit covers ~3 weeks of data)
+        df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank"].transform(
+            lambda x: x.interpolate(method='linear', limit=MAX_RANK_GAP_LIMIT) if len(x) > 1 else x
+        )
+        # Fallback: if interpolation didn't fill all values, forward fill remaining
+        df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank_filled"].ffill()
+
     return df_full
 
 
@@ -284,12 +310,12 @@ def upsert_historical_metrics(
     return total_inserted
 
 
-def execute_backfill(project_id: str, asins: List[str], run_async: bool = True) -> None:
+def execute_backfill(project_id: str, asins: List[str], run_async: bool = True, days: int = 90) -> None:
     """
     Main backfill orchestrator.
 
     Workflow:
-    1. Fetch 90-day Keepa history for all ASINs
+    1. Fetch Keepa history for all ASINs (default: 3 months / 90 days)
     2. Parse into historical_metrics format
     3. Batch-insert into Supabase
 
@@ -297,6 +323,7 @@ def execute_backfill(project_id: str, asins: List[str], run_async: bool = True) 
         project_id: UUID of the new project
         asins: List of ASINs to backfill
         run_async: If True, runs in background thread (non-blocking)
+        days: Number of days of history to fetch (default: 90 days = 3 months)
 
     Performance: ~5-10 seconds for 100 ASINs (depends on Keepa API latency)
     """
@@ -304,8 +331,8 @@ def execute_backfill(project_id: str, asins: List[str], run_async: bool = True) 
 
     def _backfill_task():
         try:
-            # Fetch historical data
-            products = fetch_90day_history(asins)
+            # Fetch historical data (3 months default for User Dashboard)
+            products = fetch_90day_history(asins, days=days)
 
             if not products:
                 st.warning("⚠️ No historical data fetched from Keepa")

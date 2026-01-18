@@ -94,7 +94,7 @@ def pin_to_state(
         return project_id
 
     except Exception as e:
-        st.error(f"❌ Failed to create project: {str(e)}")
+        # Don't display error here - let caller decide whether to show it
         raise
 
 

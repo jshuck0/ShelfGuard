@@ -33,7 +33,7 @@ def render_discovery_ui() -> None:
     Main Discovery UI component with Two-Phase Architecture.
 
     Phase 1: Lightweight seed discovery (25-50 results)
-    Phase 2: Dynamic category mapping (fetch until 90% revenue captured)
+    Phase 2: Dynamic category mapping (fetch until 80% revenue captured)
 
     Renders:
     1. Keyword search for seed products
@@ -144,20 +144,22 @@ def render_discovery_ui() -> None:
                 search_keyword = st.text_input(
                     f"Search within {selected_category}",
                     placeholder="e.g., Starbucks, organic, premium brand",
-                    help="Search for products within the selected category"
+                    help="Search for products within the selected category",
+                    key="search_keyword_with_category"
                 )
             else:
                 search_keyword = st.text_input(
                     "Search Query",
                     placeholder="e.g., Windex, Starbucks, Kraft, almond milk",
-                    help="Search for products to find a seed product that defines your market"
+                    help="Search for products to find a seed product that defines your market",
+                    key="search_keyword_general"
                 )
 
         with col2:
             seed_limit = st.selectbox(
                 "Seed Results",
-                [10, 25, 50],
-                index=1,
+                [5, 10, 25],
+                index=0,
                 help="Number of seed candidates to show"
             )
 
@@ -169,6 +171,12 @@ def render_discovery_ui() -> None:
         search_key = f"{search_keyword}_{category_filter}"  # Unique key per category
         if "seed_products_df" not in st.session_state or st.session_state.get("last_search") != search_key:
             if st.button("🔍 Find Seed Products", type="primary"):
+                # Clear previous Phase 2 data when starting a new search
+                if "discovery_market_snapshot" in st.session_state:
+                    del st.session_state["discovery_market_snapshot"]
+                if "discovery_stats" in st.session_state:
+                    del st.session_state["discovery_stats"]
+                    
                 with st.spinner(f"🌱 Searching for '{search_keyword}' seed products..."):
                     try:
                         from src.two_phase_discovery import phase1_seed_discovery
@@ -245,39 +253,37 @@ def render_discovery_ui() -> None:
                 st.info(
                     f"**Seed**: {seed_product['title'][:100]}\n\n"
                     f"**Category**: {seed_product['category_path']}\n\n"
-                    f"ShelfGuard will now fetch products from this category until 90% of revenue is captured."
+                    f"ShelfGuard will now fetch 100 ASINs from this category."
                 )
 
-                col1, col2 = st.columns([2, 1])
-
-                with col1:
-                    if st.button("🚀 Map Full Market", type="primary"):
-                        st.session_state["trigger_phase2"] = True
-                        st.rerun()
-
-                with col2:
-                    max_products = st.number_input(
-                        "Max Products",
-                        min_value=100,
-                        max_value=1000,
-                        value=500,
-                        step=100,
-                        help="Safety limit for category fetch"
-                    )
+                if st.button("🚀 Map Full Market", type="primary"):
+                    st.session_state["trigger_phase2"] = True
+                    st.rerun()
 
                 # Execute Phase 2 if triggered
                 if st.session_state.get("trigger_phase2"):
-                    with st.spinner("🗺️ Mapping competitive market (dynamic 90% fetch)..."):
+                    with st.spinner("🗺️ Mapping competitive market (fetching 100 ASINs)..."):
                         try:
                             from src.two_phase_discovery import phase2_category_market_mapping
 
+                            # Extract category info for progressive filtering
+                            # category_tree_ids enables walking up hierarchy until 20+ products found
+                            leaf_category_id = seed_product.get("leaf_category_id")
+                            category_path = seed_product.get("category_path")
+                            category_tree_ids_list = seed_product.get("category_tree_ids")
+                            # Convert to tuple for caching (lists aren't hashable)
+                            category_tree_ids = tuple(category_tree_ids_list) if category_tree_ids_list else None
+                            
                             market_snapshot, market_stats = phase2_category_market_mapping(
                                 category_id=int(seed_product["category_id"]),
                                 seed_product_title=seed_product["title"],
-                                target_revenue_pct=90.0,
-                                max_products=max_products,
+                                target_revenue_pct=80.0,
+                                max_products=100,  # Fixed at 100 ASINs
                                 batch_size=100,
-                                domain="US"
+                                domain="US",
+                                leaf_category_id=int(leaf_category_id) if leaf_category_id else None,
+                                category_path=category_path,
+                                category_tree_ids=category_tree_ids
                             )
 
                             if market_snapshot.empty:
@@ -291,8 +297,22 @@ def render_discovery_ui() -> None:
                                 "total_asins": market_stats["total_products"],
                                 "pruned_asins": market_stats["validated_products"],
                                 "pruned_pct": (market_stats["validated_products"] / market_stats["total_products"] * 100) if market_stats["total_products"] > 0 else 0,
-                                "revenue_captured_pct": 90.0,  # By design
+                                "revenue_captured_pct": 80.0,  # By design
                                 "total_revenue_proxy": market_stats["validated_revenue"]
+                            }
+
+                            # Store in session state so they persist across reruns
+                            st.session_state["discovery_market_snapshot"] = market_snapshot
+                            st.session_state["discovery_stats"] = stats
+                            
+                            # Store search parameters for cache restoration
+                            st.session_state["last_phase2_params"] = {
+                                "category_id": int(seed_product["category_id"]),
+                                "seed_product_title": seed_product["title"],
+                                "leaf_category_id": int(leaf_category_id) if leaf_category_id else None,
+                                "category_path": category_path,
+                                "category_tree_ids": category_tree_ids,
+                                "search_keyword": search_keyword
                             }
 
                             # Clear trigger
@@ -304,13 +324,60 @@ def render_discovery_ui() -> None:
                             st.session_state["trigger_phase2"] = False
                             return
                 else:
-                    return  # Wait for Phase 2 trigger
+                    # Check if we have data from a previous Phase 2 run
+                    if "discovery_market_snapshot" not in st.session_state:
+                        # Try to restore from cache using stored parameters
+                        if "last_phase2_params" in st.session_state:
+                            params = st.session_state["last_phase2_params"]
+                            try:
+                                from src.two_phase_discovery import phase2_category_market_mapping
+                                # This will use cached data if available (instant)
+                                market_snapshot, market_stats = phase2_category_market_mapping(
+                                    category_id=params["category_id"],
+                                    seed_product_title=params["seed_product_title"],
+                                    target_revenue_pct=80.0,
+                                    max_products=100,
+                                    batch_size=100,
+                                    domain="US",
+                                    leaf_category_id=params["leaf_category_id"],
+                                    category_path=params["category_path"],
+                                    category_tree_ids=params["category_tree_ids"]
+                                )
+                                if not market_snapshot.empty:
+                                    # Restore data from cache
+                                    stats = {
+                                        "query": f'"{params["search_keyword"]}" ({params["category_path"]})',
+                                        "category": params["category_path"],
+                                        "total_asins": market_stats["total_products"],
+                                        "pruned_asins": market_stats["validated_products"],
+                                        "pruned_pct": (market_stats["validated_products"] / market_stats["total_products"] * 100) if market_stats["total_products"] > 0 else 0,
+                                        "revenue_captured_pct": 80.0,
+                                        "total_revenue_proxy": market_stats["validated_revenue"]
+                                    }
+                                    st.session_state["discovery_market_snapshot"] = market_snapshot
+                                    st.session_state["discovery_stats"] = stats
+                                    st.info("🔄 Restored previous market mapping from cache")
+                            except Exception as e:
+                                pass  # Cache miss or error - user needs to search again
+                        
+                        if "discovery_market_snapshot" not in st.session_state:
+                            return  # Wait for Phase 2 trigger
             else:
-                return
+                if "discovery_market_snapshot" not in st.session_state:
+                    return
         else:
-            return  # Wait for Phase 1 search
+            if "discovery_market_snapshot" not in st.session_state:
+                return  # Wait for Phase 1 search
 
     # ========== RESULTS VISUALIZATION ==========
+    # Retrieve from session state (persists across reruns)
+    if "discovery_market_snapshot" in st.session_state:
+        market_snapshot = st.session_state["discovery_market_snapshot"]
+        stats = st.session_state["discovery_stats"]
+    else:
+        # No data available - shouldn't reach here but safety check
+        return
+    
     st.markdown("---")
     st.markdown(f"### 📊 Market Snapshot: **{stats['query']}**")
 
@@ -334,7 +401,7 @@ def render_discovery_ui() -> None:
         st.metric(
             "Revenue Captured",
             f"{stats['revenue_captured_pct']:.1f}%",
-            delta="Target: 90%"
+            delta="Target: 80%"
         )
 
     with col4:
@@ -358,7 +425,7 @@ def render_discovery_ui() -> None:
             hole=0.4
         )
         fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="discovery_market_share_chart")
 
     with tab2:
         # Scatter plot: Price vs BSR
@@ -379,7 +446,7 @@ def render_discovery_ui() -> None:
         )
         fig.update_xaxes(type="log")  # Log scale for BSR
         fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="discovery_price_bsr_chart")
 
     with tab3:
         # Data table
@@ -407,16 +474,17 @@ def render_discovery_ui() -> None:
 
     # Pin to State section
     st.markdown("---")
-    render_pin_to_state_ui(market_snapshot, stats)
+    render_pin_to_state_ui(market_snapshot, stats, context="discovery")
 
 
-def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict) -> None:
+def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: str = "discovery") -> None:
     """
     UI for creating a new project from discovered ASINs.
 
     Args:
         market_snapshot: Pruned DataFrame from discovery
         stats: Discovery statistics
+        context: Context identifier to make keys unique (default: "discovery")
     """
     st.markdown("### 📌 Pin to State (Create Project)")
 
@@ -426,7 +494,8 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict) -> None:
         project_name = st.text_input(
             "Project Name",
             value=f"{stats.get('query', 'Market')} Monitoring",
-            placeholder="e.g., Starbucks K-Cups Q1 2026"
+            placeholder="e.g., Starbucks K-Cups Q1 2026",
+            key=f"pin_to_state_project_name_{context}"
         )
 
     with col2:
@@ -440,7 +509,8 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict) -> None:
         mission_type = st.selectbox(
             "Mission Profile",
             options=list(mission_options.keys()),
-            format_func=lambda x: mission_options[x]
+            format_func=lambda x: mission_options[x],
+            key=f"mission_profile_{context}"
         )
 
     # Show mission profile details
@@ -452,42 +522,71 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict) -> None:
         for priority, weight in top_3:
             st.markdown(f"- {priority.replace('_', ' ').title()} (weight: {weight})")
 
+    # Show success message if just saved
+    if st.session_state.get("just_saved_mapping"):
+        saved_name = st.session_state.get("saved_mapping_name", "Mapping")
+        st.success(
+            f"✅ Mapping '{saved_name}' saved to User Dashboard!\n\n"
+            f"💡 Click the **User Dashboard** tab to view your saved mapping."
+        )
+        if st.button("🔄 Start New Search", key=f"new_search_after_save_{context}"):
+            # Clear discovery state
+            for key in ["discovery_market_snapshot", "discovery_stats", "seed_products_df", 
+                       "last_search", "selected_seed_idx", "trigger_phase2", "just_saved_mapping"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+        return  # Don't show the form again after saving
+
     # Pin button
-    if st.button("🚀 Create Project & Backfill History", type="primary"):
-        with st.spinner("Creating project and fetching 90-day history..."):
+    if st.button("🚀 Create Project & Backfill History", type="primary", key=f"create_project_btn_{context}"):
+        with st.spinner("📊 Fetching 3 months of detailed market data..."):
+            # Fetch detailed weekly data for User Dashboard analysis
+            from src.two_phase_discovery import fetch_detailed_weekly_data
+            
+            asins = market_snapshot["asin"].tolist()
+            df_weekly = fetch_detailed_weekly_data(tuple(asins), days=90)  # Tuple for caching
+            
+            # Save mapping with detailed data to User Dashboard
+            mapping_id = save_market_mapping(
+                project_name, 
+                market_snapshot, 
+                stats,
+                df_weekly=df_weekly  # Include detailed weekly data
+            )
+            
+            # Mark as just saved so we show success on rerun
+            st.session_state["just_saved_mapping"] = True
+            st.session_state["saved_mapping_name"] = project_name
+            
+            # Try to persist to Supabase (optional - may fail if tables don't exist)
             try:
-                # Create project
                 project_id = pin_to_state(
-                    asins=market_snapshot["asin"].tolist(),
+                    asins=asins,
                     project_name=project_name,
                     mission_type=mission_type,
-                    user_id=None,  # TODO: Integrate with auth.uid()
+                    user_id=None,
                     metadata={
                         **stats,
                         "search_date": pd.Timestamp.now().isoformat()
                     }
                 )
 
-                # Trigger backfill (async)
+                # Trigger async backfill to Supabase
                 execute_backfill(
                     project_id=project_id,
-                    asins=market_snapshot["asin"].tolist(),
+                    asins=asins,
                     run_async=True
                 )
 
-                st.success(
-                    f"✅ Project '{project_name}' created!\n\n"
-                    f"📊 Tracking {len(market_snapshot)} ASINs\n"
-                    f"🔄 Historical backfill in progress (90 days of Price & BSR data)\n"
-                    f"🎯 Mission: {config['name']}"
-                )
-
-                # Store project_id in session state for navigation
                 st.session_state["active_project_id"] = project_id
                 st.session_state["show_project_dashboard"] = True
 
             except Exception as e:
-                st.error(f"❌ Failed to create project: {str(e)}")
+                pass  # Supabase failed, but mapping is saved to session state
+        
+        # Rerun to show success message
+        st.rerun()
 
 
 def render_project_dashboard(project_id: str) -> None:
@@ -565,7 +664,7 @@ def render_project_dashboard(project_id: str) -> None:
                 labels={"datetime": "Date", "sales_rank": "BSR"}
             )
             fig.update_yaxes(autorange="reversed")  # Lower BSR = better
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="project_dashboard_bsr_trend")
 
         # Price trend
         if "buy_box_price" in df_metrics.columns:
@@ -576,7 +675,7 @@ def render_project_dashboard(project_id: str) -> None:
                 title="Average Buy Box Price",
                 labels={"datetime": "Date", "buy_box_price": "Price ($)"}
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="project_dashboard_price_trend")
 
     except Exception as e:
         st.error(f"❌ Failed to load project dashboard: {str(e)}")
@@ -615,29 +714,309 @@ def render_project_selector() -> Optional[str]:
     return selected_id
 
 
-# Example integration with shelfguard_app.py:
-"""
-# In apps/shelfguard_app.py:
+def save_market_mapping(
+    mapping_name: str, 
+    market_snapshot: pd.DataFrame, 
+    stats: dict,
+    df_weekly: pd.DataFrame = None
+) -> str:
+    """
+    Save a market mapping to session state for User Dashboard.
+    
+    Args:
+        mapping_name: User-provided name for the mapping
+        market_snapshot: DataFrame with market data (Phase 2 results)
+        stats: Discovery statistics
+        df_weekly: Detailed weekly data for analysis (3 months)
+        
+    Returns:
+        mapping_id: Unique identifier for the mapping
+    """
+    import uuid
+    from datetime import datetime
+    
+    # Initialize mappings storage if not exists
+    if "user_mappings" not in st.session_state:
+        st.session_state["user_mappings"] = {}
+    
+    mapping_id = str(uuid.uuid4())
+    
+    st.session_state["user_mappings"][mapping_id] = {
+        "id": mapping_id,
+        "name": mapping_name,
+        "created_at": datetime.utcnow().isoformat(),
+        "market_snapshot": market_snapshot,
+        "stats": stats,
+        "df_weekly": df_weekly if df_weekly is not None else pd.DataFrame()
+    }
+    
+    return mapping_id
 
-from apps.search_to_state_ui import (
-    render_discovery_ui,
-    render_project_dashboard,
-    render_project_selector
-)
 
-# Add new tab to main navigation
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Current Dashboard",
-    "🔍 Market Discovery",  # NEW
-    "📂 Projects",          # NEW
-    "💬 AI Chat"
-])
+def load_user_mappings() -> dict:
+    """
+    Load all saved market mappings from session state.
+    
+    Returns:
+        Dict of mapping_id -> mapping data
+    """
+    return st.session_state.get("user_mappings", {})
 
-with tab2:
-    render_discovery_ui()
 
-with tab3:
-    project_id = render_project_selector()
-    if project_id:
-        render_project_dashboard(project_id)
-"""
+def delete_user_mapping(mapping_id: str) -> bool:
+    """
+    Delete a market mapping from session state.
+    
+    Args:
+        mapping_id: UUID of the mapping to delete
+        
+    Returns:
+        Success boolean
+    """
+    if "user_mappings" in st.session_state and mapping_id in st.session_state["user_mappings"]:
+        del st.session_state["user_mappings"][mapping_id]
+        return True
+    return False
+
+
+def render_save_mapping_ui(market_snapshot: pd.DataFrame, stats: dict) -> None:
+    """
+    UI for saving a market mapping to User Dashboard.
+    
+    Args:
+        market_snapshot: DataFrame from discovery
+        stats: Discovery statistics
+    """
+    st.markdown("### 💾 Save Market Mapping")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        mapping_name = st.text_input(
+            "Mapping Name",
+            value=stats.get('query', 'Market Mapping').replace('"', ''),
+            placeholder="e.g., Greek Yogurt Market Q1 2026",
+            key="save_mapping_name"
+        )
+    
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)  # Spacing
+        if st.button("💾 Save to Dashboard", type="primary", use_container_width=True):
+            mapping_id = save_market_mapping(mapping_name, market_snapshot, stats)
+            st.success(f"✅ Mapping '{mapping_name}' saved! View in **User Dashboard** tab.")
+            st.session_state["last_saved_mapping_id"] = mapping_id
+
+
+def render_user_dashboard() -> None:
+    """
+    User Dashboard - displays saved market mappings with full analysis.
+    
+    Uses the same layout and analysis engine as Current Dashboard:
+    - Executive briefing with AI insights
+    - Strategic metrics tiles
+    - Problem category breakdown
+    - Visualizations (Market Share, Price vs BSR, Top ASINs)
+    """
+    st.markdown("## 👤 User Dashboard")
+    st.markdown("Your saved market mappings and competitive intelligence")
+    
+    mappings = load_user_mappings()
+    
+    if not mappings:
+        st.info(
+            "💡 No saved mappings yet.\n\n"
+            "Use the **Market Discovery** tab to find and map a competitive market, "
+            "then save it to view here."
+        )
+        return
+    
+    # Mapping selector
+    mapping_options = {
+        mid: f"{m['name']} ({m['stats'].get('total_asins', 0)} ASINs)"
+        for mid, m in mappings.items()
+    }
+    
+    selected_mapping_id = st.selectbox(
+        "Select Mapping",
+        options=list(mapping_options.keys()),
+        format_func=lambda x: mapping_options[x],
+        key="user_dashboard_mapping_selector"
+    )
+    
+    if not selected_mapping_id:
+        return
+    
+    mapping = mappings[selected_mapping_id]
+    market_snapshot = mapping["market_snapshot"]
+    stats = mapping["stats"]
+    df_weekly = mapping.get("df_weekly", pd.DataFrame())
+    created_at = mapping.get("created_at", "Unknown")
+    
+    # Header with delete button
+    col_header, col_delete = st.columns([4, 1])
+    with col_header:
+        st.markdown(f"### 📊 {mapping['name']}")
+        st.caption(f"Created: {created_at[:10] if len(created_at) >= 10 else created_at} | {stats.get('total_asins', 0)} ASINs tracked")
+    with col_delete:
+        if st.button("🗑️ Delete", key=f"delete_{selected_mapping_id}"):
+            delete_user_mapping(selected_mapping_id)
+            st.rerun()
+    
+    # Check if we have detailed weekly data for analysis
+    if df_weekly is not None and not df_weekly.empty:
+        try:
+            # Ensure datetime format
+            df_weekly["week_start"] = pd.to_datetime(df_weekly["week_start"], utc=True)
+            all_weeks = sorted(df_weekly["week_start"].dt.date.unique(), reverse=True)
+            
+            if all_weeks:
+                selected_week = all_weeks[0]
+                
+                # Get most recent week's data
+                df_current = df_weekly[df_weekly["week_start"].dt.date == selected_week].copy()
+                
+                if not df_current.empty:
+                    # Calculate basic metrics from the weekly data
+                    total_rev_curr = df_current["weekly_sales_filled"].sum() if "weekly_sales_filled" in df_current.columns else 0
+                    total_units = df_current["estimated_units"].sum() if "estimated_units" in df_current.columns else 0
+                    avg_price = df_current["filled_price"].mean() if "filled_price" in df_current.columns else 0
+                    avg_bsr = df_current["sales_rank_filled"].mean() if "sales_rank_filled" in df_current.columns else 0
+                    num_products = df_current["asin"].nunique()
+                    
+                    # Simple status based on revenue
+                    status_emoji, status_text, status_color = "🟢", "TRACKING", "#28a745"
+                    
+                    # Format money helper
+                    def fmt_money(val):
+                        if val >= 1_000_000:
+                            return f"${val/1_000_000:.1f}M"
+                        elif val >= 1_000:
+                            return f"${val/1_000:.0f}K"
+                        else:
+                            return f"${val:.0f}"
+                    
+                    # Render executive briefing
+                    st.markdown("---")
+                    st.markdown(f"""
+                    <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
+                                margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                            <div>
+                                <div style="font-size: 12px; color: #666; margin-bottom: 4px;">Week of {selected_week}</div>
+                                <div style="font-size: 22px; font-weight: 700; color: #1a1a1a;">
+                                    {status_emoji} {status_text}: {num_products} products monitored
+                                </div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 28px; font-weight: 700; color: #00704A;">{fmt_money(total_rev_curr)}</div>
+                                <div style="font-size: 11px; color: #666;">Weekly Revenue (Est.)</div>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Strategic metrics tiles
+                    c1, c2, c3, c4 = st.columns(4)
+                    
+                    with c1:
+                        st.metric("📈 Weekly Revenue", fmt_money(total_rev_curr))
+                    with c2:
+                        st.metric("📦 Est. Weekly Units", f"{total_units:,.0f}")
+                    with c3:
+                        st.metric("💰 Avg Price", f"${avg_price:.2f}" if avg_price > 0 else "N/A")
+                    with c4:
+                        st.metric("📊 Avg BSR", f"{avg_bsr:,.0f}" if avg_bsr > 0 else "N/A")
+                    
+                    # Historical trend (if multiple weeks available)
+                    if len(all_weeks) > 1:
+                        st.markdown("---")
+                        st.markdown("### 📈 Weekly Revenue Trend")
+                        
+                        weekly_rev = df_weekly.groupby(df_weekly["week_start"].dt.date)["weekly_sales_filled"].sum().reset_index()
+                        weekly_rev.columns = ["Week", "Revenue"]
+                        weekly_rev = weekly_rev.sort_values("Week")
+                        
+                        fig = px.line(
+                            weekly_rev,
+                            x="Week",
+                            y="Revenue",
+                            title="Weekly Revenue Over Time",
+                            labels={"Week": "Week", "Revenue": "Revenue ($)"}
+                        )
+                        fig.update_layout(height=300)
+                        st.plotly_chart(fig, use_container_width=True, key="user_dashboard_trend_chart")
+                else:
+                    st.info("📅 No data found for the most recent week")
+        except Exception as e:
+            st.warning(f"⚠️ Could not analyze detailed data: {str(e)}")
+    
+    # === VISUALIZATION TABS (Always show) ===
+    st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📈 Market Share", "💰 Price vs BSR", "📋 Top 20 ASINs"])
+    
+    with tab1:
+        if not market_snapshot.empty and "revenue_proxy" in market_snapshot.columns:
+            fig = px.pie(
+                market_snapshot.head(20),
+                values="revenue_proxy",
+                names="title" if "title" in market_snapshot.columns else "asin",
+                title="Revenue Distribution (Top 20 ASINs)",
+                hole=0.4
+            )
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True, key="user_dashboard_market_share_chart")
+        else:
+            st.info("No revenue data available for visualization.")
+    
+    with tab2:
+        if not market_snapshot.empty and "bsr" in market_snapshot.columns and "price" in market_snapshot.columns:
+            fig = px.scatter(
+                market_snapshot,
+                x="bsr",
+                y="price",
+                size="monthly_units" if "monthly_units" in market_snapshot.columns else None,
+                color="revenue_proxy" if "revenue_proxy" in market_snapshot.columns else None,
+                hover_data=["title", "asin"] if "title" in market_snapshot.columns else ["asin"],
+                title="Price vs Sales Rank (BSR)",
+                labels={
+                    "bsr": "Sales Rank (BSR)",
+                    "price": "Price ($)",
+                    "monthly_units": "Monthly Units",
+                    "revenue_proxy": "Revenue"
+                }
+            )
+            fig.update_layout(height=500)
+            fig.update_xaxes(type="log")
+            st.plotly_chart(fig, use_container_width=True, key="user_dashboard_price_bsr_chart")
+        else:
+            st.info("No price/BSR data available for visualization.")
+    
+    with tab3:
+        if not market_snapshot.empty:
+            display_cols = [col for col in ["asin", "title", "price", "bsr", "monthly_units", "revenue_proxy"] 
+                          if col in market_snapshot.columns]
+            
+            if display_cols:
+                top_20 = market_snapshot.head(20)[display_cols].copy()
+                
+                if "price" in top_20.columns:
+                    top_20["price"] = top_20["price"].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
+                if "bsr" in top_20.columns:
+                    top_20["bsr"] = top_20["bsr"].apply(lambda x: f"{int(x):,}" if pd.notna(x) and x > 0 else "N/A")
+                if "monthly_units" in top_20.columns:
+                    top_20["monthly_units"] = top_20["monthly_units"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "N/A")
+                if "revenue_proxy" in top_20.columns:
+                    top_20["revenue_proxy"] = top_20["revenue_proxy"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A")
+                if "title" in top_20.columns:
+                    top_20["title"] = top_20["title"].apply(lambda x: str(x)[:60] + "..." if len(str(x)) > 60 else x)
+                
+                column_names = {
+                    "asin": "ASIN", "title": "Title", "price": "Price",
+                    "bsr": "BSR", "monthly_units": "Monthly Units", "revenue_proxy": "Revenue (Est.)"
+                }
+                top_20 = top_20.rename(columns=column_names)
+                st.dataframe(top_20, use_container_width=True, hide_index=True)
+            else:
+                st.info("No data available to display.")
+        else:
+            st.info("No ASINs in this mapping.")

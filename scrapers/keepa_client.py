@@ -215,7 +215,12 @@ def build_keepa_weekly_table(products, window_start=None):
     # --- FIX 2: Deduplication by ASIN and Week ---
     df = df.drop_duplicates(subset=["asin", "week_start"])
 
-    df["eff_p"] = df.get("buy_box_price", np.nan).fillna(df.get("amazon_price", np.nan)).fillna(df.get("new_price", np.nan))
+    # Build effective price from available price columns
+    eff_p = pd.Series(np.nan, index=df.index)
+    for col in ["buy_box_price", "amazon_price", "new_price"]:
+        if col in df.columns:
+            eff_p = eff_p.fillna(df[col])
+    df["eff_p"] = eff_p
     df["filled_price"] = df.groupby("asin")["eff_p"].ffill(limit=MAX_PRICE_FFILL_WEEKS)
     
     if "sales_rank" in df.columns:

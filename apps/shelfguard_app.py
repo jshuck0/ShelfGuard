@@ -11,7 +11,7 @@ from data import get_all_data
 from engine import run_weekly_analysis, run_date_range_analysis
 from finance import analyze_capital_efficiency, f_money, f_pct
 from demo_data import render_asin_upload_ui, get_demo_data, clear_demo_data
-from search_to_state_ui import render_discovery_ui, render_project_dashboard, render_project_selector
+from search_to_state_ui import render_discovery_ui, render_project_dashboard, render_project_selector, render_user_dashboard
 
 # Initialize OpenAI client
 try:
@@ -190,13 +190,17 @@ else:
 st.sidebar.markdown("---")
 
 # === TOP LEVEL NAVIGATION ===
-main_tab1, main_tab2, main_tab3 = st.tabs(["📊 Current Dashboard", "🔍 Market Discovery", "📂 My Projects"])
+main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["📊 Current Dashboard", "👤 User Dashboard", "🔍 Market Discovery", "📂 My Projects"])
 
 with main_tab2:
+    # User Dashboard - Shows user's saved market mappings
+    render_user_dashboard()
+
+with main_tab3:
     # Market Discovery - Always available, no data needed
     render_discovery_ui()
 
-with main_tab3:
+with main_tab4:
     # My Projects - Always available
     project_id = render_project_selector()
     if project_id:

@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from supabase import Client
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import requests
 import os
@@ -21,7 +21,22 @@ from threading import Thread
 
 
 # Keepa API Configuration
-KEEPA_API_KEY = os.getenv("KEEPA_API_KEY")
+def get_keepa_api_key() -> Optional[str]:
+    """Get Keepa API key from Streamlit secrets or environment variables."""
+    # Try Streamlit secrets first (for Streamlit Cloud)
+    try:
+        if hasattr(st, 'secrets'):
+            key = st.secrets.get("keepa", {}).get("api_key")
+            if key:
+                return key
+    except Exception:
+        pass
+    
+    # Fall back to environment variables
+    return os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
+
+
+KEEPA_API_KEY = get_keepa_api_key()
 KEEPA_BASE_URL = "https://api.keepa.com"
 
 # Keepa CSV index constants

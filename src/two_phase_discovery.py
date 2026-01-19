@@ -32,7 +32,22 @@ from scrapers.keepa_client import build_keepa_weekly_table
 from src.backfill import fetch_90day_history
 
 
-KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
+def get_keepa_api_key() -> Optional[str]:
+    """Get Keepa API key from Streamlit secrets or environment variables."""
+    # Try Streamlit secrets first (for Streamlit Cloud)
+    try:
+        if hasattr(st, 'secrets'):
+            key = st.secrets.get("keepa", {}).get("api_key")
+            if key:
+                return key
+    except Exception:
+        pass
+    
+    # Fall back to environment variables
+    return os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
+
+
+KEEPA_API_KEY = get_keepa_api_key()
 
 
 def get_openai_client() -> Optional[OpenAI]:

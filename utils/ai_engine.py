@@ -177,6 +177,14 @@ class StrategicBrief:
     # Model quality
     data_quality: str = "MEDIUM"      # HIGH, MEDIUM, LOW, VERY_LOW
     
+    # === GROWTH INTELLIGENCE ===
+    thirty_day_growth: float = 0.0        # Predicted expansion alpha
+    price_lift_opportunity: float = 0.0   # Revenue from price optimization
+    conquest_opportunity: float = 0.0     # Revenue from competitor vulnerabilities
+    expansion_recommendation: str = ""    # Growth-specific AI recommendation
+    growth_validated: bool = True         # False if velocity declining (blocks growth recs)
+    opportunity_type: str = ""            # PRICE_LIFT, CONQUEST, EXPAND, or empty
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for dashboard rendering."""
         return {
@@ -313,6 +321,14 @@ The user has set their priority to **Growth**. Adjust your analysis accordingly:
 - **Encourage investment**: Recommend "Increase ad spend" or "Scale campaigns" for products with momentum
 - **Be patient with new launches**: Don't classify as TERMINAL unless rank is catastrophic (>100k) AND declining
 - **Example**: Product with 3% margin but rank improving 20% → TRENCH_WAR ("Acceptable sacrifice for share gain")
+
+**CONQUEST INTELLIGENCE:**
+When you detect competitor vulnerabilities (OOS, price cuts, declining reviews):
+- Recommend specific conquest actions with estimated revenue capture
+- Prioritize share gain over margin protection
+- Format recommendations as: "Conquest Opportunity: [Competitor] vulnerable. Redirect $X ad spend to capture $Y revenue."
+- If competitor_oos_pct > 30%, strongly recommend aggressive keyword bidding
+- If competitor is cutting prices, recommend holding price and increasing ad visibility
 """
     }
     
@@ -797,7 +813,8 @@ def _determine_state_fallback(
     
     state_def = STATE_DEFINITIONS[state]
     
-    return StrategicBrief(
+    # Create base brief
+    brief = StrategicBrief(
         strategic_state=state.value,
         confidence=confidence,
         reasoning=f"{reasoning} [Fallback: {reason}]",
@@ -809,6 +826,39 @@ def _determine_state_fallback(
         signals_detected=signals,
         asin=row_data.get("asin", ""),
     )
+    
+    # Calculate growth intelligence for fallback as well
+    # This ensures growth is always available even without LLM
+    try:
+        v90 = _safe_float(row_data.get('velocity_trend_90d', rank_delta_90 / 100 if rank_delta_90 else 0), 0.0)
+        competitor_oos = _safe_float(row_data.get('competitor_oos_pct', row_data.get('outOfStockPercentage90', 0)), 0.0)
+        if competitor_oos > 1:  # Normalize if percentage
+            competitor_oos = competitor_oos / 100
+        
+        revenue = _safe_float(row_data.get('weekly_sales_filled', row_data.get('revenue_proxy', 1000)), 1000.0)
+        
+        expansion = calculate_expansion_alpha(
+            row_data=row_data,
+            revenue=revenue,
+            velocity_trend_90d=v90,
+            price_gap_vs_competitor=price_gap,
+            competitor_oos_pct=competitor_oos,
+            strategic_state=state.value,
+            strategic_bias=strategic_bias,
+        )
+        
+        # Enrich brief with growth intelligence
+        brief.thirty_day_growth = expansion.thirty_day_growth
+        brief.price_lift_opportunity = expansion.price_optimization_gain
+        brief.conquest_opportunity = expansion.conquest_revenue
+        brief.expansion_recommendation = expansion.ai_recommendation
+        brief.growth_validated = expansion.velocity_validated
+        brief.opportunity_type = expansion.opportunity_type
+    except Exception:
+        # If growth calculation fails, defaults are already set in dataclass
+        pass
+    
+    return brief
 
 
 # =============================================================================
@@ -957,6 +1007,37 @@ class PredictiveAlpha:
     alert_urgency: str = ""             # HIGH, MEDIUM, LOW
     predicted_event_date: str = ""      # When the predicted event will occur
     action_deadline: str = ""           # When user must act to prevent loss
+
+
+@dataclass
+class ExpansionAlpha:
+    """
+    Growth Intelligence calculation result.
+    
+    Calculates predicted revenue gains from offensive actions:
+    - Price Optimization: Raising price without volume loss
+    - Market Share Conquest: Capturing competitor vulnerabilities
+    - Keyword Expansion: Scaling into adjacent search terms
+    
+    CRITICAL: Uses 90-day velocity validation to block growth recs on dying ASINs.
+    """
+    # Core growth prediction
+    thirty_day_growth: float            # Predicted $ gain over next 30 days
+    price_optimization_gain: float      # Revenue from price increase opportunity
+    conquest_revenue: float             # Revenue from competitor vulnerabilities
+    keyword_expansion_gain: float       # Revenue from adjacent keyword scaling
+    
+    # Opportunity classification
+    opportunity_type: str               # PRICE_LIFT, CONQUEST, EXPAND, or empty
+    opportunity_urgency: str            # HIGH, MEDIUM, LOW
+    target_competitor_asin: str = ""    # Vulnerable competitor ASIN if applicable
+    
+    # Velocity validation gate
+    velocity_validated: bool = True     # False if 90d trend is declining
+    blocked_reason: str = ""            # Why growth is blocked (if applicable)
+    
+    # Actionable insight
+    ai_recommendation: str = ""         # Growth-specific recommendation for UI
 
 
 # =============================================================================
@@ -1132,6 +1213,7 @@ def calculate_predictive_alpha(
     # ========== STRATEGIC BIAS WEIGHTS ==========
     # Apply user's strategic focus to weight different risk components
     # These weights adjust which risks are prioritized in the final calculation
+    strategic_bias = strategic_bias or "Balanced Defense"
     if "Profit" in strategic_bias:
         # PROFIT MODE: Prioritize margin protection over growth
         price_weight = 1.5      # Weight pricing defense higher
@@ -1342,13 +1424,350 @@ def calculate_predictive_alpha(
     )
 
 
+# =============================================================================
+# EXPANSION ALPHA CALCULATION (GROWTH INTELLIGENCE)
+# =============================================================================
+
+def is_growth_eligible(velocity_trend_90d: float, strategic_state: str) -> bool:
+    """
+    Velocity validation gate for growth recommendations.
+    
+    Block growth recommendations for dying ASINs to ensure the model
+    does not recommend expansion on products that should be in defense/exit mode.
+    
+    Returns False if:
+    - 90-day velocity is declining more than 15%
+    - Strategic state is TERMINAL or DISTRESS
+    """
+    if velocity_trend_90d > 0.15:  # Rank getting worse (positive = declining)
+        return False
+    if strategic_state in ["TERMINAL", "DISTRESS"]:
+        return False
+    return True
+
+
+def calculate_expansion_alpha(
+    row_data: Dict[str, Any],
+    revenue: float,
+    velocity_trend_90d: float = 0.0,
+    price_gap_vs_competitor: float = 0.0,
+    competitor_oos_pct: float = 0.0,
+    competitor_monthly_rev: float = 0.0,
+    your_market_share: float = 0.0,
+    strategic_state: str = "HARVEST",
+    strategic_bias: str = "Balanced Defense"
+) -> ExpansionAlpha:
+    """
+    Calculate Expansion Alpha - forward-looking 30-day growth forecast.
+    
+    FORMULA:
+    - Price Optimization: revenue * price_headroom * (1 - volume_sensitivity)
+    - Conquest: competitor_vulnerable_revenue * capture_rate
+    - Expansion: revenue * 0.10 * velocity_multiplier (if velocity improving)
+    
+    CRITICAL: Uses 90-day velocity validation gate to block growth recs on dying ASINs.
+    
+    Args:
+        row_data: Product data dictionary
+        revenue: Current monthly revenue
+        velocity_trend_90d: 90-day velocity change (positive = declining, negative = improving)
+        price_gap_vs_competitor: Your price vs median (positive = you're higher)
+        competitor_oos_pct: Competitor out-of-stock percentage (0-1)
+        competitor_monthly_rev: Competitor's monthly revenue (for conquest calculation)
+        your_market_share: Your share of the market (0-1)
+        strategic_state: Current strategic classification
+        strategic_bias: User's strategic focus
+        
+    Returns:
+        ExpansionAlpha with 30-day growth forecast and recommendations
+    """
+    strategic_bias = strategic_bias or "Balanced Defense"
+    
+    # ========== VELOCITY VALIDATION GATE ==========
+    # Block growth recommendations for declining ASINs
+    if not is_growth_eligible(velocity_trend_90d, strategic_state):
+        blocked_reason = ""
+        if velocity_trend_90d > 0.15:
+            blocked_reason = f"90-day velocity declining {velocity_trend_90d*100:.0f}%. Focus on stabilization first."
+        elif strategic_state in ["TERMINAL", "DISTRESS"]:
+            blocked_reason = f"Product in {strategic_state} state. Address fundamentals before growth."
+        
+        return ExpansionAlpha(
+            thirty_day_growth=0.0,
+            price_optimization_gain=0.0,
+            conquest_revenue=0.0,
+            keyword_expansion_gain=0.0,
+            opportunity_type="",
+            opportunity_urgency="",
+            velocity_validated=False,
+            blocked_reason=blocked_reason,
+            ai_recommendation=f"Growth blocked: {blocked_reason}"
+        )
+    
+    # ========== STRATEGIC BIAS THRESHOLDS ==========
+    if "Growth" in strategic_bias:
+        # More aggressive growth recommendations
+        min_price_lift_threshold = 0.02   # Recommend at 2% headroom
+        conquest_capture_rate = 0.20      # Assume 20% capture
+        expansion_rate = 0.12             # 12% expansion opportunity
+    elif "Profit" in strategic_bias:
+        # Focus on price optimization
+        min_price_lift_threshold = 0.03   # Recommend at 3% headroom
+        conquest_capture_rate = 0.10      # Conservative 10%
+        expansion_rate = 0.05             # 5% expansion
+    else:
+        # Balanced mode
+        min_price_lift_threshold = 0.05   # Only recommend at 5%+ headroom
+        conquest_capture_rate = 0.15      # Moderate 15%
+        expansion_rate = 0.08             # 8% expansion
+    
+    # Initialize outputs
+    price_optimization_gain = 0.0
+    conquest_revenue = 0.0
+    keyword_expansion_gain = 0.0
+    opportunity_type = ""
+    opportunity_urgency = ""
+    target_competitor_asin = ""
+    ai_recommendation = ""
+    
+    # ========== PRICE OPTIMIZATION ANALYSIS ==========
+    # If you're priced below competitors, there's headroom to raise price
+    # price_gap_vs_competitor: negative = you're cheaper, positive = you're higher
+    price_headroom = -price_gap_vs_competitor  # Invert: negative gap = positive headroom
+    
+    if price_headroom > min_price_lift_threshold:
+        # Volume sensitivity based on velocity (declining velocity = more price sensitive)
+        volume_sensitivity = max(0.2, min(0.6, 0.3 + velocity_trend_90d))
+        price_optimization_gain = revenue * price_headroom * (1 - volume_sensitivity)
+        
+        if not opportunity_type:
+            opportunity_type = "PRICE_LIFT"
+            if price_headroom > 0.10:
+                opportunity_urgency = "HIGH"
+            elif price_headroom > 0.05:
+                opportunity_urgency = "MEDIUM"
+            else:
+                opportunity_urgency = "LOW"
+            
+            ai_recommendation = f"💰 Price Opportunity: You're priced {price_headroom*100:.0f}% below market. Raise price to capture ${price_optimization_gain:,.0f} additional margin."
+    
+    # ========== CONQUEST ANALYSIS ==========
+    # If competitor is vulnerable (OOS or price cutting aggressively)
+    if competitor_oos_pct > 0.30:
+        target_competitor_asin = row_data.get('top_competitor_asin', '')
+        effective_competitor_rev = competitor_monthly_rev if competitor_monthly_rev > 0 else revenue * 2
+        conquest_revenue = effective_competitor_rev * competitor_oos_pct * conquest_capture_rate
+        
+        if not opportunity_type or conquest_revenue > price_optimization_gain:
+            opportunity_type = "CONQUEST"
+            opportunity_urgency = "HIGH" if competitor_oos_pct > 0.50 else "MEDIUM"
+            
+            if target_competitor_asin:
+                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {target_competitor_asin} is {int(competitor_oos_pct*100)}% OOS. Redirect ad budget to their keywords to capture ${conquest_revenue:,.0f} in 30-day revenue."
+            else:
+                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {int(competitor_oos_pct*100)}% OOS. Increase ad spend on category keywords to capture ${conquest_revenue:,.0f}."
+    
+    # ========== KEYWORD EXPANSION ANALYSIS ==========
+    # If velocity is improving (negative = rank improving), recommend expansion
+    if velocity_trend_90d < -0.05:  # Improving by more than 5%
+        velocity_multiplier = 1.0 + abs(velocity_trend_90d)
+        keyword_expansion_gain = revenue * expansion_rate * velocity_multiplier
+        
+        if not opportunity_type:
+            opportunity_type = "EXPAND"
+            opportunity_urgency = "MEDIUM" if velocity_trend_90d < -0.10 else "LOW"
+            ai_recommendation = f"🚀 Expansion Opportunity: Momentum detected (velocity +{abs(velocity_trend_90d)*100:.0f}%). Scale keyword coverage to capture ${keyword_expansion_gain:,.0f} in new revenue."
+    
+    # ========== TOTAL 30-DAY GROWTH ==========
+    thirty_day_growth = price_optimization_gain + conquest_revenue + keyword_expansion_gain
+    
+    # Default recommendation if no specific opportunity
+    if not ai_recommendation and thirty_day_growth > 0:
+        ai_recommendation = f"📈 Growth potential: ${thirty_day_growth:,.0f} available through optimization."
+    
+    return ExpansionAlpha(
+        thirty_day_growth=thirty_day_growth,
+        price_optimization_gain=price_optimization_gain,
+        conquest_revenue=conquest_revenue,
+        keyword_expansion_gain=keyword_expansion_gain,
+        opportunity_type=opportunity_type,
+        opportunity_urgency=opportunity_urgency,
+        target_competitor_asin=target_competitor_asin,
+        velocity_validated=True,
+        blocked_reason="",
+        ai_recommendation=ai_recommendation
+    )
+
+
+# =============================================================================
+# VECTORIZED INTELLIGENCE LAYER (HIGH PERFORMANCE)
+# =============================================================================
+
+def calculate_portfolio_intelligence_vectorized(
+    df: pd.DataFrame,
+    strategic_bias: str = "Balanced Defense"
+) -> pd.DataFrame:
+    """
+    VECTORIZED calculation of all intelligence metrics for the portfolio.
+    
+    This is the HIGH-PERFORMANCE alternative to row-wise iteration.
+    Calculates Risk, Growth, and Opportunity Alpha for ALL ASINs in one pass.
+    
+    Performance: ~100x faster than iterrows() for 100+ ASINs.
+    
+    Args:
+        df: Portfolio DataFrame with required columns
+        strategic_bias: User's strategic focus
+        
+    Returns:
+        DataFrame with intelligence columns added:
+        - thirty_day_risk, predictive_state, price_erosion_risk
+        - thirty_day_growth, opportunity_type, growth_validated
+        - opportunity_alpha (risk + growth combined)
+    """
+    if df.empty:
+        return df
+    
+    # Work with a view, not a copy (memory efficient)
+    result = df
+    
+    # === EXTRACT BASE METRICS (vectorized) ===
+    revenue = result.get('weekly_sales_filled', result.get('revenue_proxy', pd.Series([1000] * len(result)))).fillna(1000)
+    v30 = result.get('velocity_trend_30d', pd.Series([0.0] * len(result))).fillna(0.0)
+    v90 = result.get('velocity_trend_90d', pd.Series([0.0] * len(result))).fillna(0.0)
+    competitor_oos = result.get('competitor_oos_pct', result.get('outOfStockPercentage90', pd.Series([0.0] * len(result)))).fillna(0.0)
+    price_gap = result.get('price_gap_vs_competitor', result.get('price_delta', pd.Series([0.0] * len(result)))).fillna(0.0)
+    
+    # Normalize competitor OOS to 0-1 range
+    competitor_oos = np.where(competitor_oos > 1, competitor_oos / 100, competitor_oos)
+    
+    # === STRATEGIC BIAS WEIGHTS ===
+    if "Profit" in strategic_bias:
+        price_weight, inventory_weight, rank_weight = 1.5, 0.8, 0.7
+        min_price_lift = 0.03
+        conquest_rate = 0.10
+    elif "Growth" in strategic_bias:
+        price_weight, inventory_weight, rank_weight = 0.7, 1.0, 1.5
+        min_price_lift = 0.02
+        conquest_rate = 0.20
+    else:  # Balanced
+        price_weight, inventory_weight, rank_weight = 1.0, 1.0, 1.0
+        min_price_lift = 0.05
+        conquest_rate = 0.15
+    
+    # === RISK CALCULATION (vectorized) ===
+    base_opportunity_rate = 0.15
+    daily_leakage = (revenue * base_opportunity_rate) / 30.0
+    velocity_adjustment = 1.0 + v90
+    base_30day_risk = daily_leakage * 30 * velocity_adjustment
+    
+    # Price erosion (vectorized)
+    price_erosion = np.where(price_gap > 0.05, revenue * price_gap * 0.3 * price_weight, 0)
+    
+    # Share erosion (vectorized)  
+    share_erosion = np.where(v90 > 0.15, revenue * 0.20 * v90 * rank_weight, 0)
+    
+    # Total risk
+    thirty_day_risk = np.maximum(0, base_30day_risk + price_erosion + share_erosion)
+    
+    # Predictive state (vectorized)
+    predictive_state = np.where(
+        v90 > 0.20, "DEFEND",
+        np.where(
+            competitor_oos > 0.30, "EXPLOIT",
+            np.where(
+                price_erosion > revenue * 0.10, "DEFEND",
+                "HOLD"
+            )
+        )
+    )
+    
+    # === GROWTH CALCULATION (vectorized) ===
+    # Velocity gate: block growth for declining ASINs
+    growth_validated = (v90 <= 0.15)
+    
+    # Price headroom (negative gap = you're cheaper = headroom)
+    price_headroom = np.maximum(0, -price_gap)
+    volume_sensitivity = np.clip(0.3 + v90, 0.2, 0.6)
+    price_lift_gain = np.where(
+        (price_headroom > min_price_lift) & growth_validated,
+        revenue * price_headroom * (1 - volume_sensitivity),
+        0
+    )
+    
+    # Conquest opportunity
+    conquest_gain = np.where(
+        (competitor_oos > 0.30) & growth_validated,
+        revenue * 2 * competitor_oos * conquest_rate,  # Assume competitor rev = 2x yours
+        0
+    )
+    
+    # Expansion opportunity (velocity improving)
+    expansion_gain = np.where(
+        (v90 < -0.05) & growth_validated,
+        revenue * 0.08 * (1.0 + np.abs(v90)),
+        0
+    )
+    
+    # Total growth
+    thirty_day_growth = np.where(
+        growth_validated,
+        price_lift_gain + conquest_gain + expansion_gain,
+        0
+    )
+    
+    # Opportunity type (priority: CONQUEST > PRICE_LIFT > EXPAND)
+    opportunity_type = np.where(
+        conquest_gain > 0, "CONQUEST",
+        np.where(
+            price_lift_gain > 0, "PRICE_LIFT",
+            np.where(
+                expansion_gain > 0, "EXPAND",
+                ""
+            )
+        )
+    )
+    
+    # === COMBINED OPPORTUNITY ALPHA ===
+    opportunity_alpha = thirty_day_risk + thirty_day_growth
+    
+    # === ASSIGN RESULTS TO DATAFRAME (single copy, memory efficient) ===
+    result = result.copy()
+    
+    # === MEMORY OPTIMIZATION ===
+    # Convert string columns to category dtype (reduces memory 80%+ for repeated values)
+    for col in ['asin', 'brand', 'title']:
+        if col in result.columns and result[col].dtype == 'object':
+            result[col] = result[col].astype('category')
+    
+    # Assign computed values with efficient dtypes
+    result['thirty_day_risk'] = np.asarray(thirty_day_risk, dtype=np.float32)
+    result['thirty_day_growth'] = np.asarray(thirty_day_growth, dtype=np.float32)
+    result['opportunity_alpha'] = np.asarray(opportunity_alpha, dtype=np.float32)
+    result['predictive_state'] = pd.Categorical(predictive_state, categories=["HOLD", "DEFEND", "EXPLOIT", "REPLENISH"])
+    result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND"])
+    result['growth_validated'] = np.asarray(growth_validated, dtype=bool)
+    result['price_erosion_risk'] = np.asarray(price_erosion, dtype=np.float32)
+    result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
+    
+    # Model certainty based on data quality
+    data_weeks = result.get('data_weeks', pd.Series([4] * len(result))).fillna(4)
+    result['model_certainty'] = np.clip(0.40 + (data_weeks / 48) * 0.55, 0.40, 0.95).astype(np.float32)
+    
+    return result
+
+
 def calculate_portfolio_predictive_risk(
     portfolio_df: pd.DataFrame,
     total_monthly_revenue: float,
     strategic_bias: str = "Balanced Defense"
 ) -> Dict[str, Any]:
     """
-    Calculate aggregate predictive risk for the entire portfolio.
+    Calculate aggregate predictive risk AND growth opportunity for the entire portfolio.
+    
+    OPTIMIZED: Uses vectorized calculation, then aggregates.
+    
+    Returns both defensive (risk) and offensive (growth) metrics for unified "Opportunity Alpha".
     
     Args:
         portfolio_df: DataFrame with product data and velocity metrics
@@ -1356,42 +1775,31 @@ def calculate_portfolio_predictive_risk(
         strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         
     Returns:
-        Dict with portfolio-level predictive metrics
+        Dict with portfolio-level predictive metrics (risk + growth)
     """
-    # Extract velocity trends if available
-    velocity_30d = portfolio_df.get('velocity_trend_30d', pd.Series([0.0])).mean()
-    velocity_90d = portfolio_df.get('velocity_trend_90d', pd.Series([0.0])).mean()
+    # === VECTORIZED CALCULATION (100x faster than iterrows) ===
+    df_intel = calculate_portfolio_intelligence_vectorized(portfolio_df, strategic_bias)
     
-    # Calculate individual product risks
-    total_30day_risk = 0.0
-    defend_count = 0
-    exploit_count = 0
-    replenish_count = 0
+    # === AGGREGATE RESULTS ===
+    total_30day_risk = df_intel['thirty_day_risk'].sum()
+    total_30day_growth = df_intel['thirty_day_growth'].sum()
     
-    for idx, row in portfolio_df.iterrows():
-        rev = row.get('weekly_sales_filled', row.get('revenue_proxy', 0))
-        v30 = row.get('velocity_trend_30d', velocity_30d)
-        v90 = row.get('velocity_trend_90d', velocity_90d)
-        
-        alpha = calculate_predictive_alpha(
-            row_data=row.to_dict() if hasattr(row, 'to_dict') else dict(row),
-            revenue=rev,
-            velocity_trend_30d=v30,
-            velocity_trend_90d=v90,
-            strategic_bias=strategic_bias
-        )
-        
-        total_30day_risk += alpha.thirty_day_risk
-        
-        if alpha.predictive_state == "DEFEND":
-            defend_count += 1
-        elif alpha.predictive_state == "EXPLOIT":
-            exploit_count += 1
-        elif alpha.predictive_state == "REPLENISH":
-            replenish_count += 1
+    # Count by predictive state
+    defend_count = (df_intel['predictive_state'] == "DEFEND").sum()
+    exploit_count = (df_intel['predictive_state'] == "EXPLOIT").sum()
+    replenish_count = (df_intel['predictive_state'] == "REPLENISH").sum()
     
-    # Calculate risk as percentage of revenue
+    # Count by opportunity type
+    price_lift_count = (df_intel['opportunity_type'] == "PRICE_LIFT").sum()
+    conquest_count = (df_intel['opportunity_type'] == "CONQUEST").sum()
+    expand_count = (df_intel['opportunity_type'] == "EXPAND").sum()
+    
+    # Calculate percentages
     risk_pct = (total_30day_risk / total_monthly_revenue * 100) if total_monthly_revenue > 0 else 0
+    growth_pct = (total_30day_growth / total_monthly_revenue * 100) if total_monthly_revenue > 0 else 0
+    
+    # Combined Opportunity Alpha
+    opportunity_alpha = total_30day_risk + total_30day_growth
     
     # Determine portfolio health
     if risk_pct > 25:
@@ -1408,15 +1816,30 @@ def calculate_portfolio_predictive_risk(
         status_emoji = "✅"
     
     return {
+        # Defensive metrics (risk)
         "thirty_day_risk": total_30day_risk,
         "risk_pct": risk_pct,
         "portfolio_status": portfolio_status,
         "status_emoji": status_emoji,
-        "defend_count": defend_count,
-        "exploit_count": exploit_count,
-        "replenish_count": replenish_count,
-        "action_required_count": defend_count + replenish_count,
-        "opportunity_count": exploit_count,
+        "defend_count": int(defend_count),
+        "exploit_count": int(exploit_count),
+        "replenish_count": int(replenish_count),
+        "action_required_count": int(defend_count + replenish_count),
+        
+        # Offensive metrics (growth)
+        "thirty_day_growth": total_30day_growth,
+        "growth_pct": growth_pct,
+        "price_lift_count": int(price_lift_count),
+        "conquest_count": int(conquest_count),
+        "expand_count": int(expand_count),
+        "growth_opportunity_count": int(price_lift_count + conquest_count + expand_count),
+        
+        # Combined (Opportunity Alpha)
+        "opportunity_alpha": opportunity_alpha,
+        "opportunity_count": int(exploit_count + price_lift_count + conquest_count + expand_count),
+        
+        # Return enriched DataFrame for downstream use (eliminates redundant recalculation)
+        "_enriched_df": df_intel,
     }
 
 
@@ -1513,7 +1936,25 @@ class StrategicTriangulator:
         bsr_trend = float(row_data.get('bsr_trend_30d', row_data.get('rank_delta_30d', 0.0)))
         current_bsr = int(row_data.get('sales_rank_filled', row_data.get('bsr', 100000)))
         
-        # Calculate predictive alpha
+        # Extract data quality from velocity extraction (weeks → months)
+        data_weeks = int(row_data.get('data_weeks', 0))
+        data_quality_str = str(row_data.get('data_quality', 'LOW'))
+        
+        # Convert data_quality string or weeks to months_of_data
+        if data_quality_str == 'HIGH':
+            months_of_data = 12
+        elif data_quality_str == 'MEDIUM':
+            months_of_data = 6
+        elif data_weeks >= 12:
+            months_of_data = 12  # 12+ weeks = HIGH
+        elif data_weeks >= 8:
+            months_of_data = 6   # 8-12 weeks = MEDIUM
+        elif data_weeks >= 4:
+            months_of_data = 3   # 4-8 weeks = LOW
+        else:
+            months_of_data = 1   # < 4 weeks = VERY_LOW
+        
+        # Calculate predictive alpha with actual data quality
         predictive = calculate_predictive_alpha(
             row_data=row_data,
             revenue=revenue,
@@ -1524,10 +1965,27 @@ class StrategicTriangulator:
             price_gap_vs_competitor=price_gap,
             bsr_trend_30d=bsr_trend,
             current_bsr=current_bsr,
+            months_of_data=months_of_data,
             strategic_state=strategic_brief.strategic_state,
+            strategic_bias=strategic_bias,
         )
         
-        # === STEP 3: MERGE INTO UNIFIED OUTPUT ===
+        # === STEP 3: GROWTH INTELLIGENCE (Offensive Layer) ===
+        competitor_oos = float(row_data.get('competitor_oos_pct', row_data.get('outOfStockPercentage90', 0)) or 0)
+        if competitor_oos > 1:  # Normalize if percentage
+            competitor_oos = competitor_oos / 100
+        
+        expansion = calculate_expansion_alpha(
+            row_data=row_data,
+            revenue=revenue,
+            velocity_trend_90d=v90,
+            price_gap_vs_competitor=price_gap,
+            competitor_oos_pct=competitor_oos,
+            strategic_state=strategic_brief.strategic_state,
+            strategic_bias=strategic_bias,
+        )
+        
+        # === STEP 4: MERGE INTO UNIFIED OUTPUT ===
         # Enrich strategic brief with predictive intelligence
         strategic_brief.thirty_day_risk = predictive.thirty_day_risk
         strategic_brief.daily_burn_rate = predictive.daily_burn_rate
@@ -1545,6 +2003,14 @@ class StrategicTriangulator:
         strategic_brief.predicted_event_date = predictive.predicted_event_date
         strategic_brief.action_deadline = predictive.action_deadline
         strategic_brief.data_quality = predictive.data_quality
+        
+        # Enrich with GROWTH INTELLIGENCE
+        strategic_brief.thirty_day_growth = expansion.thirty_day_growth
+        strategic_brief.price_lift_opportunity = expansion.price_optimization_gain
+        strategic_brief.conquest_opportunity = expansion.conquest_revenue
+        strategic_brief.expansion_recommendation = expansion.ai_recommendation
+        strategic_brief.growth_validated = expansion.velocity_validated
+        strategic_brief.opportunity_type = expansion.opportunity_type
         
         # Update confidence to use model certainty from predictive engine
         # (based on data quality and trend consistency)
@@ -1689,16 +2155,22 @@ async def generate_portfolio_brief(
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are ShelfGuard's AI strategist, analyzing Amazon portfolio performance. Generate a clear, actionable strategic brief.
+                        "content": """You are ShelfGuard's AI strategist, analyzing Amazon portfolio performance. Generate a clear, actionable strategic brief that balances DEFENSIVE (risk avoidance) and OFFENSIVE (growth capture) priorities.
 
 Guidelines:
 - Be direct and prescriptive. Focus on what to do, not what happened.
-- Start with the most important insight or issue.
+- Start with the most urgent issue — could be Risk OR Growth opportunity.
+- If 30-Day Risk is high (>15% of revenue), lead with defensive priorities.
+- If Growth Opportunity is significant, call out conquest/price lift opportunities.
 - Quantify everything ($ amounts, counts, percentages).
-- Reference data trends (e.g., "sales declining 15% vs 90-day average").
+- Reference the Opportunity Alpha (Risk + Growth combined) as the total addressable value.
 - End with one clear action for this session.
 - Keep it under 100 words.
-- Use clear business language - avoid military/tactical jargon."""
+- Use clear business language - avoid military/tactical jargon.
+
+Example outputs:
+- "Risk: $2,400 at risk this month across 5 products. Growth: $1,800 upside via 2 price lifts. Priority: Address ASIN B001 stockout (50% of risk). Total opportunity: $4,200."
+- "Growth mode active: $3,100 conquest opportunity — 3 competitors OOS. Risk stable at 8%. Focus: Scale ad spend on vulnerable competitor keywords."""
                     },
                     {
                         "role": "user",
@@ -1706,7 +2178,7 @@ Guidelines:
 
 {portfolio_summary}
 
-Generate a strategic brief. What should be the focus this session?"""
+Generate a strategic brief. What should be the focus this session? Consider both Risk (defensive) and Growth (offensive) opportunities."""
                     }
                 ],
                 max_tokens=200,

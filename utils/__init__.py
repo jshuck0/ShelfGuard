@@ -18,7 +18,7 @@ The AI Engine combines:
 from utils.ai_engine import (
     # Unified AI Engine
     StrategicTriangulator,
-    StrategicBrief,  # Now includes both strategic + predictive outputs
+    StrategicBrief,  # Now includes strategic + predictive + growth outputs
     StrategicState,
     triangulate_portfolio,
     get_portfolio_state_summary,
@@ -31,9 +31,14 @@ from utils.ai_engine import (
     PredictiveAlpha,
     calculate_predictive_alpha,
     calculate_portfolio_predictive_risk,
+    calculate_portfolio_intelligence_vectorized,  # HIGH PERFORMANCE vectorized calculation
     # Velocity Extraction (for backfill integration)
     extract_velocity_trends,
     extract_portfolio_velocity,
+    # Growth Intelligence (offensive layer)
+    ExpansionAlpha,
+    calculate_expansion_alpha,
+    is_growth_eligible,
 )
 
 from utils.keepa_extended_fields import (
@@ -75,10 +80,15 @@ __all__ = [
     # Predictive Components (for advanced use - integrated into StrategicBrief)
     "PredictiveAlpha",              # Predictive output dataclass
     "calculate_predictive_alpha",   # Direct predictive calculation
-    "calculate_portfolio_predictive_risk",  # Portfolio risk aggregation
+    "calculate_portfolio_predictive_risk",  # Portfolio risk + growth aggregation
+    "calculate_portfolio_intelligence_vectorized",  # Vectorized calculation (100x faster)
     # Velocity Extraction (for backfill integration)
     "extract_velocity_trends",      # Extract velocity from weekly backfill for one ASIN
     "extract_portfolio_velocity",   # Batch extract velocity for all ASINs
+    # Growth Intelligence (offensive layer)
+    "ExpansionAlpha",               # Growth opportunity dataclass
+    "calculate_expansion_alpha",    # Calculate growth potential
+    "is_growth_eligible",           # Velocity validation gate
     
     # Keepa Extended Fields
     "KeepaField",

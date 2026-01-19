@@ -42,12 +42,16 @@ try:
     from utils.ai_engine import (
         StrategicTriangulator, 
         triangulate_portfolio,
-        generate_portfolio_brief_sync  # Unified portfolio brief
+        generate_portfolio_brief_sync,  # Unified portfolio brief
+        calculate_expansion_alpha,       # Growth intelligence (offensive layer)
+        is_growth_eligible               # Velocity validation gate
     )
     TRIANGULATION_ENABLED = True
 except ImportError:
     TRIANGULATION_ENABLED = False
     generate_portfolio_brief_sync = None
+    calculate_expansion_alpha = None
+    is_growth_eligible = None
 
 # Initialize OpenAI client (for chat feature - optional)
 openai_client = None
@@ -137,7 +141,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "signals_detected": brief.signals_detected,
                 "source": brief.source,
                 
-                # === PREDICTIVE INTELLIGENCE ===
+                # === PREDICTIVE INTELLIGENCE (Defensive) ===
                 "thirty_day_risk": brief.thirty_day_risk,
                 "daily_burn_rate": brief.daily_burn_rate,
                 "predictive_state": brief.predictive_state,
@@ -150,6 +154,14 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "action_deadline": brief.action_deadline,
                 "model_certainty": brief.confidence,
                 "data_quality": brief.data_quality,
+                
+                # === GROWTH INTELLIGENCE (Offensive) ===
+                "thirty_day_growth": brief.thirty_day_growth,
+                "price_lift_opportunity": brief.price_lift_opportunity,
+                "conquest_opportunity": brief.conquest_opportunity,
+                "expansion_recommendation": brief.expansion_recommendation,
+                "growth_validated": brief.growth_validated,
+                "opportunity_type": brief.opportunity_type,
                 
                 # === PREDICTIVE-DERIVED OUTPUTS (replaces legacy capital_zone) ===
                 "ad_action": state_to_ad.get(state, "⚖️ OPTIMIZE ROAS"),
@@ -187,6 +199,14 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "predictive_emoji": brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else "✅",
                 "predictive_zone": f"{brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else '✅'} {brief.predictive_state if hasattr(brief, 'predictive_state') else 'HOLD'}",
                 "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT"] if hasattr(brief, 'predictive_state') else True,
+                # Growth Intelligence
+                "thirty_day_risk": brief.thirty_day_risk if hasattr(brief, 'thirty_day_risk') else 0,
+                "thirty_day_growth": brief.thirty_day_growth if hasattr(brief, 'thirty_day_growth') else 0,
+                "price_lift_opportunity": brief.price_lift_opportunity if hasattr(brief, 'price_lift_opportunity') else 0,
+                "conquest_opportunity": brief.conquest_opportunity if hasattr(brief, 'conquest_opportunity') else 0,
+                "expansion_recommendation": brief.expansion_recommendation if hasattr(brief, 'expansion_recommendation') else "",
+                "growth_validated": brief.growth_validated if hasattr(brief, 'growth_validated') else True,
+                "opportunity_type": brief.opportunity_type if hasattr(brief, 'opportunity_type') else "",
                 "source": "fallback"
             }
         except Exception:
@@ -206,6 +226,14 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         "predictive_emoji": "✅",
         "predictive_zone": "✅ HOLD",
         "is_healthy": True,
+        # Growth defaults
+        "thirty_day_risk": 0,
+        "thirty_day_growth": 0,
+        "price_lift_opportunity": 0,
+        "conquest_opportunity": 0,
+        "expansion_recommendation": "",
+        "growth_validated": True,
+        "opportunity_type": "",
         "source": "error"
     }
 
@@ -239,6 +267,27 @@ def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
         return None
     
     return generate_portfolio_brief_sync(portfolio_summary)
+
+
+@st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
+def _cached_portfolio_intelligence(data_hash: str, total_revenue: float, strategic_bias: str, _df: pd.DataFrame) -> dict:
+    """
+    Cached wrapper for portfolio intelligence calculation.
+    
+    Caches the vectorized intelligence calculation to avoid redundant computation
+    when sidebar toggles change but data hasn't.
+    
+    Args:
+        data_hash: Hash of portfolio data for cache key
+        total_revenue: Total monthly revenue
+        strategic_bias: User's strategic focus
+        _df: Portfolio DataFrame (underscore prefix = not hashed)
+        
+    Returns:
+        Dict with portfolio intelligence metrics and enriched DataFrame
+    """
+    from utils.ai_engine import calculate_portfolio_predictive_risk
+    return calculate_portfolio_predictive_risk(_df, total_revenue, strategic_bias)
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="ShelfGuard OS", layout="wide", page_icon="🛡️")
@@ -484,7 +533,7 @@ with main_tab1:
                 # Merge velocity data into market_snapshot
                 if not velocity_df.empty:
                     market_snapshot = market_snapshot.merge(
-                        velocity_df[['asin', 'velocity_trend_30d', 'velocity_trend_90d', 'data_quality']],
+                        velocity_df[['asin', 'velocity_trend_30d', 'velocity_trend_90d', 'data_quality', 'data_weeks']],
                         on='asin',
                         how='left'
                     )
@@ -492,16 +541,19 @@ with main_tab1:
                     market_snapshot['velocity_trend_30d'] = market_snapshot['velocity_trend_30d'].fillna(0.0)
                     market_snapshot['velocity_trend_90d'] = market_snapshot['velocity_trend_90d'].fillna(0.0)
                     market_snapshot['data_quality'] = market_snapshot['data_quality'].fillna('VERY_LOW')
+                    market_snapshot['data_weeks'] = market_snapshot['data_weeks'].fillna(0)
             except Exception as e:
                 # Fallback: Set default velocity values
                 market_snapshot['velocity_trend_30d'] = 0.0
                 market_snapshot['velocity_trend_90d'] = 0.0
                 market_snapshot['data_quality'] = 'VERY_LOW'
+                market_snapshot['data_weeks'] = 0
         else:
             # No backfill data - set defaults
             market_snapshot['velocity_trend_30d'] = 0.0
             market_snapshot['velocity_trend_90d'] = 0.0
             market_snapshot['data_quality'] = 'VERY_LOW'
+            market_snapshot['data_weeks'] = 0
 
         # === BRAND IDENTIFICATION ===
         # Step 1: Find the target brand from the seed ASIN
@@ -524,7 +576,7 @@ with main_tab1:
         target_brand_lower = target_brand.lower() if target_brand else ""
         market_snapshot['brand_lower'] = market_snapshot['brand'].str.lower().fillna("")
         portfolio_df = market_snapshot[market_snapshot['brand_lower'] == target_brand_lower].copy()
-        market_df = market_snapshot.copy()  # Full market for comparison
+        market_df = market_snapshot  # View only - no modification needed
 
         # Add is_your_brand flag for backward compatibility (case-insensitive)
         market_snapshot['is_your_brand'] = market_snapshot['brand_lower'] == target_brand_lower
@@ -744,10 +796,56 @@ with main_tab1:
     
         # === AI-GENERATED STRATEGIC BRIEF (LLM-Powered) ===
         data_df = res.get("data", pd.DataFrame())
+        
+        # === VECTORIZED INTELLIGENCE CALCULATION (Single Point - 100x faster) ===
+        # Calculate ALL predictive metrics in ONE vectorized pass
+        # CACHED: Avoids redundant computation on sidebar interactions
+        
+        # Create data hash for cache key (based on ASIN list + revenue totals)
+        portfolio_data = res["data"]
+        asin_list = portfolio_data['asin'].tolist() if 'asin' in portfolio_data.columns else []
+        data_cache_hash = hashlib.md5(
+            f"{sorted(asin_list)[:20]}|{total_rev_curr:.0f}|{len(portfolio_data)}".encode(),
+            usedforsecurity=False
+        ).hexdigest()
+        
+        # Use cached intelligence calculation
+        early_predictive_risk = _cached_portfolio_intelligence(
+            data_cache_hash,
+            total_rev_curr,
+            strategic_bias,
+            portfolio_data
+        )
+        
+        # CRITICAL: Extract the pre-computed enriched DataFrame
+        # This contains all intelligence columns - NO NEED to recalculate per-row
+        enriched_portfolio_df = early_predictive_risk.get("_enriched_df", res["data"])
+        
+        # Store in session for downstream use (eliminates redundant loops)
+        st.session_state['_enriched_portfolio'] = enriched_portfolio_df
+        
+        # Extract aggregate metrics for UI components
+        thirty_day_risk = early_predictive_risk.get("thirty_day_risk", 0)
+        risk_pct = early_predictive_risk.get("risk_pct", 0)
+        portfolio_status = early_predictive_risk.get("portfolio_status", "HEALTHY")
+        status_emoji = early_predictive_risk.get("status_emoji", "✅")
+        defend_count = early_predictive_risk.get("defend_count", 0)
+        exploit_count = early_predictive_risk.get("exploit_count", 0)
+        replenish_count = early_predictive_risk.get("replenish_count", 0)
+        
+        # Growth metrics (offensive layer)
+        thirty_day_growth = early_predictive_risk.get("thirty_day_growth", 0)
+        growth_pct = early_predictive_risk.get("growth_pct", 0)
+        price_lift_count = early_predictive_risk.get("price_lift_count", 0)
+        conquest_count = early_predictive_risk.get("conquest_count", 0)
+        expand_count = early_predictive_risk.get("expand_count", 0)
+        opportunity_alpha = early_predictive_risk.get("opportunity_alpha", 0)
+        growth_opportunity_count = early_predictive_risk.get("growth_opportunity_count", 0)
 
-        # Build market summary for LLM (Brand vs Market)
+        # Build market summary for LLM (Brand vs Market + Predictive Intelligence)
         if not data_df.empty:
-            # Build summary for LLM showing brand performance vs market
+            
+            # Build summary for LLM showing brand performance, risk, and growth opportunities
             portfolio_summary = f"""
     BRAND PERFORMANCE ANALYSIS:
     - Brand Name: {target_brand}
@@ -763,6 +861,15 @@ with main_tab1:
     - Competitor Revenue: {f_money(competitor_revenue)}/month
     - Total Market Size: {f_money(total_market_revenue)}/month
     - Your Position: {"Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"}
+
+    30-DAY PREDICTIVE INTELLIGENCE:
+    - Risk: {f_money(thirty_day_risk)} at risk ({risk_pct:.1f}% of revenue)
+    - Growth Opportunity: {f_money(thirty_day_growth)} ({growth_pct:.1f}% potential)
+    - Opportunity Alpha (Risk + Growth): {f_money(opportunity_alpha)}
+    - Defensive Actions Needed: {defend_count} products
+    - Price Lift Opportunities: {price_lift_count} products
+    - Conquest Opportunities: {conquest_count} products (competitors vulnerable)
+    - Strategic Focus: {strategic_bias}
     """
         
             # Hash portfolio data for smart caching (only regenerates if metrics actually change)
@@ -785,12 +892,26 @@ with main_tab1:
                 ai_brief = llm_brief
                 brief_source = "🤖 STRATEGIC BRIEF"
             else:
-                # Fallback to rule-based brief (Brand vs Market)
+                # Fallback to rule-based brief (Brand vs Market + Predictive Intelligence)
                 brief_parts = []
+                
+                # Risk alerts
+                if risk_pct > 15:
+                    brief_parts.append(f"**{f_money(thirty_day_risk)} at risk** over next 30 days ({risk_pct:.0f}% of revenue) — {defend_count} products need defensive action.")
+                
+                # Growth opportunities
+                if thirty_day_growth > 0:
+                    if conquest_count > 0:
+                        brief_parts.append(f"**{f_money(thirty_day_growth)} growth opportunity** identified — {conquest_count} competitors vulnerable to conquest.")
+                    elif price_lift_count > 0:
+                        brief_parts.append(f"**{f_money(thirty_day_growth)} upside** via price optimization across {price_lift_count} products.")
+                
+                # Market position
                 if portfolio_product_count > 0 and your_market_share < 30:
-                    brief_parts.append(f"**{portfolio_product_count} {target_brand} products** controlling {your_market_share:.1f}% share — growth opportunity available.")
+                    brief_parts.append(f"**{your_market_share:.1f}% market share** — significant expansion potential.")
+                
                 if competitor_revenue > portfolio_revenue * 2:
-                    brief_parts.append(f"**Competitors control {f_money(competitor_revenue)}/month** vs. your {f_money(portfolio_revenue)}/month — defend and expand.")
+                    brief_parts.append(f"Competitors control {f_money(competitor_revenue)}/month — monitor for conquest opportunities.")
 
                 ai_brief = " ".join(brief_parts) if brief_parts else f"{target_brand} positioned in competitive market. Monitor and optimize."
                 brief_source = "📊 ANALYSIS"
@@ -814,23 +935,10 @@ with main_tab1:
         else:
             competitive_context = f"Concentrated market with {competitor_product_count} key competitors."
     
-        # === EARLY PREDICTIVE RISK CALCULATION (for banner cascading) ===
-        # Calculate predictive risk BEFORE rendering banner to enable alert cascading
-        from utils.ai_engine import calculate_portfolio_predictive_risk
-        portfolio_df_early = res["data"].copy()
-        early_predictive_risk = calculate_portfolio_predictive_risk(
-            portfolio_df_early, 
-            total_rev_curr,
-            strategic_bias=strategic_bias
-        )
-        
-        # Cascade predictive alerts to system banner
-        has_high_urgency_alerts = (
-            early_predictive_risk["defend_count"] > 0 or 
-            early_predictive_risk["replenish_count"] > 0
-        )
-        is_predictive_critical = early_predictive_risk["portfolio_status"] == "CRITICAL"
-        is_predictive_elevated = early_predictive_risk["portfolio_status"] == "ELEVATED"
+        # Cascade predictive alerts to system banner (using early calculation from above)
+        has_high_urgency_alerts = (defend_count > 0 or replenish_count > 0)
+        is_predictive_critical = portfolio_status == "CRITICAL"
+        is_predictive_elevated = portfolio_status == "ELEVATED"
         
         # === ACTION A: CHECK AI BRIEF FOR THREAT KEYWORDS AND OVERRIDE STATUS BANNER ===
         # Check if ai_brief contains threat, erosion, or critical keywords
@@ -846,21 +954,27 @@ with main_tab1:
             # Override status header to match red banner (predictive threat)
             status_emoji = "🔴"
             status_text = "DEFENSE PROTOCOL"
-            top_action = f"{early_predictive_risk['action_required_count']} ACTIONS REQUIRED"
+            action_required_count = defend_count + replenish_count
+            top_action = f"{action_required_count} ACTIONS REQUIRED"
         elif is_predictive_elevated or has_high_urgency_alerts:
             status_emoji = "🟡"
             status_text = "ATTENTION"
-            top_action = f"{early_predictive_risk['action_required_count']} ALERTS"
+            action_required_count = defend_count + replenish_count
+            top_action = f"{action_required_count} ALERTS"
         
         # Override top status banner based on predictive intelligence
+        # Calculate action counts for status banner
+        action_required_count = defend_count + replenish_count
+        total_opportunity_count = exploit_count + growth_opportunity_count
+        
         if is_predictive_critical or has_threat_keywords:
-            system_status = f"🔴 SYSTEM STATUS: {early_predictive_risk['action_required_count']} CRITICAL THREATS"
+            system_status = f"🔴 SYSTEM STATUS: {action_required_count} CRITICAL THREATS"
             status_bg = "#dc3545"
         elif is_predictive_elevated:
-            system_status = f"🟡 SYSTEM STATUS: {early_predictive_risk['action_required_count']} ALERTS ACTIVE"
+            system_status = f"🟡 SYSTEM STATUS: {action_required_count} ALERTS ACTIVE"
             status_bg = "#ffc107"
-        elif early_predictive_risk["exploit_count"] > 0:
-            system_status = f"🟢 SYSTEM STATUS: {early_predictive_risk['exploit_count']} OPPORTUNITIES"
+        elif total_opportunity_count > 0:
+            system_status = f"🟢 SYSTEM STATUS: {total_opportunity_count} GROWTH OPPORTUNITIES"
             status_bg = "#28a745"
         else:
             # Default status based on revenue gap (original logic)
@@ -942,14 +1056,14 @@ with main_tab1:
             defense_score_base = 98
             if is_critical_status:
                 # Critical: High risk - score penalized by risk percentage
-                defense_score = max(50, defense_score_base - early_predictive_risk["risk_pct"])
+                defense_score = max(50, defense_score_base - risk_pct)
             elif is_elevated_status:
                 # Elevated: Moderate risk - smaller penalty
-                defense_score = max(70, defense_score_base - (early_predictive_risk["risk_pct"] * 0.5))
+                defense_score = max(70, defense_score_base - (risk_pct * 0.5))
             else:
                 # Healthy: Calculate from healthy products
                 # Healthy = total - (defend + replenish)
-                defend_replenish_count = early_predictive_risk["defend_count"] + early_predictive_risk["replenish_count"]
+                defend_replenish_count = defend_count + replenish_count
                 total_products = len(res["data"])
                 healthy_pct = ((total_products - defend_replenish_count) / total_products * 100) if total_products > 0 else 100
                 # Cap at 98 (never reach 100 - always room for improvement)
@@ -984,8 +1098,7 @@ with main_tab1:
         # TILE 3: 30-Day Predictive Risk (Formerly Recoverable Alpha)
         with c3:
             # PREDICTIVE ALPHA: Use early calculation for consistency
-            # (Already calculated before banner for alert cascading)
-            portfolio_df = res["data"].copy()
+            # (Enriched DataFrame already calculated - no redundant copy)
             
             # Reuse early calculation for consistency
             predictive_risk = early_predictive_risk
@@ -996,6 +1109,15 @@ with main_tab1:
             defend_count = predictive_risk["defend_count"]
             exploit_count = predictive_risk["exploit_count"]
             replenish_count = predictive_risk["replenish_count"]
+            
+            # Extract GROWTH metrics (offensive layer)
+            thirty_day_growth = predictive_risk.get("thirty_day_growth", 0)
+            growth_pct = predictive_risk.get("growth_pct", 0)
+            price_lift_count = predictive_risk.get("price_lift_count", 0)
+            conquest_count = predictive_risk.get("conquest_count", 0)
+            expand_count = predictive_risk.get("expand_count", 0)
+            opportunity_alpha = predictive_risk.get("opportunity_alpha", thirty_day_risk + thirty_day_growth)
+            growth_opportunity_count = predictive_risk.get("growth_opportunity_count", 0)
             
             # Also calculate static recoverable alpha for comparison/fallback
             if "opportunity_value" not in portfolio_df.columns:
@@ -1022,22 +1144,31 @@ with main_tab1:
 
             # Build action count badge
             action_count = defend_count + replenish_count
-            action_badge = f"{action_count} actions needed" if action_count > 0 else "No urgent actions"
             
-            # Display predictive risk metric
+            # Build action summary line with both risk and growth actions
+            action_parts = []
+            if action_count > 0:
+                action_parts.append(f"🔴 <strong>{action_count}</strong> risks")
+            if growth_opportunity_count > 0:
+                action_parts.append(f"🟢 <strong>{growth_opportunity_count}</strong> growth")
+            
+            action_line = " • ".join(action_parts) if action_parts else "No actions needed"
+            
+            # Display Opportunity Alpha (Risk + Growth)
             st.markdown(f"""
-                <div class="custom-metric-container" title="Projected 30-day revenue at risk if no action taken. Based on velocity trends and competitive signals.">
-                    <div class="custom-metric-label">30-Day Risk Forecast</div>
-                    <div class="custom-metric-value" style="color: #dc3545;">{f_money(thirty_day_risk)}</div>
-                    <div class="benchmark-row" style="flex-wrap: wrap; gap: 4px;">
-                        <span class="benchmark-badge benchmark-{status_color}">{risk_icon} {portfolio_status}</span>
-                        <span class="benchmark-target" style="font-size: 0.7rem;">{risk_pct:.1f}% at risk</span>
-                    </div>
-                    <div style="font-size: 0.65rem; color: #666; margin-top: 6px;">
-                        {status_emoji} {action_badge}
-                        {f' • 🎯 {exploit_count} opportunities' if exploit_count > 0 else ''}
-                    </div>
-                </div>
+<div class="custom-metric-container" title="Combined 30-day opportunity: Risk to avert + Growth to capture. Based on velocity trends and competitive signals.">
+    <div class="custom-metric-label">Opportunity Alpha</div>
+    <div class="custom-metric-value">
+        <span style="color: #dc3545;">{f_money(thirty_day_risk)}</span>
+        <span style="color: #666; font-size: 0.7em;"> + </span>
+        <span style="color: #28a745;">{f_money(thirty_day_growth)}</span>
+    </div>
+    <div class="benchmark-row" style="flex-wrap: wrap; gap: 4px;">
+        <span class="benchmark-badge benchmark-{status_color}">{risk_icon} {portfolio_status}</span>
+        <span class="benchmark-target" style="font-size: 0.7rem;">{f_money(opportunity_alpha)} total</span>
+    </div>
+    <div style="font-size: 0.65rem; color: #666; margin-top: 6px;">{action_line}</div>
+</div>
             """, unsafe_allow_html=True)
     
         # TILE 4: Risk Averted (Banked from Resolved Actions)
@@ -1086,16 +1217,21 @@ with main_tab1:
         COMMAND CENTER METRICS:
         - System Status: {system_status}
         - Defense Score: {defense_score:.0f}/100 ({benchmark_status}) - {"Critical threats detected, score penalized by -15" if is_critical_status else "Healthy zones calculated"}
-        - 30-Day Risk Forecast: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% at risk - {portfolio_status}) - Predicted revenue at risk if no action taken
-        - Banked Alpha: ${banked_alpha:,.0f} ({task_count} tasks completed - {alpha_status}) - Value captured from resolved actions
-        - Actions Needed: {defend_count + replenish_count} urgent, {exploit_count} opportunities
+        - 30-Day Risk (Defensive): ${thirty_day_risk:,.0f} ({risk_pct:.1f}% at risk - {portfolio_status})
+        - 30-Day Growth (Offensive): ${thirty_day_growth:,.0f} ({growth_pct:.1f}% potential)
+        - Opportunity Alpha (Risk + Growth): ${opportunity_alpha:,.0f}
+        - Banked Alpha: ${banked_alpha:,.0f} ({task_count} tasks completed - {alpha_status})
+        - Defensive Actions Needed: {defend_count + replenish_count} products
+        - Growth Opportunities: {growth_opportunity_count} products ({price_lift_count} price lifts, {conquest_count} conquests)
         - Status Banner: {system_status} - {"Threat detected in Strategic Brief" if has_threat_keywords else "System status based on performance"}
         - Strategic Brief: {ai_brief[:200] if ai_brief else "Generating..."} {"[THREAT DETECTED]" if has_threat_keywords else ""}
         
         ACTION QUEUE (Hit List):
-        - Products prioritized by 30-Day Risk (highest risk first)
+        - Products prioritized by Opportunity Alpha (Risk + Growth combined)
+        - 🔴 Risk items = Defensive actions needed (DEFEND, REPLENISH states)
+        - 🟢 Growth items = Offensive opportunities (EXPLOIT, PRICE_LIFT, CONQUEST)
         - Model certainty based on data quality and trend consistency
-        - Use "RESOLVE" button to mark actions complete and avert risk
+        - Use "RESOLVE" button to mark actions complete
         - Total action items available: {portfolio_product_count} products
         """
     
@@ -1104,13 +1240,14 @@ with main_tab1:
 
         with tab1:
             # AI ACTION QUEUE - Unified view with AI-prioritized actions
-            display_df = res["data"].copy()
+            # Use enriched DataFrame (already has all intelligence columns)
+            display_df = enriched_portfolio_df if 'thirty_day_risk' in enriched_portfolio_df.columns else res["data"]
     
             # === TOP PRIORITIES (Brand Portfolio Analysis) ===
             # Note: display_df now contains ONLY the target brand's products
             st.markdown(f"#### 🎯 {target_brand} Portfolio Actions")
 
-                # For single-brand portfolio, show top products by revenue
+            # For single-brand portfolio, show top products by revenue
             top_products = display_df.nlargest(3, 'weekly_sales_filled')
 
             if not top_products.empty:
@@ -1145,6 +1282,14 @@ with main_tab1:
                     alert_type = strategy.get("alert_type", "")
                     alert_urgency = strategy.get("alert_urgency", "")
                     data_quality = strategy.get("data_quality", "MEDIUM")
+                    
+                    # Growth Intelligence outputs (offensive layer)
+                    thirty_day_growth = strategy.get("thirty_day_growth", 0)
+                    price_lift_opportunity = strategy.get("price_lift_opportunity", 0)
+                    conquest_opportunity = strategy.get("conquest_opportunity", 0)
+                    expansion_recommendation = strategy.get("expansion_recommendation", "")
+                    growth_validated = strategy.get("growth_validated", True)
+                    opportunity_type = strategy.get("opportunity_type", "")
                     
                     # Use strategic color if available, otherwise use emoji-based logic
                     if "strategic_color" in strategy and strategy["strategic_color"]:
@@ -1216,11 +1361,29 @@ with main_tab1:
                         escaped_ad_action = html.escape(ad_action)
                         escaped_ecom_action = html.escape(ecom_action)
                         
-                        # Build predictive state badge
-                        pred_state_badge = f'<span style="font-size: 9px; background: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 3px; margin-left: 4px;">{predictive_emoji} {predictive_state}</span>' if predictive_state != "HOLD" else ""
+                        # Build predictive state badge with type indicator
+                        if predictive_state in ["DEFEND", "REPLENISH"]:
+                            pred_state_badge = f'<span style="font-size: 9px; background: #f8d7da; color: #721c24; padding: 2px 6px; border-radius: 3px; margin-left: 4px;">🔴 {predictive_state}</span>'
+                        elif predictive_state == "EXPLOIT" or (thirty_day_growth > 0 and growth_validated):
+                            pred_state_badge = f'<span style="font-size: 9px; background: #d4edda; color: #155724; padding: 2px 6px; border-radius: 3px; margin-left: 4px;">🟢 GROWTH</span>'
+                        else:
+                            pred_state_badge = ""
                         
                         # Escape cost of inaction for HTML
                         escaped_cost = html.escape(cost_of_inaction[:50]) + "..." if len(cost_of_inaction) > 50 else html.escape(cost_of_inaction)
+                        
+                        # Build growth section if growth opportunity exists
+                        growth_section = ""
+                        if thirty_day_growth > 0 and growth_validated:
+                            escaped_growth_rec = html.escape(expansion_recommendation[:70]) + "..." if len(expansion_recommendation) > 70 else html.escape(expansion_recommendation)
+                            growth_type_label = "Price Lift" if opportunity_type == "PRICE_LIFT" else "Conquest" if opportunity_type == "CONQUEST" else "Expansion" if opportunity_type == "EXPAND" else "Growth"
+                            growth_section = f'''
+<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">
+<strong>🚀 {growth_type_label}:</strong> {f_money(thirty_day_growth)} — {escaped_growth_rec}
+</div>'''
+                        
+                        # Determine primary metric display (show Risk if defensive, Growth if offensive)
+                        total_opportunity = thirty_day_risk + thirty_day_growth
                         
                         st.markdown(f"""<div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08); opacity: {card_opacity};">
 <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
@@ -1228,13 +1391,18 @@ with main_tab1:
 <span style="font-size: 9px; color: #999;">{source_badge}{pred_state_badge}</span>
 </div>
 <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
-<div style="font-size: 24px; color: {color}; font-weight: 700; margin: 4px 0 4px 0;">{f_money(thirty_day_risk)}</div>
-<div style="font-size: 11px; color: #666; margin-top: 2px;">30-Day Risk</div>
+<div style="display: flex; align-items: baseline; gap: 10px; margin: 4px 0;">
+<span style="font-size: 22px; color: #dc3545; font-weight: 700;">{f_money(thirty_day_risk)}</span>
+<span style="font-size: 14px; color: #666;">+</span>
+<span style="font-size: 22px; color: #28a745; font-weight: 700;">{f_money(thirty_day_growth)}</span>
+</div>
+<div style="font-size: 11px; color: #666; margin-top: 2px;">30-Day Risk + Growth = {f_money(total_opportunity)}</div>
 {reasoning_preview}
 {signals_preview}
 <div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;">
 <strong>⚡ Cost of Inaction:</strong> {escaped_cost}
 </div>
+{growth_section}
 <div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
 <div style="margin-bottom: 4px;"><strong>Ad:</strong> {escaped_ad_action}</div>
 <div><strong>Ecom:</strong> {escaped_ecom_action}</div>
@@ -1253,10 +1421,15 @@ with main_tab1:
                                     st.session_state['completed_tasks'] = set()
                                 st.session_state['completed_tasks'].add(task_id)
                                 
-                                # Increment Banked Alpha with predicted 30-day risk value (not static opportunity)
-                                st.session_state['banked_alpha'] = st.session_state.get('banked_alpha', 0) + thirty_day_risk
+                                # Increment Banked Alpha with total opportunity (Risk + Growth)
+                                total_banked = thirty_day_risk + thirty_day_growth
+                                st.session_state['banked_alpha'] = st.session_state.get('banked_alpha', 0) + total_banked
                                 
-                                st.success(f"✅ Product resolved - {f_money(thirty_day_risk)} risk averted")
+                                # Show appropriate message based on what was captured
+                                if thirty_day_growth > 0:
+                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} risk averted + {f_money(thirty_day_growth)} growth captured")
+                                else:
+                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} risk averted")
                                 st.rerun()
             else:
                 st.info("No products found in portfolio.")
@@ -1282,94 +1455,114 @@ with main_tab1:
             st.caption(f"Showing **{len(display_df)}** products" + (f" in **{selected_problem}**" if selected_problem != "All Products" else "") + " — sorted by revenue")
     
             try:
-                # === UNIFIED AI ENGINE (Strategic + Predictive in one call) ===
+                # === HIGH PERFORMANCE: Use Pre-Computed Intelligence ===
+                # Intelligence was calculated ONCE in vectorized pass above
+                # NO per-row recalculation needed - just format for display
+                
+                # Get enriched DataFrame with all intelligence columns
+                enriched_df = st.session_state.get('_enriched_portfolio', display_df)
+                
+                # Merge enriched columns back to display_df if needed
+                if 'thirty_day_risk' not in display_df.columns and 'asin' in display_df.columns:
+                    intel_cols = ['asin', 'thirty_day_risk', 'thirty_day_growth', 'opportunity_alpha', 
+                                  'predictive_state', 'opportunity_type', 'growth_validated', 'model_certainty']
+                    available_cols = [c for c in intel_cols if c in enriched_df.columns]
+                    if available_cols and 'asin' in enriched_df.columns:
+                        display_df = display_df.merge(
+                            enriched_df[available_cols].drop_duplicates(subset=['asin']),
+                            on='asin', how='left', suffixes=('', '_intel')
+                        )
+                
+                # Build display table using vectorized operations
                 strategy_data = []
                 for idx, row in display_df.iterrows():
+                    # Use PRE-COMPUTED values (no function calls!)
+                    asin = row.get('asin', '')
+                    title = row.get('title', asin)
+                    short_title = title[:30] + "..." if len(str(title)) > 30 else title
                     rev = row.get('weekly_sales_filled', 0)
-                    bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
-                    bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
                     
-                    # Single unified call - strategic + predictive analysis
-                    strategy = get_product_strategy(row.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED, strategic_bias=bias_clean)
+                    # === USE PRE-COMPUTED INTELLIGENCE ===
+                    risk = row.get('thirty_day_risk', 0) or 0
+                    growth = row.get('thirty_day_growth', 0) or 0
+                    pred_state = row.get('predictive_state', 'HOLD')
+                    opp_type = row.get('opportunity_type', '')
+                    certainty = row.get('model_certainty', 0.5) or 0.5
                     
-                    # Truncate title for display
-                    title = row.get('title', row.get('asin', ''))
-                    short_title = title[:30] + "..." if len(title) > 30 else title
-                    
-                    # Extract unified outputs
-                    ai_rec = strategy.get("ai_recommendation", "")
-                    alert_type = strategy.get("alert_type", "")
-                    alert_urgency = strategy.get("alert_urgency", "")
-                    thirty_day_risk = strategy.get("thirty_day_risk", strategy.get("opportunity_value", 0))
-                    model_certainty = strategy.get("model_certainty", strategy.get("confidence_score", 0.5))
-                    pred_state = strategy.get("predictive_state", "HOLD")
-                    pred_emoji = strategy.get("predictive_emoji", "✅")
-                    strategic_state = strategy.get("strategic_state", "")
-                    
-                    # Use predictive AI recommendation if available, else fallback
-                    if ai_rec and alert_type:
-                        action_display = ai_rec[:100]
-                        if len(ai_rec) > 100:
-                            action_display += "..."
+                    # Determine action type
+                    if pred_state in ["DEFEND", "REPLENISH"]:
+                        action_type = "🔴 Risk"
+                        action_emoji = "🚨" if risk > rev * 0.15 else "⚠️"
+                    elif pred_state == "EXPLOIT" or growth > 0:
+                        action_type = "🟢 Growth"
+                        action_emoji = "💰" if opp_type == "CONQUEST" else "📈"
                     else:
-                        full_action = strategy.get("recommended_plan", strategy.get("recommended_action", strategy.get("ecom_action", "")))
-                        action_display = full_action.split('.')[0][:80] if full_action else "Monitor"
-                        if full_action and len(action_display) < len(full_action):
-                            action_display += "..."
+                        action_type = "⚪ Hold"
+                        action_emoji = "✅"
                     
-                    # Build state display with predictive state if not HOLD
-                    if pred_state != "HOLD":
-                        state_display = f"{strategic_state} → {pred_emoji}"
+                    # Build action text based on type
+                    if opp_type == "CONQUEST":
+                        action_display = f"{action_emoji} Competitor vulnerable - capture ${growth:.0f} in 30 days"
+                    elif opp_type == "PRICE_LIFT":
+                        action_display = f"{action_emoji} Price headroom detected - raise price to capture ${growth:.0f}"
+                    elif pred_state == "DEFEND":
+                        action_display = f"{action_emoji} Defend position - ${risk:.0f} at risk from velocity decline"
+                    elif pred_state == "REPLENISH":
+                        action_display = f"{action_emoji} Inventory alert - restock to prevent ${risk:.0f} stockout loss"
+                    elif pred_state == "EXPLOIT":
+                        action_display = f"{action_emoji} Exploit momentum - accelerate spend while rank improving"
                     else:
-                        state_display = strategic_state
+                        action_display = f"✅ Monitor - position stable"
                     
-                    row_data = {
-                        "ASIN": row.get('asin', ''),
+                    # State display
+                    state_display = f"{pred_state}"
+                    
+                    strategy_data.append({
+                        "ASIN": asin,
                         "Product": short_title,
+                        "Type": action_type,
                         "State": state_display,
                         "Action": action_display,
                         "Revenue": rev,
-                        "30d Risk": thirty_day_risk,
-                        "Certainty": model_certainty * 100,
-                    }
-                    
-                    # Add urgency indicator
-                    if alert_urgency == "HIGH":
-                        row_data["Action"] = f"🚨 {action_display}"
-                    elif alert_urgency == "MEDIUM":
-                        row_data["Action"] = f"⚠️ {action_display}"
-                    else:
-                        source = strategy.get("source", "")
-                        source_emoji = "🤖" if source == "llm" else "📊" if source == "fallback" else "💡"
-                        row_data["Action"] = f"{source_emoji} {action_display}"
-                    
-                    strategy_data.append(row_data)
+                        "Risk": risk,
+                        "Growth": growth,
+                        "Certainty": certainty * 100,
+                    })
                 
                 final_df = pd.DataFrame(strategy_data)
                 
-                # Sort by 30-Day Risk highest to lowest (prioritize highest risk items)
-                final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("30d Risk", ascending=False)
+                # Calculate combined opportunity (Risk + Growth) for sorting
+                final_df["Opportunity"] = final_df["Risk"] + final_df["Growth"]
+                
+                # Sort by combined Opportunity highest to lowest
+                final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Opportunity", ascending=False)
 
-                # Configure column display with predictive columns
+                # Configure column display with Risk/Growth type indicators
                 column_config = {
                     "ASIN": st.column_config.TextColumn("ASIN", width="small"),
                     "Product": st.column_config.TextColumn("Product", width="medium"),
+                    "Type": st.column_config.TextColumn("Type", width="small", help="🔴 Risk = Defensive action needed, 🟢 Growth = Offensive opportunity"),
                     "State": st.column_config.TextColumn("State", width="small", help="Strategic State → Predictive State"),
                     "Action": st.column_config.TextColumn("AI Recommendation", width="large"),
                     "Revenue": st.column_config.NumberColumn("Mo. Rev", format="$%.0f", width="small", help="Monthly revenue (90-day avg)"),
-                    "30d Risk": st.column_config.NumberColumn("30d Risk", format="$%.0f", width="small", help="Predicted 30-day revenue at risk if no action"),
+                    "Risk": st.column_config.NumberColumn("Risk", format="$%.0f", width="small", help="Predicted 30-day revenue at risk if no action"),
+                    "Growth": st.column_config.NumberColumn("Growth", format="$%.0f", width="small", help="Predicted 30-day revenue from growth opportunities"),
                     "Certainty": st.column_config.ProgressColumn(
-                        "Model Certainty",
+                        "Certainty",
                         format="%.0f%%",
                         min_value=0,
                         max_value=100,
                         width="small",
                         help="Model certainty based on data quality and trend consistency"
                     ),
+                    "Opportunity": None,  # Hide from display (used for sorting only)
                 }
 
+                # Display columns (exclude Opportunity which is just for sorting)
+                display_columns = ["ASIN", "Product", "Type", "State", "Action", "Revenue", "Risk", "Growth", "Certainty"]
+                
                 st.dataframe(
-                    final_df,
+                    final_df[display_columns],
                     use_container_width=True,
                     hide_index=True,
                     column_config=column_config
@@ -1383,9 +1576,9 @@ with main_tab1:
             st.markdown("### 🖼️ Visual Portfolio Audit")
             st.caption("Top 16 products by revenue")
     
-            # Use full data for visual audit (not filtered)
-            full_df = res["data"].copy()
-            gallery_df = full_df[full_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(16)
+            # Use enriched data for visual audit (no redundant copy)
+            full_df = enriched_portfolio_df
+            gallery_df = full_df[full_df["main_image"] != ""].nlargest(16, "weekly_sales_filled")
     
             if not gallery_df.empty:
                 cols = st.columns(4)

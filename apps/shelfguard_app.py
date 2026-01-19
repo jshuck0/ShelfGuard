@@ -1,17 +1,34 @@
+import sys
+from pathlib import Path
+
+# Add project root and apps directory to path for module resolution
+PROJECT_ROOT = Path(__file__).parent.parent
+APPS_DIR = Path(__file__).parent
+
+for path in [str(PROJECT_ROOT), str(APPS_DIR)]:
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
 import streamlit as st
 import pandas as pd
+import hashlib
+import re
+import os
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-from data import get_all_data
-from engine import run_weekly_analysis, run_date_range_analysis
-from finance import analyze_capital_efficiency, f_money, f_pct
-from demo_data import render_asin_upload_ui, get_demo_data, clear_demo_data
-from search_to_state_ui import render_discovery_ui, render_project_dashboard, render_project_selector, render_user_dashboard
+# App imports - local modules (same directory)
+from engine import analyze_strategic_matrix
+from finance import f_money, f_pct
+from search_to_state_ui import (
+    render_discovery_ui, 
+    render_project_dashboard, 
+    render_project_selector, 
+    render_user_dashboard
+)
 
 # Initialize OpenAI client
 try:
@@ -19,11 +36,53 @@ try:
 except Exception:
     openai_client = None
 
-import hashlib
-import re
-
 # Pre-compile regex for performance
 _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
+
+
+def get_product_strategy(row: dict, revenue: float = 0) -> dict:
+    """
+    Apply legacy analyze_strategic_matrix logic to a product row.
+    Returns the original directives plus calculated opportunity value.
+    
+    Uses existing logic from engine.py which already produces:
+    - ad_action: Media/ad directive (e.g., "🚀 SCALE +25%", "🛑 PAUSE ADS")
+    - ecom_action: Ecom directive (e.g., "📈 RAISE PRICE (+5%)", "💀 EXIT")
+    - problem_category: Issue type (e.g., "🔥 Losing Money", "🚀 Scale Winner")
+    - capital_zone: Zone classification
+    
+    Args:
+        row: Product row dictionary with metrics
+        revenue: Product revenue for opportunity calculation
+        
+    Returns:
+        dict with legacy outputs + opportunity_value
+    """
+    # Convert row to Series for analyze_strategic_matrix
+    row_series = pd.Series(row) if isinstance(row, dict) else row
+    
+    # Call existing strategic matrix logic
+    try:
+        result = analyze_strategic_matrix(row_series)
+        # Result: [ad_action, ecom_action, capital_zone, gap, efficiency, net_margin, problem_category, problem_reason]
+        return {
+            "ad_action": result[0] if len(result) > 0 else "⚖️ OPTIMIZE ROAS",
+            "ecom_action": result[1] if len(result) > 1 else "✅ MAINTAIN",
+            "capital_zone": result[2] if len(result) > 2 else "📊 Monitor",
+            "problem_category": result[6] if len(result) > 6 else "📊 Monitor",
+            "problem_reason": result[7] if len(result) > 7 else "",
+            "opportunity_value": revenue * 0.15 if revenue > 0 else 0
+        }
+    except Exception:
+        # Fallback if analysis fails
+        return {
+            "ad_action": "⚖️ OPTIMIZE ROAS",
+            "ecom_action": "✅ MAINTAIN", 
+            "capital_zone": "📊 Monitor",
+            "problem_category": "📊 Monitor",
+            "problem_reason": "Analysis pending",
+            "opportunity_value": revenue * 0.15 if revenue > 0 else 0
+        }
 
 def _hash_portfolio_data(portfolio_summary: str) -> str:
     """
@@ -250,11 +309,24 @@ with main_tab1:
         st.caption(f"🎯 Analyzing: **{target_brand}** vs. Market")
 
         # Step 2: Create two dataframes
-        portfolio_df = market_snapshot[market_snapshot['brand'] == target_brand].copy()
+        # Use case-insensitive brand matching to catch variations like "Tide", "TIDE", "tide"
+        target_brand_lower = target_brand.lower() if target_brand else ""
+        market_snapshot['brand_lower'] = market_snapshot['brand'].str.lower().fillna("")
+        portfolio_df = market_snapshot[market_snapshot['brand_lower'] == target_brand_lower].copy()
         market_df = market_snapshot.copy()  # Full market for comparison
 
-        # Add is_your_brand flag for backward compatibility
-        market_snapshot['is_your_brand'] = market_snapshot['brand'] == target_brand
+        # Add is_your_brand flag for backward compatibility (case-insensitive)
+        market_snapshot['is_your_brand'] = market_snapshot['brand_lower'] == target_brand_lower
+        
+        # Debug: Show brand distribution in market
+        if len(portfolio_df) <= 1:
+            # If only 1 product matched, show what brands are in the market for debugging
+            unique_brands = market_snapshot['brand'].value_counts().head(10)
+            with st.expander("🔍 Debug: Brand distribution in market snapshot"):
+                st.write(f"Target brand: '{target_brand}' (lowercase: '{target_brand_lower}')")
+                st.write(f"Matched {len(portfolio_df)} products")
+                st.write("Top 10 brands in market:")
+                st.dataframe(unique_brands)
 
         # Step 3: Calculate key metrics
         # Portfolio (Your Brand) metrics
@@ -318,7 +390,7 @@ with main_tab1:
         yoy_delta = res.get("yoy_delta", 0)
         share_delta = your_market_share / 100  # Use market share as proxy
 
-        # Build AI context for Strategic Brief (Brand vs Market)
+        # Build AI context - will be enhanced after Command Center metrics are calculated
         portfolio_context = f"""
         BRAND PERFORMANCE SNAPSHOT:
         - Brand: {target_brand}
@@ -331,123 +403,58 @@ with main_tab1:
         - Position: {"Market Leader" if your_market_share > 50 else "Challenger" if your_market_share > 20 else "Niche Player"}
         """
 
-        # 4. SYSTEM STATUS BANNER + HEADER
-        # Determine system status based on revenue performance
+        # 4. SYSTEM STATUS BANNER + HEADER (will be rendered after ai_brief is generated)
+        # Placeholder - status will be determined after checking ai_brief text
         total_rev_curr = res.get("total_rev", 0)
         target_revenue = total_rev_curr * 1.0  # Placeholder - would come from user's target
         revenue_gap = total_rev_curr - target_revenue
 
-        if revenue_gap < 0:
-            system_status = "🔴 SYSTEM STATUS: CRITICAL THREATS DETECTED"
-            status_bg = "#dc3545"
-        else:
-            system_status = "🟢 SYSTEM STATUS: OPTIMIZED"
-            status_bg = "#28a745"
-
-        # System Status Banner
-        st.markdown(f"""
-        <div style="background: {status_bg}; color: white; padding: 12px 20px; border-radius: 8px;
-                    margin-bottom: 20px; text-align: center; font-weight: 700; font-size: 14px;">
-            {system_status}
-        </div>
-        """, unsafe_allow_html=True)
-
         # Header with AI chat
         header_col1, header_col2 = st.columns([4, 1])
         with header_col1:
-            st.title("🛡️ Command Center")
-            st.caption(f"Workflow OS | Predictive Intelligence Active (36M Lookback)")
+            st.title("ShelfGuard OS")
     
         with header_col2:
             with st.popover("🤖 AI Assistant", use_container_width=True):
-                st.markdown("#### Strategy Assistant")
-                st.caption("Ask questions about your portfolio")
-            
-                # Display last response if exists
+                # Display chat messages
                 if st.session_state.chat_messages:
-                    last_msgs = st.session_state.chat_messages[-4:]
-                    for msg in last_msgs:
+                    for msg in st.session_state.chat_messages:
                         if msg["role"] == "user":
                             st.markdown(f'<div class="user-query-box">💬 {msg["content"]}</div>', unsafe_allow_html=True)
                         else:
                             st.markdown(f'<div class="ai-response-box">🤖 {msg["content"]}</div>', unsafe_allow_html=True)
-            
+                
                 st.markdown("---")
-            
-                # Quick action buttons
-                q_col1, q_col2 = st.columns(2)
-                if q_col1.button("📊 Summary", key="ai_q1", use_container_width=True):
-                    prompt = "Give me a 2-sentence portfolio summary with the key action I should take."
-                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                
+                # Chat input - simple text input with on_submit
+                user_input = st.chat_input("Ask a question about your Command Center...", key="ai_chat_input")
+                
+                if user_input:
+                    st.session_state.chat_messages.append({"role": "user", "content": user_input})
                     try:
+                        # Build conversation history for context
+                        messages_for_api = [
+                            {"role": "system", "content": f"You are ShelfGuard AI, a strategic advisor for the Command Center. Be concise and actionable. {portfolio_context}"}
+                        ]
+                        # Add conversation history (last 10 messages for context)
+                        for msg in st.session_state.chat_messages[-10:]:
+                            messages_for_api.append(msg)
+                        
                         response = openai_client.chat.completions.create(
                             model=st.secrets["openai"]["model"],
-                            messages=[
-                                {"role": "system", "content": f"You are ShelfGuard AI. Be concise (2 sentences max). {portfolio_context}"},
-                                {"role": "user", "content": prompt}
-                            ],
-                            max_tokens=150
+                            messages=messages_for_api,
+                            max_tokens=300
                         )
                         st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
                     except Exception as e:
                         st.session_state.chat_messages.append({"role": "assistant", "content": f"Error: {str(e)}"})
                     st.rerun()
-            
-                if q_col2.button("🚨 Risks", key="ai_q2", use_container_width=True):
-                    prompt = "What are my top 2 portfolio risks right now?"
-                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
-                    try:
-                        response = openai_client.chat.completions.create(
-                            model=st.secrets["openai"]["model"],
-                            messages=[
-                                {"role": "system", "content": f"You are ShelfGuard AI. Be concise (2 sentences max). {portfolio_context}"},
-                                {"role": "user", "content": prompt}
-                            ],
-                            max_tokens=150
-                        )
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
-                    except Exception as e:
-                        st.session_state.chat_messages.append({"role": "assistant", "content": f"Error: {str(e)}"})
-                    st.rerun()
-            
-                if q_col1.button("🚀 Actions", key="ai_q3", use_container_width=True):
-                    prompt = "What's the #1 action I should take this week?"
-                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
-                    try:
-                        response = openai_client.chat.completions.create(
-                            model=st.secrets["openai"]["model"],
-                            messages=[
-                                {"role": "system", "content": f"You are ShelfGuard AI. Be concise (2 sentences max). {portfolio_context}"},
-                                {"role": "user", "content": prompt}
-                            ],
-                            max_tokens=150
-                        )
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
-                    except Exception as e:
-                        st.session_state.chat_messages.append({"role": "assistant", "content": f"Error: {str(e)}"})
-                    st.rerun()
-            
-                if q_col2.button("🗑️ Clear", key="ai_q4", use_container_width=True):
-                    st.session_state.chat_messages = []
-                    st.rerun()
-            
-                # Custom question input
-                custom_q = st.text_input("Or ask anything:", placeholder="Why is share velocity negative?", key="custom_ai_q")
-                if custom_q:
-                    st.session_state.chat_messages.append({"role": "user", "content": custom_q})
-                    try:
-                        response = openai_client.chat.completions.create(
-                            model=st.secrets["openai"]["model"],
-                            messages=[
-                                {"role": "system", "content": f"You are ShelfGuard AI. Be concise and actionable. {portfolio_context}"},
-                                {"role": "user", "content": custom_q}
-                            ],
-                            max_tokens=200
-                        )
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
-                    except Exception as e:
-                        st.session_state.chat_messages.append({"role": "assistant", "content": f"Error: {str(e)}"})
-                    st.rerun()
+                
+                # Clear button
+                if st.session_state.chat_messages:
+                    if st.button("🗑️ Clear Chat", key="ai_clear", use_container_width=True):
+                        st.session_state.chat_messages = []
+                        st.rerun()
     
         # === COMPACT EXECUTIVE BRIEFING ===
         total_rev_curr = res.get("total_rev", 0)
@@ -605,41 +612,67 @@ with main_tab1:
         else:
             competitive_context = f"Concentrated market with {competitor_product_count} key competitors."
     
-        # Render the AI brief with refresh button
-        brief_col1, brief_col2 = st.columns([4, 1])
-        with brief_col1:
-            st.markdown(f"""
-            <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
-                        margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
-                    <div>
-                        <div style="font-size: 12px; color: #666; margin-bottom: 4px;">{date_label} {date_display}</div>
-                        <div style="font-size: 22px; font-weight: 700; color: #1a1a1a;">
-                            {status_emoji} {status_text}: {top_action}
-                        </div>
-                    </div>
-                    <div style="text-align: right;">
-                        <div style="font-size: 28px; font-weight: 700; color: #00704A;">{f_money(total_rev_curr)}</div>
-                        <div style="font-size: 11px; color: #666;">Weekly Revenue</div>
+        # === ACTION A: CHECK AI BRIEF FOR THREAT KEYWORDS AND OVERRIDE STATUS BANNER ===
+        # Check if ai_brief contains threat, erosion, or critical keywords
+        ai_brief_lower = ai_brief.lower() if ai_brief else ""
+        has_threat_keywords = any(keyword in ai_brief_lower for keyword in ["threat", "erosion", "critical"])
+        
+        # FIX 2: Override status header to match banner (red when threat detected)
+        # This must happen AFTER status_emoji, status_text, and top_action are set above
+        if has_threat_keywords or "threat" in ai_brief_lower or "critical" in ai_brief_lower or "erosion" in ai_brief_lower:
+            # Override status header to match red banner
+            status_emoji = "🔴"
+            status_text = "DEFENSE PROTOCOL"
+            top_action = "CONTAINMENT"
+        
+        # Override top status banner if threat keywords found
+        if has_threat_keywords:
+            system_status = "🔴 THREAT DETECTED"
+            status_bg = "#dc3545"
+        else:
+            # Default status based on revenue gap (original logic)
+            if revenue_gap < 0:
+                system_status = "🔴 SYSTEM STATUS: CRITICAL THREATS DETECTED"
+                status_bg = "#dc3545"
+            else:
+                system_status = "🟢 SYSTEM STATUS: OPTIMIZED"
+                status_bg = "#28a745"
+        
+        # Render System Status Banner (now checked against ai_brief)
+        st.markdown(f"""
+        <div style="background: {status_bg}; color: white; padding: 12px 20px; border-radius: 8px;
+                    margin-bottom: 20px; text-align: center; font-weight: 700; font-size: 14px;">
+            {system_status}
+        </div>
+        """, unsafe_allow_html=True)
+    
+        # Render the AI brief (full width, no regenerate button)
+        st.markdown(f"""
+        <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
+                    margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                <div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 4px;">{date_label} {date_display}</div>
+                    <div style="font-size: 22px; font-weight: 700; color: #1a1a1a;">
+                        {status_emoji} {status_text}: {top_action}
                     </div>
                 </div>
-                <div style="background: #f8f9fa; padding: 14px; border-radius: 6px; margin-top: 10px;">
-                    <div style="font-size: 11px; color: #00704A; font-weight: 600; margin-bottom: 6px;">{brief_source}</div>
-                    <div style="font-size: 14px; color: #333; line-height: 1.5;">
-                        {ai_brief}
-                    </div>
-                    <div style="font-size: 12px; color: #666; margin-top: 10px;">
-                        {share_context} {competitive_context}
-                    </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 28px; font-weight: 700; color: #00704A;">{f_money(total_rev_curr)}</div>
+                    <div style="font-size: 11px; color: #666;">Weekly Revenue</div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
-        with brief_col2:
-            if brief_source == "🤖 STRATEGIC BRIEF":
-                st.markdown("<br>", unsafe_allow_html=True)  # Spacing
-                if st.button("🔄 Regenerate", key="refresh_brief", help="Force regenerate AI brief (bypasses cache)"):
-                    st.session_state.force_refresh_brief = True
-                    st.rerun()
+            <div style="background: #f8f9fa; padding: 14px; border-radius: 6px; margin-top: 10px;">
+                <div style="font-size: 11px; color: #00704A; font-weight: 600; margin-bottom: 6px;">{brief_source}</div>
+                <div style="font-size: 14px; color: #333; line-height: 1.5;">
+                    {ai_brief}
+                </div>
+                <div style="font-size: 12px; color: #666; margin-top: 10px;">
+                    {share_context} {competitive_context}
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
         # --- STRATEGIC TILES ---
         c1, c2, c3, c4 = st.columns(4)
@@ -666,8 +699,21 @@ with main_tab1:
     
         # TILE 2: Defense Score
         with c2:
-            healthy_zones = ["🏰 FORTRESS (Cash Flow)", "🚀 FRONTIER (Growth)"]
-            defense_score = (res["data"][res["data"]["capital_zone"].isin(healthy_zones)]["weekly_sales_filled"].sum() / total_rev_curr) * 100 if total_rev_curr > 0 else 0
+            # ACTION B: New Defense Score calculation (max 98, subtract 15 if Critical)
+            # Check if status is Critical - either from status_text OR from threat keywords in AI brief
+            # Note: has_threat_keywords is defined earlier in the code (line 609)
+            is_critical_status = (status_text == "CRITICAL") or has_threat_keywords
+            
+            # Start at 98, subtract 15 if Critical
+            defense_score_base = 98
+            if is_critical_status:
+                defense_score = defense_score_base - 15  # 98 - 15 = 83
+            else:
+                # For non-critical, use the healthy zones calculation but cap at 98
+                healthy_zones = ["🏰 FORTRESS (Cash Flow)", "🚀 FRONTIER (Growth)"]
+                calculated_score = (res["data"][res["data"]["capital_zone"].isin(healthy_zones)]["weekly_sales_filled"].sum() / total_rev_curr) * 100 if total_rev_curr > 0 else 0
+                # Cap at 98 (never reach 100)
+                defense_score = min(calculated_score, 98)
 
             # Determine benchmark status
             if defense_score >= 85:
@@ -697,8 +743,21 @@ with main_tab1:
     
         # TILE 3: Recoverable Alpha
         with c3:
-            bad_zones = ["📉 DRAG (Waste)", "📉 DRAG (Terminal Decay)", "🩸 BLEED (Negative Margin)"]
-            recoverable_alpha = res["data"][res["data"]["capital_zone"].isin(bad_zones)]["weekly_sales_filled"].sum()
+            # FIX: Calculate Recoverable Alpha from opportunity_value (Revenue * 0.15) for all products
+            # This matches the Action Queue table calculation
+            portfolio_df = res["data"].copy()
+            
+            # Ensure opportunity_value is calculated for every row (default to Revenue * 0.15)
+            if "opportunity_value" not in portfolio_df.columns:
+                portfolio_df["opportunity_value"] = portfolio_df["weekly_sales_filled"] * 0.15
+            else:
+                # Fill any missing values with default calculation
+                portfolio_df["opportunity_value"] = portfolio_df["opportunity_value"].fillna(
+                    portfolio_df["weekly_sales_filled"] * 0.15
+                )
+            
+            # Sum all opportunity values (this matches the table total)
+            recoverable_alpha = portfolio_df["opportunity_value"].sum()
             leak_exposure = (recoverable_alpha / total_rev_curr) if total_rev_curr > 0 else 0
 
             # 1. Benchmark Logic: Define the Severity
@@ -762,209 +821,225 @@ with main_tab1:
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-    
-            # --- AI ACTION QUEUE ---
-            tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
-
-            with tab1:
-                # AI ACTION QUEUE - Unified view with AI-prioritized actions
-                display_df = res["data"].copy()
         
-                # === TOP PRIORITIES (Brand Portfolio Analysis) ===
-                # Note: display_df now contains ONLY the target brand's products
-                st.markdown(f"#### 🎯 {target_brand} Portfolio Actions")
+        # === ENHANCE AI CONTEXT WITH COMMAND CENTER METRICS ===
+        # Now that all Command Center metrics are calculated, enhance the portfolio context for AI assistant
+        portfolio_context += f"""
+        
+        COMMAND CENTER METRICS:
+        - System Status: {system_status}
+        - Defense Score: {defense_score:.0f}/100 ({benchmark_status}) - {"Critical threats detected, score penalized by -15" if is_critical_status else "Healthy zones calculated"}
+        - Recoverable Alpha: ${recoverable_alpha:,.0f} ({leak_exposure:.1%} at risk - {leak_status}) - Value recoverable from underperforming products
+        - Banked Alpha: ${banked_alpha:,.0f} ({task_count} tasks completed - {alpha_status}) - Value captured from resolved actions
+        - Status Banner: {system_status} - {"Threat detected in Strategic Brief" if has_threat_keywords else "System status based on performance"}
+        - Strategic Brief: {ai_brief[:200] if ai_brief else "Generating..."} {"[THREAT DETECTED]" if has_threat_keywords else ""}
+        
+        ACTION QUEUE (Hit List):
+        - Products prioritized by Opportunity ($) = Revenue × 0.15
+        - Sorted highest to lowest Opportunity value
+        - Use "RESOLVE" button to mark actions complete and bank the alpha
+        - Total action items available: {portfolio_product_count} products
+        """
+    
+        # --- AI ACTION QUEUE (Outside of columns - full width) ---
+        tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
+
+        with tab1:
+            # AI ACTION QUEUE - Unified view with AI-prioritized actions
+            display_df = res["data"].copy()
+    
+            # === TOP PRIORITIES (Brand Portfolio Analysis) ===
+            # Note: display_df now contains ONLY the target brand's products
+            st.markdown(f"#### 🎯 {target_brand} Portfolio Actions")
 
                 # For single-brand portfolio, show top products by revenue
-                top_products = display_df.nlargest(3, 'weekly_sales_filled')
+            top_products = display_df.nlargest(3, 'weekly_sales_filled')
 
-                if not top_products.empty:
-                    priority_cols = st.columns(len(top_products))
+            if not top_products.empty:
+                priority_cols = st.columns(len(top_products))
 
-                    for i, (idx, product) in enumerate(top_products.iterrows()):
-                        rev = product['weekly_sales_filled']
-                        asin = product['asin']
-                        title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
+                for i, (idx, product) in enumerate(top_products.iterrows()):
+                    rev = product['weekly_sales_filled']
+                    asin = product['asin']
+                    title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
-                        # All products are "your brand" - color code by revenue contribution
-                        revenue_share = (rev / portfolio_revenue * 100) if portfolio_revenue > 0 else 0
-                        if revenue_share > 20:
-                            color, action = "#28a745", "Protect - Top Performer"
-                        elif revenue_share > 10:
-                            color, action = "#00704A", "Scale - Strong Product"
-                        else:
-                            color, action = "#ffc107", "Optimize - Growth Opportunity"
+                    # === LEGACY AI LOGIC: Call analyze_strategic_matrix directly ===
+                    strategy = get_product_strategy(product.to_dict(), revenue=rev)
+                    problem_category = strategy["problem_category"]
+                    ad_action = strategy["ad_action"]
+                    ecom_action = strategy["ecom_action"]
+                    opportunity_value = strategy["opportunity_value"]
+                    
+                    # Color code by problem category (using existing emoji-based logic)
+                    if "Losing Money" in problem_category or "🔥" in problem_category:
+                        color = "#dc3545"  # Red
+                    elif "Losing Share" in problem_category or "📉" in problem_category:
+                        color = "#ffc107"  # Yellow
+                    elif "Scale Winner" in problem_category or "🚀" in problem_category:
+                        color = "#28a745"  # Green
+                    elif "Healthy" in problem_category or "✅" in problem_category:
+                        color = "#00704A"  # Starbucks green
+                    else:
+                        color = "#6c757d"  # Gray
 
-                        # Check if task is completed
-                        task_id = f"priority_{i}_{asin}"
-                        is_completed = task_id in st.session_state.get('completed_tasks', set())
+                    # Check if task is completed
+                    task_id = f"priority_{i}_{asin}"
+                    is_completed = task_id in st.session_state.get('completed_tasks', set())
 
-                        with priority_cols[i]:
-                            # Card styling changes based on completion
-                            card_opacity = "0.5" if is_completed else "1.0"
-                            card_bg = "#f0f0f0" if is_completed else "white"
+                    with priority_cols[i]:
+                        # Card styling changes based on completion
+                        card_opacity = "0.5" if is_completed else "1.0"
+                        card_bg = "#f0f0f0" if is_completed else "white"
 
-                            st.markdown(f"""
-                            <div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px;
-                                        border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-                                        opacity: {card_opacity};">
-                                <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase;">#{i+1} PRIORITY</div>
-                                <div style="font-size: 12px; color: #666; margin-top: 2px;">{title}</div>
-                                <div style="font-size: 24px; color: #1a1a1a; font-weight: 700; margin: 8px 0 4px 0;">{revenue_share:.1f}%</div>
-                                <div style="font-size: 14px; color: #00704A; font-weight: 600;">{f_money(rev)}/month</div>
-                                <div style="font-size: 11px; color: #666; margin-top: 6px;">→ {action}</div>
-                                <div style="font-size: 10px; color: #999; margin-top: 4px; font-family: monospace;">{asin}</div>
+                        st.markdown(f"""
+                        <div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px;
+                                    border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                                    opacity: {card_opacity};">
+                            <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase;">#{i+1} PRIORITY</div>
+                            <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
+                            <div style="font-size: 24px; color: {color}; font-weight: 700; margin: 4px 0 4px 0;">{f_money(opportunity_value)}</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 2px;">Recoverable</div>
+                            <div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+                                <div style="margin-bottom: 4px;"><strong>Ad:</strong> {ad_action}</div>
+                                <div><strong>Ecom:</strong> {ecom_action}</div>
                             </div>
-                            """, unsafe_allow_html=True)
+                            <div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{asin}</div>
+                            <div style="font-size: 10px; color: #666; margin-top: 2px;">{title[:30]}...</div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-                            # Execute button
-                            if is_completed:
-                                st.success("✅ Analyzed", icon="✅")
-                            else:
-                                if st.button(f"Analyze", key=f"exec_{task_id}", use_container_width=True, type="primary"):
-                                    # Mark task as completed
-                                    if 'completed_tasks' not in st.session_state:
-                                        st.session_state['completed_tasks'] = set()
-                                    st.session_state['completed_tasks'].add(task_id)
-
-                                    # Increment Banked Alpha
-                                    st.session_state['banked_alpha'] = st.session_state.get('banked_alpha', 0) + rev
-
-                                    st.success(f"✅ Product analyzed - {revenue_share:.1f}% of portfolio revenue")
-                                    st.rerun()
-                else:
-                    st.info("No products found in portfolio.")
-            
-                    st.markdown("---")
+                        # Execute button - ACTION 4: Rename to "RESOLVE"
+                        if is_completed:
+                            st.success("✅ Resolved", icon="✅")
+                        else:
+                            if st.button(f"RESOLVE", key=f"exec_{task_id}", use_container_width=True, type="primary"):
+                                # Mark task as completed
+                                if 'completed_tasks' not in st.session_state:
+                                    st.session_state['completed_tasks'] = set()
+                                st.session_state['completed_tasks'].add(task_id)
+                                
+                                # Increment Banked Alpha with opportunity value (not just revenue)
+                                st.session_state['banked_alpha'] = st.session_state.get('banked_alpha', 0) + opportunity_value
+                                
+                                st.success(f"✅ Product resolved - {f_money(opportunity_value)} banked")
+                                st.rerun()
+            else:
+                st.info("No products found in portfolio.")
         
-                # === FULL ACTION LIST ===
-                st.markdown("#### 📋 Full Action Queue")
-        
-                # Filter controls
-                if 'problem_category' in display_df.columns:
-                    problem_options = ["All Products"] + sorted(display_df['problem_category'].dropna().unique().tolist())
-                else:
-                    problem_options = ["All Products"]
-        
-                selected_problem = st.selectbox("Filter by problem type", options=problem_options, key="problem_filter")
-        
-                # Apply filter
-                if selected_problem and selected_problem != "All Products" and 'problem_category' in display_df.columns:
-                    display_df = display_df[display_df['problem_category'] == selected_problem]
-        
-                # Show count
-                st.caption(f"Showing **{len(display_df)}** products" + (f" in **{selected_problem}**" if selected_problem != "All Products" else "") + " — sorted by revenue")
-        
-                try:
-                    # Streamlined columns for Discovery data (brand portfolio)
-                    cols_to_show = ["asin"]
-
-                    # Add title if available
-                    if "title" in display_df.columns:
-                        cols_to_show.append("title")
-
-                    # Add brand if available
-                    if "brand" in display_df.columns:
-                        cols_to_show.append("brand")
-
-                    # Add price if available
-                    if "price" in display_df.columns:
-                        cols_to_show.append("price")
-
-                    # Always show revenue
-                    cols_to_show.append("weekly_sales_filled")
-
-                    # Add BSR if available
-                    if "bsr" in display_df.columns:
-                        cols_to_show.append("bsr")
-
-                    # Build column rename mapping
-                    rename_map = {
-                        "asin": "ASIN",
-                        "title": "Product Title",
-                        "brand": "Brand",
-                        "price": "Price",
-                        "weekly_sales_filled": "Revenue",
-                        "bsr": "Sales Rank"
-                    }
-
-                    final_df = display_df[cols_to_show].copy()
-                    final_df = final_df.rename(columns=rename_map)
-                    final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Revenue", ascending=False)
-
-                    # Configure column display
-                    column_config = {
-                        "Revenue": st.column_config.NumberColumn(format="$%.0f"),
-                    }
-
-                    # Add price formatting if column exists
-                    if "Price" in final_df.columns:
-                        column_config["Price"] = st.column_config.NumberColumn(format="$%.2f")
-
-                    # Add BSR formatting if column exists
-                    if "Sales Rank" in final_df.columns:
-                        column_config["Sales Rank"] = st.column_config.NumberColumn(format="%d")
-
-                    st.dataframe(
-                        final_df,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config=column_config
-                    )
-            
-                except Exception as table_err:
-                    st.error("Unable to render Execution Queue.")
-                    st.exception(table_err)
-
-            with tab2:
-                st.markdown("### 🖼️ Visual Portfolio Audit")
-                st.caption("Top 16 products by revenue")
-        
-                # Use full data for visual audit (not filtered)
-                full_df = res["data"].copy()
-                gallery_df = full_df[full_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(16)
-        
-                if not gallery_df.empty:
-                    cols = st.columns(4)
-                    for i, (_, row) in enumerate(gallery_df.iterrows()):
-                        with cols[i % 4]:
-                            clean_title = (row['title'][:45] + '...') if len(row['title']) > 45 else row['title']
-                            problem = row.get('problem_category', row.get('capital_zone', 'N/A'))
+            st.markdown("---")
+    
+            # === FULL ACTION LIST ===
+            st.markdown("#### 📋 Full Action Queue")
+    
+            # Filter controls
+            if 'problem_category' in display_df.columns:
+                problem_options = ["All Products"] + sorted(display_df['problem_category'].dropna().unique().tolist())
+            else:
+                problem_options = ["All Products"]
+    
+            selected_problem = st.selectbox("Filter by problem type", options=problem_options, key="problem_filter")
+    
+            # Apply filter
+            if selected_problem and selected_problem != "All Products" and 'problem_category' in display_df.columns:
+                display_df = display_df[display_df['problem_category'] == selected_problem]
+    
+            # Show count
+            st.caption(f"Showing **{len(display_df)}** products" + (f" in **{selected_problem}**" if selected_problem != "All Products" else "") + " — sorted by revenue")
+    
+            try:
+                # === APPLY LEGACY AI LOGIC: analyze_strategic_matrix ===
+                # Generate strategy for each row using existing logic
+                strategy_data = []
+                for idx, row in display_df.iterrows():
+                    rev = row.get('weekly_sales_filled', 0)
+                    strategy = get_product_strategy(row.to_dict(), revenue=rev)
                     
-                            # Color based on problem
-                            if "Losing Money" in str(problem):
-                                badge_color = "#dc3545"
-                            elif "Losing Share" in str(problem) or "Price Problem" in str(problem):
-                                badge_color = "#f57c00"
-                            elif "Scale" in str(problem) or "Healthy" in str(problem):
-                                badge_color = "#28a745"
-                            else:
-                                badge_color = "#666"
+                    # Truncate title for display
+                    title = row.get('title', row.get('asin', ''))
+                    short_title = title[:30] + "..." if len(title) > 30 else title
                     
-                            # Get 36M metrics
-                            velocity = row.get('velocity_decay', 1.0)
-                            velocity_color = "#28a745" if velocity < 0.9 else "#dc3545" if velocity > 1.2 else "#666"
-                            velocity_label = "🚀 Accelerating" if velocity < 0.9 else "📉 Decaying" if velocity > 1.2 else "→ Stable"
-                            forecast = row.get('forecast_signal', '→ STABLE')
-                    
-                            st.markdown(f"""
-                                <div class="product-card">
-                                    <img src="{row['main_image']}" class="product-img">
-                                    <div style="margin-top: 10px; height: 40px; overflow: hidden;">
-                                        <span style="font-size: 0.8rem; color: #333; font-weight: 500;">{clean_title}</span>
-                                    </div>
-                                    <div style="font-size: 1.1rem; color: #00704A; font-weight: 700; margin-top: 6px;">
-                                        {f_money(row['weekly_sales_filled'])}
-                                    </div>
-                                    <div style="font-size: 0.7rem; color: {badge_color}; font-weight: 600; margin-top: 4px;">{problem}</div>
-                                    <div style="font-size: 0.65rem; color: {velocity_color}; margin-top: 4px;">
-                                        <strong>36M:</strong> {velocity:.2f}x ({velocity_label})
-                                    </div>
-                                    <div style="font-size: 0.65rem; color: #666; margin-top: 2px;">{forecast}</div>
-                                    <div style="font-size: 0.6rem; color: #999; margin-top: 2px;">{row['asin']}</div>
+                    strategy_data.append({
+                        "ASIN": row.get('asin', ''),
+                        "Product": short_title,
+                        "Status": strategy["problem_category"],
+                        "Ad Action": strategy["ad_action"],
+                        "Ecom Action": strategy["ecom_action"],
+                        "Revenue": rev,
+                        "Opportunity ($)": strategy["opportunity_value"]
+                    })
+                
+                final_df = pd.DataFrame(strategy_data)
+                
+                # Sort by Opportunity ($) highest to lowest
+                final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Opportunity ($)", ascending=False)
+
+                # Configure column display
+                column_config = {
+                    "Revenue": st.column_config.NumberColumn(format="$%.0f"),
+                    "Opportunity ($)": st.column_config.NumberColumn(format="$%.0f"),
+                }
+
+                st.dataframe(
+                    final_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=column_config
+                )
+        
+            except Exception as table_err:
+                st.error("Unable to render Execution Queue.")
+                st.exception(table_err)
+
+        with tab2:
+            st.markdown("### 🖼️ Visual Portfolio Audit")
+            st.caption("Top 16 products by revenue")
+    
+            # Use full data for visual audit (not filtered)
+            full_df = res["data"].copy()
+            gallery_df = full_df[full_df["main_image"] != ""].sort_values("weekly_sales_filled", ascending=False).head(16)
+    
+            if not gallery_df.empty:
+                cols = st.columns(4)
+                for i, (_, row) in enumerate(gallery_df.iterrows()):
+                    with cols[i % 4]:
+                        clean_title = (row['title'][:45] + '...') if len(row['title']) > 45 else row['title']
+                        problem = row.get('problem_category', row.get('capital_zone', 'N/A'))
+                
+                        # Color based on problem
+                        if "Losing Money" in str(problem):
+                            badge_color = "#dc3545"
+                        elif "Losing Share" in str(problem) or "Price Problem" in str(problem):
+                            badge_color = "#f57c00"
+                        elif "Scale" in str(problem) or "Healthy" in str(problem):
+                            badge_color = "#28a745"
+                        else:
+                            badge_color = "#666"
+                
+                        # Get 36M metrics
+                        velocity = row.get('velocity_decay', 1.0)
+                        velocity_color = "#28a745" if velocity < 0.9 else "#dc3545" if velocity > 1.2 else "#666"
+                        velocity_label = "🚀 Accelerating" if velocity < 0.9 else "📉 Decaying" if velocity > 1.2 else "→ Stable"
+                        forecast = row.get('forecast_signal', '→ STABLE')
+                
+                        st.markdown(f"""
+                            <div class="product-card">
+                                <img src="{row['main_image']}" class="product-img">
+                                <div style="margin-top: 10px; height: 40px; overflow: hidden;">
+                                    <span style="font-size: 0.8rem; color: #333; font-weight: 500;">{clean_title}</span>
                                 </div>
-                            """, unsafe_allow_html=True)
-                else:
-                    st.info("No product images available.")
+                                <div style="font-size: 1.1rem; color: #00704A; font-weight: 700; margin-top: 6px;">
+                                    {f_money(row['weekly_sales_filled'])}
+                                </div>
+                                <div style="font-size: 0.7rem; color: {badge_color}; font-weight: 600; margin-top: 4px;">{problem}</div>
+                                <div style="font-size: 0.65rem; color: {velocity_color}; margin-top: 4px;">
+                                    <strong>36M:</strong> {velocity:.2f}x ({velocity_label})
+                                </div>
+                                <div style="font-size: 0.65rem; color: #666; margin-top: 2px;">{forecast}</div>
+                                <div style="font-size: 0.6rem; color: #999; margin-top: 2px;">{row['asin']}</div>
+                            </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("No product images available.")
 
     except Exception as e:
         st.error(f"🛡️ Command Center Offline: {e}")

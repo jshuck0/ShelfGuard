@@ -17,7 +17,6 @@ import plotly.graph_objects as go
 from typing import Optional
 
 # Import core modules
-from src.discovery import execute_market_discovery
 from src.persistence import (
     pin_to_state,
     get_mission_profile_config,
@@ -292,14 +291,19 @@ def render_discovery_ui() -> None:
                                 return
 
                             # Prepare stats for display
+                            # Use effective_category_path from market_stats (set by progressive fallback)
+                            effective_path = market_stats.get("effective_category_path", seed_product["category_path"])
                             stats = {
-                                "query": f'"{search_keyword}" ({seed_product["category_path"]})',
-                                "category": seed_product["category_path"],
+                                "query": f'"{search_keyword}" ({effective_path})',
+                                "category": effective_path,
                                 "total_asins": market_stats["total_products"],
                                 "pruned_asins": market_stats["validated_products"],
                                 "pruned_pct": (market_stats["validated_products"] / market_stats["total_products"] * 100) if market_stats["total_products"] > 0 else 0,
                                 "revenue_captured_pct": 80.0,  # By design
-                                "total_revenue_proxy": market_stats["validated_revenue"]
+                                "total_revenue_proxy": market_stats["validated_revenue"],
+                                "effective_category_id": market_stats.get("effective_category_id"),
+                                "df_weekly": market_stats.get("df_weekly"),  # Include weekly data from phase2
+                                "time_period": market_stats.get("time_period", "90 days"),  # Time period represented
                             }
 
                             # Store in session state so they persist across reruns
@@ -348,14 +352,19 @@ def render_discovery_ui() -> None:
                                 )
                                 if not market_snapshot.empty:
                                     # Restore data from cache
+                                    # Use effective_category_path from market_stats (set by progressive fallback)
+                                    effective_path = market_stats.get("effective_category_path", params["category_path"])
                                     stats = {
-                                        "query": f'"{params["search_keyword"]}" ({params["category_path"]})',
-                                        "category": params["category_path"],
+                                        "query": f'"{params["search_keyword"]}" ({effective_path})',
+                                        "category": effective_path,
                                         "total_asins": market_stats["total_products"],
                                         "pruned_asins": market_stats["validated_products"],
                                         "pruned_pct": (market_stats["validated_products"] / market_stats["total_products"] * 100) if market_stats["total_products"] > 0 else 0,
                                         "revenue_captured_pct": 80.0,
-                                        "total_revenue_proxy": market_stats["validated_revenue"]
+                                        "total_revenue_proxy": market_stats["validated_revenue"],
+                                        "effective_category_id": market_stats.get("effective_category_id"),
+                                        "df_weekly": market_stats.get("df_weekly"),  # Include weekly data from phase2
+                                        "time_period": market_stats.get("time_period", "90 days"),  # Time period represented
                                     }
                                     st.session_state["discovery_market_snapshot"] = market_snapshot
                                     st.session_state["discovery_stats"] = stats
@@ -408,10 +417,11 @@ def render_discovery_ui() -> None:
         )
 
     with col4:
+        time_period = stats.get("time_period", "current")
         st.metric(
-            "Total Revenue Proxy",
+            "Monthly Revenue (90-day avg)" if "90" in time_period else "Monthly Revenue Est.",
             f"${stats['total_revenue_proxy']:,.0f}",
-            delta=None
+            delta=f"Based on {time_period}" if time_period != "current" else None
         )
 
     # Visualizations
@@ -543,12 +553,20 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
 
     # Pin button
     if st.button("🚀 Create Project & Backfill History", type="primary", key=f"create_project_btn_{context}"):
-        with st.spinner("📊 Fetching 3 months of detailed market data..."):
-            # Fetch detailed weekly data for User Dashboard analysis
-            from src.two_phase_discovery import fetch_detailed_weekly_data
-            
+        with st.spinner("📊 Processing market data..."):
             asins = market_snapshot["asin"].tolist()
-            df_weekly = fetch_detailed_weekly_data(tuple(asins), days=90)  # Tuple for caching
+            
+            # Use df_weekly from market_stats if available (already fetched in phase2)
+            # This avoids duplicate API calls since phase2 now fetches 90-day history
+            df_weekly = stats.get("df_weekly") if isinstance(stats.get("df_weekly"), pd.DataFrame) else None
+            
+            if df_weekly is None or df_weekly.empty:
+                # Fallback: Fetch detailed weekly data if not already in stats
+                from src.two_phase_discovery import fetch_detailed_weekly_data
+                st.caption("📊 Fetching 3 months of detailed market data...")
+                df_weekly = fetch_detailed_weekly_data(tuple(asins), days=90)  # Tuple for caching
+            else:
+                st.caption(f"✅ Using pre-fetched 90-day historical data ({len(df_weekly)} rows)")
             
             # Save mapping with detailed data to User Dashboard
             mapping_id = save_market_mapping(
@@ -710,19 +728,18 @@ def render_project_dashboard(project_id: str) -> None:
 
 def render_project_selector() -> Optional[str]:
     """
-    Sidebar component for selecting existing projects.
+    Main area component for selecting existing projects.
 
     Returns:
         Selected project_id or None
     """
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📂 Your Projects")
+    st.markdown("### 📂 Your Projects")
 
     # Load user projects
     projects_df = load_user_projects(user_id=None)  # TODO: Get from auth
 
     if projects_df.empty:
-        st.sidebar.info("No projects yet. Use Discovery to create one.")
+        st.info("No projects yet. Use Discovery to create one.")
         return None
 
     # Project dropdown
@@ -731,11 +748,11 @@ def render_project_selector() -> Optional[str]:
         for _, row in projects_df.iterrows()
     }
 
-    selected_id = st.sidebar.selectbox(
+    selected_id = st.selectbox(
         "Select Project",
         options=list(project_options.keys()),
         format_func=lambda x: project_options[x],
-        label_visibility="collapsed"
+        label_visibility="visible"
     )
 
     return selected_id

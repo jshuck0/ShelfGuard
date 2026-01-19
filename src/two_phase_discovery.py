@@ -9,10 +9,11 @@ Phase 1 (Seed Discovery):
     - Extract category breadcrumb for Phase 2
 
 Phase 2 (Market Mapping):
-    - Fetch products from seed's category
-    - DYNAMIC: Keep fetching until 80% of category revenue captured
-    - LLM validates competitive relevance
-    - Result: Clean denominator for market share calculations
+    - Fetch products from seed's category (100 ASINs)
+    - Fetch 90 days of historical price/BSR data for those ASINs
+    - Build weekly tables using same methodology as main dashboard
+    - Aggregate to create snapshot with actual historical revenue
+    - Result: Clean denominator for market share calculations based on real data
 """
 
 import pandas as pd
@@ -25,6 +26,10 @@ import os
 import time
 from openai import OpenAI
 import json
+
+# Import scrapers for building weekly tables
+from scrapers.keepa_client import build_keepa_weekly_table
+from src.backfill import fetch_90day_history
 
 
 KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
@@ -169,11 +174,16 @@ def phase1_seed_discovery(
             if csv and len(csv) > 3 and csv[3]:
                 bsr = csv[3][-1] if len(csv[3]) > 0 and csv[3][-1] != -1 else 0
 
-            # Extract brand (first word of title)
-            brand = title.split()[0] if title else "Unknown"
+            # Extract brand from Keepa data (use brand field directly, fallback to title)
+            brand = product.get("brand", "")
+            if not brand:
+                brand = title.split()[0] if title else "Unknown"
 
             # Extract all category IDs from the tree (for progressive fallback)
             category_tree_ids = [cat.get("catId", 0) for cat in category_tree] if category_tree else [root_category]
+            
+            # Also store category names for building effective_category_path later
+            category_tree_names = [cat.get("name", "") for cat in category_tree] if category_tree else ["Unknown"]
             
             records.append({
                 "asin": asin,
@@ -182,6 +192,7 @@ def phase1_seed_discovery(
                 "category_id": root_category,  # Root category for backward compatibility
                 "leaf_category_id": leaf_category_id,  # Leaf node for high relevance/purity
                 "category_tree_ids": category_tree_ids,  # Full tree for progressive fallback
+                "category_tree_names": category_tree_names,  # Names for building paths
                 "category_path": category_path,
                 "price": price,
                 "bsr": bsr
@@ -232,10 +243,23 @@ def phase2_category_market_mapping(
     if not KEEPA_API_KEY:
         raise ValueError("KEEPA_API_KEY not found")
 
-    # Display category info
+    # Display category info with debugging
     st.info(f"🎯 Fetching 100 ASINs from category: {category_id}")
     if category_path:
         st.caption(f"📂 Category: {category_path}")
+    
+    # Debug: Show what category filters will be used
+    with st.expander("🔍 Debug: Category Filtering Parameters", expanded=False):
+        st.write(f"**Root Category ID:** {category_id}")
+        st.write(f"**Leaf Category ID:** {leaf_category_id}")
+        st.write(f"**Category Path:** {category_path}")
+        st.write(f"**Category Tree IDs:** {category_tree_ids}")
+        st.write(f"**Seed ASIN:** {seed_asin}")
+        if leaf_category_id:
+            st.success(f"✅ **API Query**: Using categories_include=[{leaf_category_id}] + rootCategory=[{category_id}]")
+            st.info("Using categories_include for precise subcategory filtering (per Keepa API docs)")
+        else:
+            st.warning(f"⚠️ No leaf category - using rootCategory=[{category_id}] only")
 
     # Fetch products from the category in batches
     # Target: 100 products with valid price/BSR
@@ -252,20 +276,111 @@ def phase2_category_market_mapping(
     # Initialize Keepa for query() calls
     api = keepa.Keepa(KEEPA_API_KEY)
 
-    # Continue fetching until we have 100 valid products (with price/BSR)
-    while len(all_products) < target_valid_products:
+    # ========== PROGRESSIVE CATEGORY FALLBACK ==========
+    # Per Keepa docs:
+    #   - categories_include: filters by products DIRECTLY in those subcategories (precise)
+    #   - rootCategory: filters by root category (broad)
+    # Strategy: Start with leaf, walk up tree until we find a level with >= min_products
+    
+    effective_category_id = leaf_category_id if leaf_category_id else category_id
+    effective_category_path = category_path or ""
+    use_categories_include = leaf_category_id is not None  # True if we have a subcategory
+    
+    # Build category hierarchy (leaf to root) for progressive fallback
+    if category_tree_ids and len(category_tree_ids) > 1:
+        category_hierarchy = list(reversed(category_tree_ids)) if isinstance(category_tree_ids, tuple) else list(reversed(list(category_tree_ids)))
+        path_segments = category_path.split(" > ") if category_path else []
+        path_segments_reversed = list(reversed(path_segments))
+        
+        st.caption(f"🔍 Testing category levels for sufficient products (need >= {min_products})...")
+        
+        for idx, test_category_id in enumerate(category_hierarchy):
+            # Test this category level with a quick query
+            test_query = {
+                "perPage": 50,
+                "page": 0,
+                "current_SALES_gte": 1,
+                "current_SALES_lte": 100000,
+            }
+            
+            # Use categories_include for non-root categories, rootCategory for root
+            if test_category_id != category_id:
+                test_query["categories_include"] = [int(test_category_id)]
+                test_query["rootCategory"] = [int(category_id)]
+            else:
+                test_query["rootCategory"] = [int(category_id)]
+            
+            try:
+                test_url = f"https://api.keepa.com/query?key={KEEPA_API_KEY}&domain={domain_id}&stats=0"
+                test_response = requests.post(test_url, json=test_query, timeout=15)
+                
+                if test_response.status_code == 200:
+                    test_result = test_response.json()
+                    test_count = len(test_result.get("asinList", []))
+                    total_results = test_result.get("totalResults", test_count)
+                    
+                    # Build the path name for this level
+                    if idx < len(path_segments_reversed):
+                        level_path = " > ".join(path_segments[:len(path_segments) - idx])
+                    else:
+                        level_path = path_segments[0] if path_segments else f"Category {test_category_id}"
+                    
+                    if total_results >= min_products:
+                        effective_category_id = test_category_id
+                        effective_category_path = level_path
+                        use_categories_include = test_category_id != category_id
+                        
+                        if test_category_id != leaf_category_id:
+                            st.info(f"✅ Using category '{level_path}' ({total_results} products found)")
+                        else:
+                            st.caption(f"✅ Leaf category has {total_results} products - using directly")
+                        break
+                    else:
+                        st.caption(f"⚠️ '{level_path}' has only {total_results} products - walking up...")
+                        
+                elif test_response.status_code == 429:
+                    st.warning("Rate limited during category testing - using leaf category directly")
+                    time.sleep(2)
+                    break
+            except Exception as e:
+                st.caption(f"⚠️ Error testing category {test_category_id}: {str(e)[:50]}")
+                continue
+    else:
+        # No category tree - use what we have
+        st.caption(f"ℹ️ Using category {effective_category_id} (no hierarchy available)")
+    
+    # Update debug info with final decision
+    with st.expander("🔍 Debug: Final Category Selection", expanded=False):
+        st.write(f"**Effective Category ID:** {effective_category_id}")
+        st.write(f"**Effective Category Path:** {effective_category_path}")
+        st.write(f"**Using categories_include:** {use_categories_include}")
+    
+    # ========== MAIN FETCH LOOP ==========
+    max_pages = 10  # Safety limit (10 pages x 100 = 1000 products max)
+    
+    while len(all_products) < target_valid_products and page < max_pages:
         # Build query for this category (use direct HTTP API)
-        # Always query by rootCategory (reliable) - we'll post-filter by leaf if needed
         query_json = {
             "perPage": max(50, batch_size),  # Minimum 50
             "page": page,
             "current_SALES_gte": 1,
             "current_SALES_lte": 100000,
-            "rootCategory": [int(category_id)],  # Always use root category for API query
         }
         
+        # Add category filter based on our progressive fallback decision
+        if use_categories_include:
+            # Use categories_include for precise subcategory filtering
+            query_json["categories_include"] = [int(effective_category_id)]
+            query_json["rootCategory"] = [int(category_id)]
+        else:
+            # Using root category only
+            query_json["rootCategory"] = [int(category_id)]
+        
         if page == 0:
-            st.caption(f"🔍 Querying category {category_id}...")
+            # Debug: Show exact query being sent
+            with st.expander("🔍 Debug: Keepa Query JSON", expanded=False):
+                st.json(query_json)
+            st.caption(f"🔍 Querying with filter: {list(query_json.keys())}...")
 
         try:
             # Make HTTP POST request with retry logic for rate limits
@@ -302,6 +417,12 @@ def phase2_category_market_mapping(
 
             if not asins:
                 break  # No more products in category
+            
+            # Debug: Show first page ASINs
+            if page == 0:
+                with st.expander(f"🔍 Debug: First {min(10, len(asins))} ASINs returned by Keepa query", expanded=False):
+                    st.write(f"Total ASINs in this batch: {len(asins)}")
+                    st.write(f"First 10 ASINs: {asins[:10]}")
 
             # Fetch product data with stats using keepa library
             # Process in smaller batches to avoid timeout (keepa library has 10s default timeout)
@@ -341,11 +462,43 @@ def phase2_category_market_mapping(
             # Track stats for debugging (we keep all products now, just track data quality)
             missing_price_bsr_count = 0
             
-            # Simplified: Just collect all valid products (no category filtering)
-            # We already queried by root category, so products are relevant
+            # Debug: Check what categories the returned products actually belong to
+            if page == 0 and products:
+                root_categories = {}
+                for p in products[:20]:  # Check first 20 products
+                    rc = p.get("rootCategory", "Unknown")
+                    root_categories[rc] = root_categories.get(rc, 0) + 1
+                
+                with st.expander("🔍 Debug: Root categories of fetched products", expanded=False):
+                    st.write(f"Expected category ID: {leaf_category_id or category_id}")
+                    st.write(f"Root categories found in first 20 products:")
+                    for rc, count in sorted(root_categories.items(), key=lambda x: -x[1]):
+                        match = "✅" if rc == category_id else "❌"
+                        st.write(f"  {match} Category {rc}: {count} products")
+                    
+                    # Show first 3 product titles for context
+                    st.write("First 3 product titles:")
+                    for p in products[:3]:
+                        st.write(f"  - {p.get('title', 'Unknown')[:60]}...")
+            
+            # Collect products 
+            # Since we're using categories_include at the API level, 
+            # we trust Keepa's filtering and only do light validation
             all_valid_products = []
+            products_filtered_by_category = 0
             
             for product in products:
+                # LIGHT CATEGORY VALIDATION: Just verify root category matches
+                # Since we're using categories_include, Keepa should return correct products
+                # This is a sanity check, not a strict filter
+                product_root_category = product.get("rootCategory", 0)
+                
+                # Only reject products from completely different root categories
+                is_valid_category = product_root_category == category_id
+                
+                if not is_valid_category:
+                    products_filtered_by_category += 1
+                    continue  # Skip products from different root categories
                 
                 # Calculate revenue proxy
                 csv = product.get("csv", [])
@@ -408,9 +561,12 @@ def phase2_category_market_mapping(
                 if price == 0 or bsr is None or bsr == 0:
                     missing_price_bsr_count += 1
 
-                # Extract brand from title (first word)
+                # Extract brand from Keepa data (use brand field directly, fallback to title)
                 title = product.get("title", "")
-                brand = title.split()[0] if title else "Unknown"
+                brand = product.get("brand", "")
+                if not brand:
+                    # Fallback: extract first word from title
+                    brand = title.split()[0] if title else "Unknown"
 
                 # Get product image
                 image_urls = product.get("imagesCSV", "").split(",") if product.get("imagesCSV") else []
@@ -434,6 +590,13 @@ def phase2_category_market_mapping(
             if page == 0 and len(products) > 0:
                 total_fetched = len(products)
                 products_with_revenue = sum(1 for p in all_valid_products if p.get("revenue_proxy", 0) > 0)
+                
+                if products_filtered_by_category > 0:
+                    st.warning(
+                        f"⚠️ **Category Mismatch**: Keepa returned {products_filtered_by_category}/{total_fetched} products "
+                        f"from wrong categories. These were filtered out."
+                    )
+                
                 st.caption(
                     f"📊 Data quality: {products_with_revenue}/{len(all_valid_products)} products have sales data "
                     f"({missing_price_bsr_count} missing price/BSR, revenue set to $0)"
@@ -477,14 +640,28 @@ def phase2_category_market_mapping(
 
             page += 1
             st.caption(
-                f"Fetched {len(all_products)} products | "
+                f"Page {page}: Fetched {len(all_products)} valid products | "
                 f"Batch revenue: ${batch_revenue:,.0f} | "
                 f"Cumulative: ${cumulative_revenue:,.0f}"
             )
+            
+            # Rate limit protection between pages
+            time.sleep(1)
 
         except Exception as e:
             st.warning(f"Error fetching page {page}: {str(e)}")
             break
+    
+    # Check if we hit max pages without enough products
+    if len(all_products) < target_valid_products and page >= max_pages:
+        st.warning(
+            f"⚠️ **Reached page limit ({max_pages} pages)** with only {len(all_products)}/{target_valid_products} valid products.\n\n"
+            f"This may indicate:\n"
+            f"- Keepa's category filter is not working correctly\n"
+            f"- The category has fewer products than expected\n"
+            f"- Most products in the category are in subcategories\n\n"
+            f"Continuing with {len(all_products)} products."
+        )
 
     # ========== ENSURE SEED ASIN IS INCLUDED ==========
     # CRITICAL: The seed ASIN must always be in the results for brand identification
@@ -525,7 +702,9 @@ def phase2_category_market_mapping(
                     revenue = monthly_units * price
 
                     title = seed_product_data.get("title", "")
-                    brand = title.split()[0] if title else "Unknown"
+                    brand = seed_product_data.get("brand", "")
+                    if not brand:
+                        brand = title.split()[0] if title else "Unknown"
 
                     image_urls = seed_product_data.get("imagesCSV", "").split(",") if seed_product_data.get("imagesCSV") else []
                     main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
@@ -555,63 +734,175 @@ def phase2_category_market_mapping(
             seen_asins.add(asin)
             unique_products.append(p)
     
-    df = pd.DataFrame(unique_products)
-
-    if df.empty:
-        return df, {}
-
-    # ========== SYNTHETIC DATA FILLING (like weekly pipeline) ==========
-    # Fill missing price/BSR using median from products that have data
-    # This ensures all 100 ASINs have usable price/BSR values
+    if not unique_products:
+        return pd.DataFrame(), {}
     
-    # Calculate medians from products with valid data
-    valid_prices = df[df["price"] > 0]["price"]
-    valid_bsrs = df[(df["bsr"].notna()) & (df["bsr"] > 0)]["bsr"]
+    # Extract just the ASINs for historical fetch
+    asin_list = [p.get("asin") for p in unique_products if p.get("asin")]
     
-    median_price = valid_prices.median() if len(valid_prices) > 0 else 15.0  # Default $15 if no data
-    median_bsr = valid_bsrs.median() if len(valid_bsrs) > 0 else 50000  # Default BSR 50k if no data
+    # ========== FETCH 90-DAY HISTORICAL DATA ==========
+    # This is the key change: instead of using current price/BSR estimates,
+    # we fetch 90 days of actual historical data and build weekly tables
+    st.caption(f"📊 Fetching 90 days of historical data for {len(asin_list)} ASINs...")
     
-    # Count products needing fill
-    missing_price_count = (df["price"] == 0).sum()
-    missing_bsr_count = (df["bsr"].isna() | (df["bsr"] == 0)).sum()
-    
-    # Fill missing prices with median
-    df.loc[df["price"] == 0, "price"] = median_price
-    
-    # Fill missing BSR with median
-    df.loc[df["bsr"].isna() | (df["bsr"] == 0), "bsr"] = median_bsr
-    
-    # Recalculate monthly_units and revenue for filled products
-    # Formula: monthly_units = 145000 * (BSR ^ -0.9)
-    df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
-    df["revenue_proxy"] = df["monthly_units"] * df["price"]
-    
-    if missing_price_count > 0 or missing_bsr_count > 0:
-        st.caption(
-            f"📊 Filled {missing_price_count} missing prices (→ ${median_price:.2f}) "
-            f"and {missing_bsr_count} missing BSRs (→ {int(median_bsr):,})"
+    try:
+        # Fetch full 90-day history for all discovered ASINs
+        historical_products = fetch_90day_history(asin_list, domain=1, days=90)
+        
+        if not historical_products:
+            st.warning("⚠️ Could not fetch historical data - falling back to current estimates")
+            # Fallback to old method if historical fetch fails
+            df = pd.DataFrame(unique_products)
+            df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
+            df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            market_stats = {
+                "total_products": len(df),
+                "total_category_revenue": df["revenue_proxy"].sum(),
+                "category_id": category_id,
+                "effective_category_id": effective_category_id,
+                "effective_category_path": effective_category_path,
+                "use_categories_include": use_categories_include,
+                "validated_products": len(df),
+                "validated_revenue": df["revenue_proxy"].sum(),
+                "df_weekly": pd.DataFrame()  # Empty weekly data
+            }
+            return df, market_stats
+        
+        st.caption(f"✅ Received historical data for {len(historical_products)} products")
+        
+        # Build weekly table using the same methodology as the main dashboard
+        # This creates: week_start, asin, title, sales_rank_filled, filled_price, weekly_sales_filled, etc.
+        df_weekly = build_keepa_weekly_table(historical_products)
+        
+        if df_weekly.empty:
+            st.warning("⚠️ Could not build weekly table - falling back to current estimates")
+            df = pd.DataFrame(unique_products)
+            df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
+            df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            market_stats = {
+                "total_products": len(df),
+                "total_category_revenue": df["revenue_proxy"].sum(),
+                "category_id": category_id,
+                "effective_category_id": effective_category_id,
+                "effective_category_path": effective_category_path,
+                "use_categories_include": use_categories_include,
+                "validated_products": len(df),
+                "validated_revenue": df["revenue_proxy"].sum(),
+                "df_weekly": pd.DataFrame()
+            }
+            return df, market_stats
+        
+        st.caption(f"📈 Built weekly table with {len(df_weekly)} rows across {df_weekly['asin'].nunique()} ASINs")
+        
+        # ========== AGGREGATE WEEKLY DATA INTO SNAPSHOT ==========
+        # For each ASIN, calculate:
+        # - avg_price: Average price over 3 months
+        # - avg_bsr: Average BSR over 3 months
+        # - total_weekly_sales: Sum of weekly_sales_filled over 3 months
+        # - monthly_revenue: total_weekly_sales / 3 (for monthly estimate)
+        
+        asin_summary = df_weekly.groupby("asin").agg({
+            "filled_price": "mean",                    # Average price over 3 months
+            "sales_rank_filled": "mean",               # Average BSR over 3 months
+            "weekly_sales_filled": "sum",              # Total sales over 3 months
+            "estimated_units": "sum",                  # Total units over 3 months
+            "title": "first",                          # Keep title
+            "brand": "first",                          # Keep brand
+            "main_image": "first",                     # Keep image
+        }).reset_index()
+        
+        # Rename columns for snapshot
+        asin_summary = asin_summary.rename(columns={
+            "filled_price": "price",
+            "sales_rank_filled": "bsr",
+            "weekly_sales_filled": "total_90d_revenue",
+            "estimated_units": "total_90d_units"
+        })
+        
+        # Calculate monthly averages (90 days = ~3 months)
+        asin_summary["monthly_units"] = asin_summary["total_90d_units"] / 3.0
+        asin_summary["revenue_proxy"] = asin_summary["total_90d_revenue"] / 3.0
+        
+        # Fill any NaN values with median from products that have data
+        valid_prices = asin_summary[asin_summary["price"] > 0]["price"]
+        valid_bsrs = asin_summary[(asin_summary["bsr"].notna()) & (asin_summary["bsr"] > 0)]["bsr"]
+        
+        median_price = valid_prices.median() if len(valid_prices) > 0 else 15.0
+        median_bsr = valid_bsrs.median() if len(valid_bsrs) > 0 else 50000
+        
+        missing_price_count = asin_summary["price"].isna().sum() + (asin_summary["price"] == 0).sum()
+        missing_bsr_count = asin_summary["bsr"].isna().sum() + (asin_summary["bsr"] == 0).sum()
+        
+        asin_summary["price"] = asin_summary["price"].fillna(median_price)
+        asin_summary.loc[asin_summary["price"] == 0, "price"] = median_price
+        asin_summary["bsr"] = asin_summary["bsr"].fillna(median_bsr)
+        asin_summary.loc[asin_summary["bsr"] == 0, "bsr"] = median_bsr
+        
+        # Recalculate revenue for products that were missing data
+        # Use BSR formula for products without weekly sales data
+        missing_revenue_mask = asin_summary["revenue_proxy"].isna() | (asin_summary["revenue_proxy"] == 0)
+        if missing_revenue_mask.any():
+            asin_summary.loc[missing_revenue_mask, "monthly_units"] = (
+                145000.0 * (asin_summary.loc[missing_revenue_mask, "bsr"].clip(lower=1) ** -0.9)
+            )
+            asin_summary.loc[missing_revenue_mask, "revenue_proxy"] = (
+                asin_summary.loc[missing_revenue_mask, "monthly_units"] * 
+                asin_summary.loc[missing_revenue_mask, "price"]
+            )
+        
+        if missing_price_count > 0 or missing_bsr_count > 0:
+            st.caption(
+                f"📊 Filled {int(missing_price_count)} missing prices (→ ${median_price:.2f}) "
+                f"and {int(missing_bsr_count)} missing BSRs (→ {int(median_bsr):,})"
+            )
+        
+        # Sort by BSR (best sellers first)
+        df = asin_summary.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+        
+        # Calculate market stats
+        market_stats = {
+            "total_products": len(df),
+            "total_category_revenue": df["revenue_proxy"].sum(),
+            "category_id": category_id,
+            "effective_category_id": effective_category_id,
+            "effective_category_path": effective_category_path,
+            "use_categories_include": use_categories_include,
+            "validated_products": len(df),
+            "validated_revenue": df["revenue_proxy"].sum(),
+            "df_weekly": df_weekly,  # Include full weekly data for Command Center
+            "time_period": "90 days (weekly aggregated)"
+        }
+        
+        st.success(
+            f"✅ **Market Snapshot Built from 90 Days of Historical Data**\n\n"
+            f"Products: **{len(df)}** | Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
         )
-    
-    # Sort by BSR (best sellers first) to maintain order, then by revenue as secondary
-    # This ensures we show products in order of market importance
-    df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
-
-    # Calculate market stats
-    market_stats = {
-        "total_products": len(df),
-        "total_category_revenue": df["revenue_proxy"].sum(),
-        "category_id": category_id
-    }
-
-    # Phase 2.5: LLM Validation (disabled - category filtering is sufficient)
-    # LLM validation was too strict and rejected valid products
-    # Category + price/BSR filtering already ensures relevance
-    df_validated = df  # Skip LLM validation
-
-    market_stats["validated_products"] = len(df_validated)
-    market_stats["validated_revenue"] = df_validated["revenue_proxy"].sum()
-
-    return df_validated, market_stats
+        
+        return df, market_stats
+        
+    except Exception as e:
+        st.warning(f"⚠️ Error fetching historical data: {str(e)} - falling back to current estimates")
+        # Fallback to old method
+        df = pd.DataFrame(unique_products)
+        if df.empty:
+            return df, {}
+        df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
+        df["revenue_proxy"] = df["monthly_units"] * df["price"]
+        df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+        market_stats = {
+            "total_products": len(df),
+            "total_category_revenue": df["revenue_proxy"].sum(),
+            "category_id": category_id,
+            "effective_category_id": effective_category_id,
+            "effective_category_path": effective_category_path,
+            "use_categories_include": use_categories_include,
+            "validated_products": len(df),
+            "validated_revenue": df["revenue_proxy"].sum(),
+            "df_weekly": pd.DataFrame()
+        }
+        return df, market_stats
 
 
 def llm_validate_competitive_set(

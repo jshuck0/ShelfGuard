@@ -572,14 +572,29 @@ with main_tab1:
         st.caption(f"🎯 Analyzing: **{target_brand}** vs. Market")
 
         # Step 2: Create two dataframes
-        # Use case-insensitive brand matching to catch variations like "Tide", "TIDE", "tide"
-        target_brand_lower = target_brand.lower() if target_brand else ""
-        market_snapshot['brand_lower'] = market_snapshot['brand'].str.lower().fillna("")
-        portfolio_df = market_snapshot[market_snapshot['brand_lower'] == target_brand_lower].copy()
+        # Use CONTAINS matching to catch brand variations:
+        # - "Colgate" matches "Colgate", "Colgate-Palmolive", "Colgate Oral Care"
+        # - Case-insensitive
+        target_brand_lower = target_brand.lower().strip() if target_brand else ""
+        market_snapshot['brand_lower'] = market_snapshot['brand'].str.lower().str.strip().fillna("")
+        
+        # Use contains matching instead of exact matching
+        # This catches "Colgate-Palmolive" when searching for "Colgate"
+        market_snapshot['is_your_brand'] = market_snapshot['brand_lower'].str.contains(
+            target_brand_lower, case=False, na=False, regex=False
+        ) if target_brand_lower else False
+        
+        # Also check if target brand is contained in the product title (backup)
+        # This catches products where brand field is missing but title contains brand
+        title_match = market_snapshot['title'].str.lower().str.contains(
+            target_brand_lower, case=False, na=False, regex=False
+        ) if target_brand_lower else False
+        
+        # Combine: is_your_brand if brand matches OR title contains brand name
+        market_snapshot['is_your_brand'] = market_snapshot['is_your_brand'] | title_match
+        
+        portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
         market_df = market_snapshot  # View only - no modification needed
-
-        # Add is_your_brand flag for backward compatibility (case-insensitive)
-        market_snapshot['is_your_brand'] = market_snapshot['brand_lower'] == target_brand_lower
         
         # === CALCULATE COMPETITIVE INTELLIGENCE FOR GROWTH LAYER ===
         # Calculate price gaps (your price vs. competitor average price)
@@ -614,15 +629,30 @@ with main_tab1:
         else:
             market_snapshot['competitor_oos_pct'] = 0.0
         
-        # Debug: Show brand distribution in market
-        if len(portfolio_df) <= 1:
-            # If only 1 product matched, show what brands are in the market for debugging
-            unique_brands = market_snapshot['brand'].value_counts().head(10)
-            with st.expander("🔍 Debug: Brand distribution in market snapshot"):
-                st.write(f"Target brand: '{target_brand}' (lowercase: '{target_brand_lower}')")
-                st.write(f"Matched {len(portfolio_df)} products")
-                st.write("Top 10 brands in market:")
-                st.dataframe(unique_brands)
+        # Debug: Show brand distribution in market (always show for transparency)
+        unique_brands = market_snapshot['brand'].value_counts().head(15)
+        your_brand_count = len(portfolio_df)
+        your_brand_revenue = portfolio_df['revenue_proxy'].sum() if 'revenue_proxy' in portfolio_df.columns else 0
+        total_market_revenue_debug = market_snapshot['revenue_proxy'].sum() if 'revenue_proxy' in market_snapshot.columns else 0
+        market_share_pct = (your_brand_revenue / total_market_revenue_debug * 100) if total_market_revenue_debug > 0 else 0
+        
+        with st.expander(f"🔍 Brand Matching: {your_brand_count} products matched ({market_share_pct:.1f}% market share)", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Target Brand:** `{target_brand}`")
+                st.markdown(f"**Matched Products:** {your_brand_count} of {len(market_snapshot)}")
+                st.markdown(f"**Your Revenue:** ${your_brand_revenue:,.0f}")
+                st.markdown(f"**Market Revenue:** ${total_market_revenue_debug:,.0f}")
+            with col2:
+                st.markdown("**Top 15 Brands in Market:**")
+                st.dataframe(unique_brands, use_container_width=True)
+            
+            # Show matched products for verification
+            if your_brand_count > 0 and your_brand_count <= 20:
+                st.markdown("**Matched Products:**")
+                matched_cols = ['asin', 'title', 'brand', 'revenue_proxy'] if 'revenue_proxy' in portfolio_df.columns else ['asin', 'title', 'brand']
+                available_cols = [c for c in matched_cols if c in portfolio_df.columns]
+                st.dataframe(portfolio_df[available_cols].head(20), use_container_width=True)
 
         # Step 3: Calculate key metrics
         # Portfolio (Your Brand) metrics

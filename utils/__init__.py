@@ -18,6 +18,8 @@ from utils.ai_engine import (
     analyze_strategy_with_llm,
     analyze_portfolio_async,
     STATE_DEFINITIONS,
+    generate_portfolio_brief,
+    generate_portfolio_brief_sync,
 )
 
 from utils.keepa_extended_fields import (
@@ -54,6 +56,8 @@ __all__ = [
     "analyze_strategy_with_llm",
     "analyze_portfolio_async",
     "STATE_DEFINITIONS",
+    "generate_portfolio_brief",
+    "generate_portfolio_brief_sync",
     
     # Keepa Extended Fields
     "KeepaField",

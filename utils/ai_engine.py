@@ -50,6 +50,26 @@ except ImportError:
 
 
 # =============================================================================
+# DEBUG TRACKING
+# =============================================================================
+
+def _track_llm_call(success: bool = True):
+    """Track LLM calls for debugging."""
+    try:
+        if STREAMLIT_AVAILABLE:
+            import streamlit as st
+            if 'llm_stats' not in st.session_state:
+                st.session_state.llm_stats = {'llm_calls': 0, 'fallback_calls': 0}
+            
+            if success:
+                st.session_state.llm_stats['llm_calls'] += 1
+            else:
+                st.session_state.llm_stats['fallback_calls'] += 1
+    except:
+        pass  # Silently fail if not in Streamlit context
+
+
+# =============================================================================
 # STRATEGIC STATES (Simplified to 5)
 # =============================================================================
 
@@ -201,11 +221,58 @@ Return ONLY valid JSON with this exact structure:
 {
     "strategic_state": "STATE_NAME",
     "confidence": 0.95,
-    "reasoning": "2-3 sentences explaining WHY this classification. Reference specific metrics.",
-    "recommended_action": "One specific, actionable recommendation (e.g., 'Raise Price +$1.00', 'Pause Ads and Fix Pricing')"
+    "reasoning": "1-2 clear sentences explaining WHY. Be specific and direct.",
+    "recommended_action": "One specific action (e.g., 'Reduce ad spend 20%', 'Increase price to $X', 'Improve listing images')"
 }
 
-Do NOT include any text before or after the JSON. Return ONLY the JSON object."""
+Important:
+- Keep reasoning under 80 characters
+- Make recommended_action specific and measurable
+- Use business language, not military jargon
+- Return ONLY the JSON object, no other text."""
+
+
+def _get_strategic_bias_instructions(strategic_bias: str) -> str:
+    """
+    Generate additional LLM instructions based on the user's strategic focus.
+    
+    This is the "magic" that makes the entire dashboard shift based on one selector.
+    """
+    bias_instructions = {
+        "Profit Maximization": """
+## 🎯 STRATEGIC BIAS: PROFIT MAXIMIZATION
+
+The user has set their priority to **Profit**. Adjust your analysis accordingly:
+
+- **Heavily penalize low margins** (<10%): Classify as DISTRESS even if velocity is good
+- **Reward price increases**: If price is up and margin improved, prefer FORTRESS or HARVEST
+- **Be aggressive on cost**: Recommend "Cut ad spend" or "Raise price" before "Scale ads"
+- **Question growth spending**: If ad spend is high but margin is thin, recommend pullback
+- **Example**: Product with 8% margin and growing rank → DISTRESS ("Unsustainable growth")
+""",
+        "Balanced Defense": """
+## 🎯 STRATEGIC BIAS: BALANCED DEFENSE
+
+The user has set their priority to **Balanced**. Use standard strategic logic:
+
+- Evaluate all factors equally (margin, velocity, competition, reviews)
+- Apply the standard state definitions without heavy bias
+- Recommend balanced actions that consider both profitability and market position
+""",
+        "Aggressive Growth": """
+## 🎯 STRATEGIC BIAS: AGGRESSIVE GROWTH
+
+The user has set their priority to **Growth**. Adjust your analysis accordingly:
+
+- **Forgive margin compression** if rank is improving: 5% margin + improving rank = TRENCH_WAR, not TERMINAL
+- **Reward velocity gains**: Prioritize products with improving sales rank
+- **Encourage investment**: Recommend "Increase ad spend" or "Scale campaigns" for products with momentum
+- **Be patient with new launches**: Don't classify as TERMINAL unless rank is catastrophic (>100k) AND declining
+- **Example**: Product with 3% margin but rank improving 20% → TRENCH_WAR ("Acceptable sacrifice for share gain")
+"""
+    }
+    
+    return bias_instructions.get(strategic_bias, bias_instructions["Balanced Defense"])
 
 
 # =============================================================================
@@ -259,7 +326,8 @@ async def analyze_strategy_with_llm(
     row_data: Dict[str, Any],
     client: Optional[AsyncOpenAI] = None,
     model: Optional[str] = None,
-    timeout: float = 10.0
+    timeout: float = 10.0,
+    strategic_bias: str = "Balanced Defense"
 ) -> StrategicBrief:
     """
     Analyze a product row using LLM and return strategic classification.
@@ -269,6 +337,7 @@ async def analyze_strategy_with_llm(
         client: Optional AsyncOpenAI client (will create if not provided)
         model: Optional model name (defaults to gpt-4o-mini)
         timeout: Request timeout in seconds
+        strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         
     Returns:
         StrategicBrief with LLM-generated classification and reasoning
@@ -279,7 +348,7 @@ async def analyze_strategy_with_llm(
     
     if client is None:
         # No LLM available, use fallback
-        return _determine_state_fallback(row_data)
+        return _determine_state_fallback(row_data, strategic_bias=strategic_bias)
     
     if model is None:
         model = _get_model_name()
@@ -287,13 +356,17 @@ async def analyze_strategy_with_llm(
     # Prepare data for LLM (clean and format)
     clean_data = _prepare_row_for_llm(row_data)
     
+    # Build system prompt with strategic bias
+    bias_instructions = _get_strategic_bias_instructions(strategic_bias)
+    full_system_prompt = f"{STRATEGIST_SYSTEM_PROMPT}\n\n{bias_instructions}"
+    
     try:
         # Call LLM with timeout
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": STRATEGIST_SYSTEM_PROMPT},
+                    {"role": "system", "content": full_system_prompt},
                     {"role": "user", "content": f"Analyze this product:\n\n```json\n{json.dumps(clean_data, indent=2)}\n```"}
                 ],
                 temperature=0.3,  # Low temperature for consistency
@@ -318,9 +391,25 @@ async def analyze_strategy_with_llm(
         state = StrategicState(state_str)
         state_def = STATE_DEFINITIONS[state]
         
+        # Normalize confidence: handle both decimal (0.95) and percentage (95) formats
+        raw_confidence = result.get("confidence", 0.7)
+        if isinstance(raw_confidence, str):
+            # Remove % sign if present and convert
+            raw_confidence = raw_confidence.replace("%", "").strip()
+        confidence = float(raw_confidence)
+        # If confidence > 1 and <= 100, assume it's a percentage and convert to decimal
+        # Most LLMs following the prompt will return 0.0-1.0, so values > 1 are likely percentages
+        if 1.0 < confidence <= 100.0:
+            confidence = confidence / 100.0
+        # Clamp to valid range (0.0 to 1.0)
+        confidence = max(0.0, min(1.0, confidence))
+        
+        # Track successful LLM call
+        _track_llm_call(success=True)
+        
         return StrategicBrief(
             strategic_state=state_str,
-            confidence=float(result.get("confidence", 0.7)),
+            confidence=confidence,
             reasoning=result.get("reasoning", "LLM analysis complete."),
             recommended_action=result.get("recommended_action", state_def["default_action"]),
             state_emoji=state_def["emoji"],
@@ -333,13 +422,16 @@ async def analyze_strategy_with_llm(
         
     except asyncio.TimeoutError:
         # Timeout - use fallback
-        return _determine_state_fallback(row_data, reason="LLM timeout")
+        _track_llm_call(success=False)
+        return _determine_state_fallback(row_data, reason="LLM timeout", strategic_bias=strategic_bias)
     except json.JSONDecodeError:
         # Invalid JSON response - use fallback
-        return _determine_state_fallback(row_data, reason="Invalid LLM response")
+        _track_llm_call(success=False)
+        return _determine_state_fallback(row_data, reason="Invalid LLM response", strategic_bias=strategic_bias)
     except Exception as e:
         # Any other error - use fallback
-        return _determine_state_fallback(row_data, reason=f"LLM error: {str(e)[:50]}")
+        _track_llm_call(success=False)
+        return _determine_state_fallback(row_data, reason=f"LLM error: {str(e)[:50]}", strategic_bias=strategic_bias)
 
 
 def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -514,11 +606,16 @@ def _extract_signal_summary(clean_data: Dict[str, Any]) -> List[str]:
 # FALLBACK DETERMINISTIC LOGIC
 # =============================================================================
 
-def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM available") -> StrategicBrief:
+def _determine_state_fallback(
+    row_data: Dict[str, Any], 
+    reason: str = "No LLM available",
+    strategic_bias: str = "Balanced Defense"
+) -> StrategicBrief:
     """
     Fallback deterministic logic when LLM is unavailable or fails.
     
     Uses simple rules to classify products into strategic states.
+    Adjusts thresholds based on user's strategic bias.
     This ensures the dashboard never crashes even without LLM access.
     """
     # Extract key metrics
@@ -529,11 +626,35 @@ def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM av
     rank_delta_90 = _safe_float(row_data.get("deltaPercent90_SALES") or row_data.get("rank_delta_90d_pct"), default=0)
     price_gap = _safe_float(row_data.get("price_gap"), default=0)
     
+    # Adjust thresholds based on strategic bias
+    if strategic_bias == "Profit Maximization":
+        # More strict on margins, less forgiving
+        margin_terminal = 0.03  # Stricter
+        margin_distress = 0.10  # Stricter
+        margin_harvest = 0.15
+        margin_fortress = 0.20  # Higher bar
+    elif strategic_bias == "Aggressive Growth":
+        # More forgiving on margins if velocity is good
+        margin_terminal = 0.00  # Only truly zero margin is terminal
+        margin_distress = 0.05  # More forgiving
+        margin_harvest = 0.12
+        margin_fortress = 0.15  # Lower bar
+    else:  # Balanced Defense
+        margin_terminal = 0.02
+        margin_distress = 0.08
+        margin_harvest = 0.15
+        margin_fortress = 0.18
+    
     # Decision tree
     signals = []
     
     # TERMINAL: Severe margin issues or sustained decline
-    if margin < 0.02 or (rank_delta_90 and rank_delta_90 > 30 and margin < 0.08):
+    # Growth mode is more forgiving if rank is improving
+    is_rank_improving = rank_delta_90 < -10  # Negative = improving rank
+    if strategic_bias == "Aggressive Growth" and is_rank_improving and margin > 0:
+        # Don't classify as TERMINAL if we're growing (even with low margin)
+        pass
+    elif margin < margin_terminal or (rank_delta_90 and rank_delta_90 > 30 and margin < margin_distress):
         state = StrategicState.TERMINAL
         confidence = 0.85
         reasoning = f"Critical metrics: Margin {margin*100:.1f}%, 90d rank change {rank_delta_90:+.0f}%."
@@ -543,12 +664,17 @@ def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM av
             signals.append(f"Rank DECLINING ({rank_delta_90:+.0f}%)")
     
     # DISTRESS: Margin compression or velocity decay
-    elif margin < 0.08 or velocity_decay > 1.3:
+    elif margin < margin_distress or velocity_decay > 1.3:
         state = StrategicState.DISTRESS
         confidence = 0.75
         reasoning = f"Product showing stress signals. Margin {margin*100:.1f}%, velocity decay {velocity_decay:.2f}x."
-        action = "Pause non-essential spend. Investigate root cause. Fix pricing if needed."
-        if margin < 0.08:
+        if strategic_bias == "Profit Maximization":
+            action = "Cut all discretionary spend. Raise price immediately."
+        elif strategic_bias == "Aggressive Growth":
+            action = "Optimize spend efficiency. Maintain market position."
+        else:
+            action = "Pause non-essential spend. Investigate root cause. Fix pricing if needed."
+        if margin < margin_distress:
             signals.append(f"Margin LOW ({margin*100:.1f}%)")
         if velocity_decay > 1.3:
             signals.append(f"Velocity DECAYING ({velocity_decay:.2f}x)")
@@ -558,7 +684,12 @@ def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM av
         state = StrategicState.TRENCH_WAR
         confidence = 0.70
         reasoning = f"Competitive pressure detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
-        action = "Defend position. Match competitor pricing. Increase visibility spend."
+        if strategic_bias == "Profit Maximization":
+            action = "Avoid price war. Focus on differentiation. Consider raising price."
+        elif strategic_bias == "Aggressive Growth":
+            action = "Defend aggressively. Match pricing. Scale defensive ads."
+        else:
+            action = "Defend position. Match competitor pricing. Increase visibility spend."
         if offer_count > 10:
             signals.append(f"Competition HIGH ({int(offer_count)} sellers)")
         if bb_share < 0.60:
@@ -567,21 +698,31 @@ def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM av
             signals.append(f"Price gap {price_gap*100:+.0f}%")
     
     # HARVEST: Stable, good margins, can extract value
-    elif margin > 0.15 and velocity_decay < 1.1 and bb_share > 0.75:
+    elif margin > margin_harvest and velocity_decay < 1.1 and bb_share > 0.75:
         state = StrategicState.HARVEST
         confidence = 0.80
         reasoning = f"Strong fundamentals for value extraction. Margin {margin*100:.1f}%, stable velocity."
-        action = "Test price increase +5%. Reduce ad spend. Maximize profit."
+        if strategic_bias == "Profit Maximization":
+            action = "Maximize extraction. Raise price +10%. Cut ad spend 30%."
+        elif strategic_bias == "Aggressive Growth":
+            action = "Invest for scale. Test ad expansion to adjacent keywords."
+        else:
+            action = "Test price increase +5%. Reduce ad spend. Maximize profit."
         signals.append(f"Margin HEALTHY ({margin*100:.1f}%)")
         signals.append(f"Velocity STABLE ({velocity_decay:.2f}x)")
         signals.append(f"Buy Box STRONG ({bb_share*100:.0f}%)")
     
     # FORTRESS: Dominant position
-    elif margin > 0.18 and bb_share > 0.85 and velocity_decay < 0.95 and offer_count < 8:
+    elif margin > margin_fortress and bb_share > 0.85 and velocity_decay < 0.95 and offer_count < 8:
         state = StrategicState.FORTRESS
         confidence = 0.85
         reasoning = f"Dominant market position. High margins ({margin*100:.1f}%), strong BB ({bb_share*100:.0f}%), accelerating."
-        action = "Defend with premium positioning. Consider price increase."
+        if strategic_bias == "Profit Maximization":
+            action = "Maximize margins. Premium pricing strategy. Reduce spend."
+        elif strategic_bias == "Aggressive Growth":
+            action = "Leverage dominance. Scale into adjacent categories."
+        else:
+            action = "Defend with premium positioning. Consider price increase."
         signals.append(f"Margin EXCELLENT ({margin*100:.1f}%)")
         signals.append(f"Buy Box DOMINANT ({bb_share*100:.0f}%)")
         signals.append(f"Velocity ACCELERATING ({velocity_decay:.2f}x)")
@@ -591,7 +732,12 @@ def _determine_state_fallback(row_data: Dict[str, Any], reason: str = "No LLM av
         state = StrategicState.HARVEST
         confidence = 0.60
         reasoning = "Metrics within normal range. Product appears stable."
-        action = "Monitor performance. Maintain current strategy."
+        if strategic_bias == "Profit Maximization":
+            action = "Focus on efficiency. Look for margin improvement opportunities."
+        elif strategic_bias == "Aggressive Growth":
+            action = "Test expansion. Look for growth levers (ads, content, A/B tests)."
+        else:
+            action = "Monitor performance. Maintain current strategy."
         signals.append("Metrics within normal range")
     
     state_def = STATE_DEFINITIONS[state]
@@ -682,16 +828,13 @@ def triangulate_portfolio(
     rows = df.to_dict('records')
     
     if use_llm:
-        # Run async analysis
+        # Run async analysis (same pattern as analyze and generate_portfolio_brief_sync)
         try:
-            # Check if we're already in an async context
-            try:
-                loop = asyncio.get_running_loop()
-                # We're in an async context, use nest_asyncio or fallback
-                results = [_determine_state_fallback(row, "Sync fallback in async context") for row in rows]
-            except RuntimeError:
-                # No running loop, safe to use asyncio.run()
-                results = asyncio.run(analyze_portfolio_async(rows, max_concurrent))
+            # Create new event loop explicitly to work in Streamlit's async context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            results = loop.run_until_complete(analyze_portfolio_async(rows, max_concurrent))
+            loop.close()
         except Exception as e:
             # Fallback on any error
             results = [_determine_state_fallback(row, f"Error: {str(e)[:30]}") for row in rows]
@@ -732,29 +875,35 @@ class StrategicTriangulator:
         result = brief.to_dict()
     """
     
-    def __init__(self, use_llm: bool = True, timeout: float = 10.0):
+    def __init__(self, use_llm: bool = True, timeout: float = 10.0, strategic_bias: str = "Balanced Defense"):
         """
         Initialize the triangulator.
         
         Args:
             use_llm: Whether to use LLM classification (default True)
             timeout: Timeout for LLM calls in seconds
+            strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         """
         self.use_llm = use_llm
         self.timeout = timeout
+        self.strategic_bias = strategic_bias
         self._client = None
         self._model = None
     
-    def analyze(self, row: Union[pd.Series, Dict]) -> StrategicBrief:
+    def analyze(self, row: Union[pd.Series, Dict], strategic_bias: Optional[str] = None) -> StrategicBrief:
         """
         Analyze a single product and return strategic classification.
         
         Args:
             row: Product data (Series or dict)
+            strategic_bias: Override strategic bias for this analysis (optional)
             
         Returns:
             StrategicBrief with classification and reasoning
         """
+        # Use provided bias or fall back to instance bias
+        bias = strategic_bias or self.strategic_bias
+        
         # Normalize row to dict
         if isinstance(row, pd.Series):
             row_data = row.to_dict()
@@ -762,22 +911,20 @@ class StrategicTriangulator:
             row_data = dict(row)
         
         if not self.use_llm:
-            return _determine_state_fallback(row_data, "LLM disabled")
+            return _determine_state_fallback(row_data, reason="LLM disabled", strategic_bias=bias)
         
-        # Run async analysis synchronously
+        # Run async analysis synchronously (same pattern as generate_portfolio_brief_sync)
         try:
-            # Check if we're already in an async context
-            try:
-                asyncio.get_running_loop()
-                # We're in async context, use fallback
-                return _determine_state_fallback(row_data, "Sync call in async context")
-            except RuntimeError:
-                # No running loop, safe to use asyncio.run()
-                return asyncio.run(
-                    analyze_strategy_with_llm(row_data, timeout=self.timeout)
-                )
+            # Create new event loop explicitly to work in Streamlit's async context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(
+                analyze_strategy_with_llm(row_data, timeout=self.timeout, strategic_bias=bias)
+            )
+            loop.close()
+            return result
         except Exception as e:
-            return _determine_state_fallback(row_data, f"Error: {str(e)[:30]}")
+            return _determine_state_fallback(row_data, reason=f"Error: {str(e)[:30]}", strategic_bias=bias)
     
     def analyze_batch(self, rows: List[Union[pd.Series, Dict]]) -> List[StrategicBrief]:
         """
@@ -872,6 +1019,109 @@ def get_portfolio_state_summary(df: pd.DataFrame) -> Dict[str, Any]:
         "source_breakdown": source_counts,
         "llm_classification_pct": llm_pct,
     }
+
+
+# =============================================================================
+# PORTFOLIO-LEVEL STRATEGIC BRIEF
+# =============================================================================
+
+async def generate_portfolio_brief(
+    portfolio_summary: str,
+    client: Optional[AsyncOpenAI] = None,
+    model: Optional[str] = None,
+    timeout: float = 10.0
+) -> Optional[str]:
+    """
+    Generate an LLM-powered strategic brief for the entire portfolio.
+    
+    Uses the same AI engine (client/model) as product-level classification
+    to ensure consistency across all AI outputs.
+    
+    Args:
+        portfolio_summary: Portfolio metrics summary string
+        client: Optional AsyncOpenAI client (will create if not provided)
+        model: Optional model name (defaults to gpt-4o-mini)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Strategic brief string, or None if LLM unavailable
+    """
+    # Get client and model (same as product-level analysis)
+    if client is None:
+        client = _get_openai_client()
+    
+    if client is None:
+        return None
+    
+    if model is None:
+        model = _get_model_name()
+    
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are ShelfGuard's AI strategist, analyzing Amazon portfolio performance. Generate a clear, actionable strategic brief.
+
+Guidelines:
+- Be direct and prescriptive. Focus on what to do, not what happened.
+- Start with the most important insight or issue.
+- Quantify everything ($ amounts, counts, percentages).
+- Reference data trends (e.g., "sales declining 15% vs 90-day average").
+- End with one clear action for this session.
+- Keep it under 100 words.
+- Use clear business language - avoid military/tactical jargon."""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"""Here's the current portfolio status:
+
+{portfolio_summary}
+
+Generate a strategic brief. What should be the focus this session?"""
+                    }
+                ],
+                max_tokens=200,
+                temperature=0.7
+            ),
+            timeout=timeout
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return None
+
+
+def generate_portfolio_brief_sync(
+    portfolio_summary: str,
+    client: Optional[AsyncOpenAI] = None,
+    model: Optional[str] = None
+) -> Optional[str]:
+    """
+    Synchronous wrapper for generate_portfolio_brief.
+    
+    For use in Streamlit where async/await can be tricky.
+    Uses the same AI engine as product-level classification.
+    
+    Args:
+        portfolio_summary: Portfolio metrics summary string
+        client: Optional AsyncOpenAI client (will create if not provided)
+        model: Optional model name (defaults to gpt-4o-mini)
+        
+    Returns:
+        Strategic brief string, or None if LLM unavailable
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(
+            generate_portfolio_brief(portfolio_summary, client, model)
+        )
+        loop.close()
+        return result
+    except Exception:
+        return None
 
 
 # =============================================================================

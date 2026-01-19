@@ -430,36 +430,57 @@ def render_discovery_ui() -> None:
 
     with tab1:
         # Donut chart showing revenue distribution
-        fig = px.pie(
-            market_snapshot.head(20),  # Top 20 for readability
-            values="revenue_proxy",
-            names="title",
-            title="Revenue Distribution (Top 20 ASINs)",
-            hole=0.4
-        )
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True, key="discovery_market_share_chart")
+        # Clean data: remove rows with NaN revenue_proxy
+        pie_data = market_snapshot.head(20).copy()
+        pie_data = pie_data.dropna(subset=["revenue_proxy", "title"])
+        pie_data = pie_data[pie_data["revenue_proxy"] > 0]  # Only show products with revenue
+        
+        if pie_data.empty:
+            st.warning("⚠️ No valid revenue data for pie chart")
+        else:
+            fig = px.pie(
+                pie_data,
+                values="revenue_proxy",
+                names="title",
+                title="Revenue Distribution (Top 20 ASINs)",
+                hole=0.4
+            )
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True, key="discovery_market_share_chart")
 
     with tab2:
         # Scatter plot: Price vs BSR
-        fig = px.scatter(
-            market_snapshot,
-            x="bsr",
-            y="price",
-            size="monthly_units",
-            color="revenue_proxy",
-            hover_data=["title", "asin"],
-            title="Price vs Sales Rank (BSR)",
-            labels={
-                "bsr": "Best Sellers Rank",
-                "price": "Current Price ($)",
-                "monthly_units": "Monthly Units Sold"
-            },
-            color_continuous_scale="Viridis"
-        )
-        fig.update_xaxes(type="log")  # Log scale for BSR
-        fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True, key="discovery_price_bsr_chart")
+        # Clean data: remove rows with NaN in required columns
+        scatter_data = market_snapshot[[
+            "bsr", "price", "monthly_units", "revenue_proxy", "title", "asin"
+        ]].copy()
+        
+        # Fill NaN values for size (monthly_units) with 1 to avoid plotly errors
+        # Filter out rows where x or y are NaN (can't plot those)
+        scatter_data = scatter_data.dropna(subset=["bsr", "price", "revenue_proxy"])
+        scatter_data["monthly_units"] = scatter_data["monthly_units"].fillna(1)
+        
+        if scatter_data.empty:
+            st.warning("⚠️ No valid data points for scatter plot (missing BSR, price, or revenue data)")
+        else:
+            fig = px.scatter(
+                scatter_data,
+                x="bsr",
+                y="price",
+                size="monthly_units",
+                color="revenue_proxy",
+                hover_data=["title", "asin"],
+                title="Price vs Sales Rank (BSR)",
+                labels={
+                    "bsr": "Best Sellers Rank",
+                    "price": "Current Price ($)",
+                    "monthly_units": "Monthly Units Sold"
+                },
+                color_continuous_scale="Viridis"
+            )
+            fig.update_xaxes(type="log")  # Log scale for BSR
+            fig.update_layout(height=500)
+            st.plotly_chart(fig, use_container_width=True, key="discovery_price_bsr_chart")
 
     with tab3:
         # Data table

@@ -14,8 +14,15 @@ import pandas as pd
 import hashlib
 import re
 import os
-from openai import OpenAI
 from dotenv import load_dotenv
+
+# Optional OpenAI import (for chat feature)
+try:
+    from openai import OpenAI
+    OPENAI_SYNC_AVAILABLE = True
+except ImportError:
+    OPENAI_SYNC_AVAILABLE = False
+    OpenAI = None
 
 # Load environment variables
 load_dotenv()
@@ -30,24 +37,31 @@ from search_to_state_ui import (
     render_user_dashboard
 )
 
-# AI Engine - Strategic Triangulation
+# AI Engine - Strategic Triangulation (Unified AI Engine)
 try:
-    from utils.ai_engine import StrategicTriangulator, triangulate_portfolio
+    from utils.ai_engine import (
+        StrategicTriangulator, 
+        triangulate_portfolio,
+        generate_portfolio_brief_sync  # Unified portfolio brief
+    )
     TRIANGULATION_ENABLED = True
 except ImportError:
     TRIANGULATION_ENABLED = False
+    generate_portfolio_brief_sync = None
 
-# Initialize OpenAI client
-try:
-    openai_client = OpenAI(api_key=st.secrets["openai"]["OPENAI_API_KEY"])
-except Exception:
-    openai_client = None
+# Initialize OpenAI client (for chat feature - optional)
+openai_client = None
+if OPENAI_SYNC_AVAILABLE:
+    try:
+        openai_client = OpenAI(api_key=st.secrets.get("openai", {}).get("OPENAI_API_KEY"))
+    except Exception:
+        openai_client = None
 
 # Pre-compile regex for performance
 _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 
-def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True) -> dict:
+def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True, strategic_bias: str = "Balanced Defense") -> dict:
     """
     Apply LLM-powered strategic analysis to a product row.
     
@@ -66,6 +80,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         row: Product row dictionary with metrics
         revenue: Product revenue for opportunity calculation
         use_triangulation: Whether to use LLM classifier (default True)
+        strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         
     Returns:
         dict with strategic outputs + opportunity_value
@@ -76,8 +91,8 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
     # Try LLM Classifier first
     if use_triangulation and TRIANGULATION_ENABLED:
         try:
-            triangulator = StrategicTriangulator(use_llm=True)
-            brief = triangulator.analyze(row)
+            triangulator = StrategicTriangulator(use_llm=True, strategic_bias=strategic_bias)
+            brief = triangulator.analyze(row, strategic_bias=strategic_bias)
             
             # Map LLM strategic state to legacy problem_category
             state_to_category = {
@@ -154,6 +169,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
             "problem_category": result[6] if len(result) > 6 else "📊 Monitor",
             "problem_reason": result[7] if len(result) > 7 else "",
             "opportunity_value": revenue * 0.15 if revenue > 0 else 0,
+            "confidence_score": 0.5,  # Legacy logic has medium confidence
+            "strategic_state": "DISTRESS",  # Default state for legacy
+            "recommended_plan": result[1] if len(result) > 1 else "Maintain current strategy",
             "source": "legacy"
         }
     except Exception:
@@ -165,6 +183,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
             "problem_category": "📊 Monitor",
             "problem_reason": "Analysis pending",
             "opportunity_value": revenue * 0.15 if revenue > 0 else 0,
+            "confidence_score": 0.3,  # Low confidence for error case
+            "strategic_state": "DISTRESS",
+            "recommended_plan": "Awaiting analysis",
             "source": "error"
         }
 
@@ -183,47 +204,21 @@ def _hash_portfolio_data(portfolio_summary: str) -> str:
 def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
     """
     Generate an LLM-powered strategic brief for the portfolio.
+    
+    NOW USES THE SAME AI ENGINE as product-level classification
+    for consistency across all AI outputs.
 
     Cached by data_hash (portfolio metrics), not by date, to avoid
     unnecessary API calls when only the date range changes.
 
     Performance: Cached results reduce API calls and latency.
     """
-    if openai_client is None:
+    # Use the unified AI engine from utils/ai_engine.py
+    # This ensures the same client, model, and configuration as product classification
+    if generate_portfolio_brief_sync is None:
         return None
     
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """You are ShelfGuard's AI strategist, powered by 36 months of historical data analysis. Generate a prescriptive strategic brief for an e-commerce portfolio manager.
-
-Rules:
-- Be prescriptive, not descriptive. Use action language ("Protocol Activated:", "Execute immediately:", "Deploy:")
-- Lead with the most urgent threat detection.
-- Quantify everything ($ amounts, counts, percentages).
-- Reference historical intelligence (e.g., "threat level exceeds 36M baseline" or "velocity decay pattern detected").
-- End with one executable command for this session.
-- Keep it under 100 words.
-- Use tactical language: threats, protocols, defense perimeter, alpha capture."""
-                },
-                {
-                    "role": "user",
-                    "content": f"""Here's the current defense perimeter status:
-
-{portfolio_summary}
-
-Generate a prescriptive strategic brief. What protocol must be activated immediately?"""
-                }
-            ],
-            max_tokens=200,
-            temperature=0.7
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return None
+    return generate_portfolio_brief_sync(portfolio_summary)
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="ShelfGuard OS", layout="wide", page_icon="🛡️")
@@ -311,6 +306,74 @@ hide_style = """
     </style>
 """
 st.markdown(hide_style, unsafe_allow_html=True)
+
+# === STRATEGIC GOVERNOR (Global Context Selector) ===
+st.sidebar.title("⚙️ Strategic Settings")
+st.sidebar.markdown("---")
+
+strategic_bias = st.sidebar.radio(
+    "**🎯 Current Strategic Focus**",
+    options=['💰 Profit Maximization', '⚖️ Balanced Defense', '🚀 Aggressive Growth'],
+    index=1,  # Default to Balanced Defense
+    help="""
+    **Profit Mode**: Prioritize margins and efficiency. Penalize low-margin products.
+    
+    **Balanced Mode**: Standard defense scoring. Evaluate all factors equally.
+    
+    **Growth Mode**: Prioritize velocity and market share. Forgive margin compression if rank is improving.
+    """,
+    key='strategic_bias'
+)
+
+# Clean strategic bias string (remove emoji for internal use)
+strategic_bias_clean = strategic_bias.split(' ', 1)[1] if ' ' in strategic_bias else strategic_bias
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"🎚️ AI Engine: **{strategic_bias_clean}**")
+
+# === AI ENGINE DEBUG STATUS ===
+with st.sidebar.expander("🔍 AI Engine Debug", expanded=False):
+    # Check if OpenAI client can be initialized
+    try:
+        from utils.ai_engine import _get_openai_client, _get_model_name
+        test_client = _get_openai_client()
+        test_model = _get_model_name()
+        
+        if test_client is not None:
+            st.success("✅ OpenAI Connected")
+            st.caption(f"Model: `{test_model}`")
+            
+            # Show API key status (masked)
+            try:
+                api_key = st.secrets.get("openai", {}).get("OPENAI_API_KEY", "")
+                if api_key:
+                    masked_key = api_key[:8] + "..." + api_key[-4:]
+                    st.caption(f"Key: `{masked_key}`")
+            except:
+                pass
+        else:
+            st.error("❌ OpenAI Not Connected")
+            st.caption("Check secrets.toml or .env file")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)[:50]}")
+    
+    # Show LLM call statistics (if available in session state)
+    if 'llm_stats' in st.session_state:
+        stats = st.session_state.llm_stats
+        st.markdown("---")
+        st.caption("**Session Statistics:**")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("🤖 LLM Calls", stats.get('llm_calls', 0))
+        with col2:
+            st.metric("📊 Fallback", stats.get('fallback_calls', 0))
+        
+        success_rate = 0
+        total = stats.get('llm_calls', 0) + stats.get('fallback_calls', 0)
+        if total > 0:
+            success_rate = (stats.get('llm_calls', 0) / total) * 100
+        st.progress(success_rate / 100)
+        st.caption(f"Success Rate: {success_rate:.1f}%")
 
 # === TOP LEVEL NAVIGATION ===
 main_tab1, main_tab2, main_tab3 = st.tabs(["🛡️ Command Center", "🔍 Market Discovery", "📂 My Projects"])
@@ -516,20 +579,26 @@ with main_tab1:
                 if user_input:
                     st.session_state.chat_messages.append({"role": "user", "content": user_input})
                     try:
-                        # Build conversation history for context
-                        messages_for_api = [
-                            {"role": "system", "content": f"You are ShelfGuard AI, a strategic advisor for the Command Center. Be concise and actionable. {portfolio_context}"}
-                        ]
-                        # Add conversation history (last 10 messages for context)
-                        for msg in st.session_state.chat_messages[-10:]:
-                            messages_for_api.append(msg)
-                        
-                        response = openai_client.chat.completions.create(
-                            model=st.secrets["openai"]["model"],
-                            messages=messages_for_api,
-                            max_tokens=300
-                        )
-                        st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
+                        if openai_client is None:
+                            st.session_state.chat_messages.append({
+                                "role": "assistant", 
+                                "content": "⚠️ Chat feature requires OpenAI package. Please install: pip install openai"
+                            })
+                        else:
+                            # Build conversation history for context
+                            messages_for_api = [
+                                {"role": "system", "content": f"You are ShelfGuard AI, a strategic advisor for the Command Center. Be concise and actionable. {portfolio_context}"}
+                            ]
+                            # Add conversation history (last 10 messages for context)
+                            for msg in st.session_state.chat_messages[-10:]:
+                                messages_for_api.append(msg)
+                            
+                            response = openai_client.chat.completions.create(
+                                model=st.secrets.get("openai", {}).get("model", "gpt-4o-mini"),
+                                messages=messages_for_api,
+                                max_tokens=300
+                            )
+                            st.session_state.chat_messages.append({"role": "assistant", "content": response.choices[0].message.content})
                     except Exception as e:
                         st.session_state.chat_messages.append({"role": "assistant", "content": f"Error: {str(e)}"})
                     st.rerun()
@@ -948,7 +1017,10 @@ with main_tab1:
                     title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
                     # === AI TRIANGULATION ENGINE ===
-                    strategy = get_product_strategy(product.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED)
+                    # Get strategic bias from session state (set by sidebar selector)
+                    bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
+                    bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
+                    strategy = get_product_strategy(product.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED, strategic_bias=bias_clean)
                     problem_category = strategy["problem_category"]
                     ad_action = strategy["ad_action"]
                     ecom_action = strategy["ecom_action"]
@@ -996,39 +1068,49 @@ with main_tab1:
                         source_badge = "🤖 AI" if source == "llm" else "📊 Rules" if source == "fallback" else ""
                         
                         # Build reasoning preview (LLM-generated explanation)
+                        # Escape HTML characters in reasoning text to prevent breaking the HTML structure
+                        import html
                         reasoning_preview = ""
                         if reasoning and len(reasoning) > 10:
                             clean_reasoning = reasoning.replace("[Fallback:", "").split("]")[0]  # Remove fallback notice
-                            reasoning_preview = f'<div style="font-size: 10px; color: #555; margin-top: 6px; padding: 6px; background: linear-gradient(135deg, #f8f9fa, #e9ecef); border-radius: 4px; font-style: italic; border-left: 2px solid {color};">"{clean_reasoning[:100]}{"..." if len(clean_reasoning) > 100 else ""}"</div>'
+                            # Escape HTML special characters and shorten to 60 chars to fit in card
+                            escaped_reasoning = html.escape(clean_reasoning[:60])
+                            if len(clean_reasoning) > 60:
+                                escaped_reasoning += "..."
+                            reasoning_preview = f'<div style="font-size: 10px; color: #555; margin-top: 6px; padding: 6px; background: linear-gradient(135deg, #f8f9fa, #e9ecef); border-radius: 4px; font-style: italic; border-left: 2px solid {color};">"{escaped_reasoning}"</div>'
                         
                         # Build signals preview if available
                         signals_preview = ""
                         if signals_detected and len(signals_detected) > 0:
                             top_signals = signals_detected[:3]
-                            signals_html = " • ".join([f"<span style='font-size: 9px;'>{s[:20]}</span>" for s in top_signals])
+                            # Escape signal text too
+                            escaped_signals = [html.escape(s[:20]) for s in top_signals]
+                            signals_html = " • ".join([f"<span style='font-size: 9px;'>{sig}</span>" for sig in escaped_signals])
                             signals_preview = f'<div style="font-size: 9px; color: #888; margin-top: 4px;">{signals_html}</div>'
 
-                        st.markdown(f"""
-                        <div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px;
-                                    border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-                                    opacity: {card_opacity};">
-                            <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                                <span>#{i+1} PRIORITY{confidence_badge}</span>
-                                <span style="font-size: 9px; color: #999;">{source_badge}</span>
-                            </div>
-                            <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
-                            <div style="font-size: 24px; color: {color}; font-weight: 700; margin: 4px 0 4px 0;">{f_money(opportunity_value)}</div>
-                            <div style="font-size: 11px; color: #666; margin-top: 2px;">Recoverable</div>
-                            {reasoning_preview}
-                            {signals_preview}
-                            <div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
-                                <div style="margin-bottom: 4px;"><strong>Ad:</strong> {ad_action}</div>
-                                <div><strong>Ecom:</strong> {ecom_action}</div>
-                            </div>
-                            <div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{asin}</div>
-                            <div style="font-size: 10px; color: #666; margin-top: 2px;">{title[:30]}...</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        # Escape variables that will be inserted into HTML
+                        escaped_title = html.escape(title[:30])
+                        escaped_asin = html.escape(asin)
+                        escaped_ad_action = html.escape(ad_action)
+                        escaped_ecom_action = html.escape(ecom_action)
+                        
+                        st.markdown(f"""<div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08); opacity: {card_opacity};">
+<div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+<span>#{i+1} PRIORITY{confidence_badge}</span>
+<span style="font-size: 9px; color: #999;">{source_badge}</span>
+</div>
+<div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
+<div style="font-size: 24px; color: {color}; font-weight: 700; margin: 4px 0 4px 0;">{f_money(opportunity_value)}</div>
+<div style="font-size: 11px; color: #666; margin-top: 2px;">Recoverable</div>
+{reasoning_preview}
+{signals_preview}
+<div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+<div style="margin-bottom: 4px;"><strong>Ad:</strong> {escaped_ad_action}</div>
+<div><strong>Ecom:</strong> {escaped_ecom_action}</div>
+</div>
+<div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{escaped_asin}</div>
+<div style="font-size: 10px; color: #666; margin-top: 2px;">{escaped_title}...</div>
+</div>""", unsafe_allow_html=True)
 
                         # Execute button - ACTION 4: Rename to "RESOLVE"
                         if is_completed:
@@ -1074,26 +1156,48 @@ with main_tab1:
                 strategy_data = []
                 for idx, row in display_df.iterrows():
                     rev = row.get('weekly_sales_filled', 0)
-                    strategy = get_product_strategy(row.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED)
+                    # Get strategic bias from session state
+                    bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
+                    bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
+                    strategy = get_product_strategy(row.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED, strategic_bias=bias_clean)
                     
                     # Truncate title for display
                     title = row.get('title', row.get('asin', ''))
                     short_title = title[:30] + "..." if len(title) > 30 else title
                     
                     # Build row data
+                    # Get full recommendation but make it more concise
+                    full_action = strategy.get("recommended_plan", strategy.get("recommended_action", strategy["ecom_action"]))
+                    # Take first sentence or up to 80 chars
+                    action_display = full_action.split('.')[0][:80]
+                    if len(action_display) < len(full_action):
+                        action_display += "..."
+                    
+                    # Extract and normalize confidence score
+                    raw_conf = strategy.get("confidence_score", 0.5)
+                    # Ensure confidence is between 0 and 1
+                    if isinstance(raw_conf, (int, float)):
+                        # If > 1 and <= 100, assume it's a percentage and convert
+                        if 1.0 < raw_conf <= 100.0:
+                            raw_conf = raw_conf / 100.0
+                        confidence = max(0.0, min(1.0, float(raw_conf)))
+                    else:
+                        confidence = 0.5  # Default if invalid
+                    
                     row_data = {
                         "ASIN": row.get('asin', ''),
                         "Product": short_title,
                         "State": strategy.get("strategic_state", ""),
-                        "Action": strategy.get("recommended_plan", strategy["ecom_action"])[:40],
+                        "Action": action_display,
                         "Revenue": rev,
                         "Opportunity": strategy["opportunity_value"],
-                        "Conf": strategy.get("confidence_score", 0),
+                        "Conf": confidence,
                     }
                     
-                    # Add source indicator
+                    # Add source indicator (don't add as separate column, use emoji in Action)
                     source = strategy.get("source", "")
-                    row_data["Src"] = "🤖" if source == "llm" else "📊" if source == "fallback" else "⚙️"
+                    source_emoji = "🤖" if source == "llm" else "📊" if source == "fallback" else "⚙️"
+                    row_data["Action"] = f"{source_emoji} {action_display}"
                     
                     strategy_data.append(row_data)
                 
@@ -1107,17 +1211,16 @@ with main_tab1:
                     "ASIN": st.column_config.TextColumn("ASIN", width="small"),
                     "Product": st.column_config.TextColumn("Product", width="medium"),
                     "State": st.column_config.TextColumn("State", width="small"),
-                    "Action": st.column_config.TextColumn("LLM Recommendation", width="large"),
+                    "Action": st.column_config.TextColumn("AI Recommendation", width="large"),
                     "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f", width="small"),
                     "Opportunity": st.column_config.NumberColumn("Opp ($)", format="$%.0f", width="small"),
                     "Conf": st.column_config.ProgressColumn(
-                        "Conf",
+                        "Confidence",
                         format="%.0f%%",
                         min_value=0,
                         max_value=1,
                         width="small"
                     ),
-                    "Src": st.column_config.TextColumn("", width="small"),
                 }
 
                 st.dataframe(

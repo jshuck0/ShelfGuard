@@ -30,6 +30,13 @@ from search_to_state_ui import (
     render_user_dashboard
 )
 
+# AI Engine - Strategic Triangulation
+try:
+    from utils.ai_engine import StrategicTriangulator, triangulate_portfolio
+    TRIANGULATION_ENABLED = True
+except ImportError:
+    TRIANGULATION_ENABLED = False
+
 # Initialize OpenAI client
 try:
     openai_client = OpenAI(api_key=st.secrets["openai"]["OPENAI_API_KEY"])
@@ -40,28 +47,103 @@ except Exception:
 _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 
-def get_product_strategy(row: dict, revenue: float = 0) -> dict:
+def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True) -> dict:
     """
-    Apply legacy analyze_strategic_matrix logic to a product row.
-    Returns the original directives plus calculated opportunity value.
+    Apply LLM-powered strategic analysis to a product row.
     
-    Uses existing logic from engine.py which already produces:
-    - ad_action: Media/ad directive (e.g., "🚀 SCALE +25%", "🛑 PAUSE ADS")
-    - ecom_action: Ecom directive (e.g., "📈 RAISE PRICE (+5%)", "💀 EXIT")
-    - problem_category: Issue type (e.g., "🔥 Losing Money", "🚀 Scale Winner")
-    - capital_zone: Zone classification
+    Uses the Strategic LLM Classifier (GPT-4o-mini) to analyze product metrics
+    and generate nuanced strategic classifications with human-readable reasoning.
+    
+    The LLM Classifier provides:
+    - strategic_state: Classification (FORTRESS, HARVEST, TRENCH_WAR, DISTRESS, TERMINAL)
+    - confidence: How confident the AI is in the classification (0.0-1.0)
+    - reasoning: LLM-generated explanation of WHY this classification
+    - recommended_action: Specific, actionable recommendation
+    
+    Fallback to deterministic logic if LLM is unavailable or times out.
     
     Args:
         row: Product row dictionary with metrics
         revenue: Product revenue for opportunity calculation
+        use_triangulation: Whether to use LLM classifier (default True)
         
     Returns:
-        dict with legacy outputs + opportunity_value
+        dict with strategic outputs + opportunity_value
     """
     # Convert row to Series for analyze_strategic_matrix
     row_series = pd.Series(row) if isinstance(row, dict) else row
     
-    # Call existing strategic matrix logic
+    # Try LLM Classifier first
+    if use_triangulation and TRIANGULATION_ENABLED:
+        try:
+            triangulator = StrategicTriangulator(use_llm=True)
+            brief = triangulator.analyze(row)
+            
+            # Map LLM strategic state to legacy problem_category
+            state_to_category = {
+                "FORTRESS": "🏰 Fortress",
+                "HARVEST": "🌾 Harvest",
+                "TRENCH_WAR": "⚔️ Trench War",
+                "DISTRESS": "🚨 Distress",
+                "TERMINAL": "💀 Terminal",
+            }
+            
+            # Map LLM strategic state to legacy capital_zone
+            state_to_zone = {
+                "FORTRESS": "🏰 FORTRESS (Cash Flow)",
+                "HARVEST": "🌾 HARVEST (Profit)",
+                "TRENCH_WAR": "⚔️ TRENCH (Defense)",
+                "DISTRESS": "🚨 DISTRESS (At Risk)",
+                "TERMINAL": "💀 EXIT (Terminal)",
+            }
+            
+            # Map strategic state to ad_action (now LLM provides recommended_action)
+            state_to_ad = {
+                "FORTRESS": "⚖️ OPTIMIZE ROAS",
+                "HARVEST": "📉 REDUCE SPEND",
+                "TRENCH_WAR": "🎯 DEFENSIVE KEYWORDS",
+                "DISTRESS": "⏸️ PAUSE & INVESTIGATE",
+                "TERMINAL": "🛑 FULL STOP",
+            }
+            
+            # Map strategic state to ecom_action
+            state_to_ecom = {
+                "FORTRESS": "📈 TEST PRICE INCREASE",
+                "HARVEST": "📈 RAISE PRICE",
+                "TRENCH_WAR": "🎫 MATCH COMPETITOR",
+                "DISTRESS": "🔍 FIX ROOT CAUSE",
+                "TERMINAL": "💀 LIQUIDATE",
+            }
+            
+            state = brief.strategic_state
+            
+            return {
+                # LLM classifier outputs
+                "strategic_state": state,
+                "strategic_emoji": brief.state_emoji,
+                "strategic_color": brief.state_color,
+                "confidence_score": brief.confidence,
+                "primary_outcome": brief.primary_outcome,
+                "recommended_plan": brief.recommended_action,
+                "reasoning": brief.reasoning,
+                "signals_detected": brief.signals_detected,
+                "source": brief.source,  # "llm" or "fallback"
+                
+                # Legacy outputs (mapped from strategic state, but LLM action preferred)
+                "ad_action": state_to_ad.get(state, "⚖️ OPTIMIZE ROAS"),
+                "ecom_action": state_to_ecom.get(state, "✅ MAINTAIN"),
+                "capital_zone": state_to_zone.get(state, "📊 Monitor"),
+                "problem_category": f"{brief.state_emoji} {state_to_category.get(state, state)}",
+                "problem_reason": brief.reasoning[:80] + "..." if len(brief.reasoning) > 80 else brief.reasoning,
+                
+                # Financial
+                "opportunity_value": revenue * 0.15 if revenue > 0 else 0
+            }
+        except Exception as e:
+            # Log error but fall through to legacy logic
+            pass
+    
+    # Fallback to legacy logic
     try:
         result = analyze_strategic_matrix(row_series)
         # Result: [ad_action, ecom_action, capital_zone, gap, efficiency, net_margin, problem_category, problem_reason]
@@ -71,17 +153,19 @@ def get_product_strategy(row: dict, revenue: float = 0) -> dict:
             "capital_zone": result[2] if len(result) > 2 else "📊 Monitor",
             "problem_category": result[6] if len(result) > 6 else "📊 Monitor",
             "problem_reason": result[7] if len(result) > 7 else "",
-            "opportunity_value": revenue * 0.15 if revenue > 0 else 0
+            "opportunity_value": revenue * 0.15 if revenue > 0 else 0,
+            "source": "legacy"
         }
     except Exception:
-        # Fallback if analysis fails
+        # Final fallback if all analysis fails
         return {
             "ad_action": "⚖️ OPTIMIZE ROAS",
             "ecom_action": "✅ MAINTAIN", 
             "capital_zone": "📊 Monitor",
             "problem_category": "📊 Monitor",
             "problem_reason": "Analysis pending",
-            "opportunity_value": revenue * 0.15 if revenue > 0 else 0
+            "opportunity_value": revenue * 0.15 if revenue > 0 else 0,
+            "source": "error"
         }
 
 def _hash_portfolio_data(portfolio_summary: str) -> str:
@@ -863,15 +947,23 @@ with main_tab1:
                     asin = product['asin']
                     title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
-                    # === LEGACY AI LOGIC: Call analyze_strategic_matrix directly ===
-                    strategy = get_product_strategy(product.to_dict(), revenue=rev)
+                    # === AI TRIANGULATION ENGINE ===
+                    strategy = get_product_strategy(product.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED)
                     problem_category = strategy["problem_category"]
                     ad_action = strategy["ad_action"]
                     ecom_action = strategy["ecom_action"]
                     opportunity_value = strategy["opportunity_value"]
                     
-                    # Color code by problem category (using existing emoji-based logic)
-                    if "Losing Money" in problem_category or "🔥" in problem_category:
+                    # Get triangulation-specific data if available
+                    strategic_state = strategy.get("strategic_state", "")
+                    confidence_score = strategy.get("confidence_score", 0)
+                    recommended_plan = strategy.get("recommended_plan", "")
+                    signals_detected = strategy.get("signals_detected", [])
+                    
+                    # Use strategic color if available, otherwise use emoji-based logic
+                    if "strategic_color" in strategy and strategy["strategic_color"]:
+                        color = strategy["strategic_color"]
+                    elif "Losing Money" in problem_category or "🔥" in problem_category:
                         color = "#dc3545"  # Red
                     elif "Losing Share" in problem_category or "📉" in problem_category:
                         color = "#ffc107"  # Yellow
@@ -890,15 +982,45 @@ with main_tab1:
                         # Card styling changes based on completion
                         card_opacity = "0.5" if is_completed else "1.0"
                         card_bg = "#f0f0f0" if is_completed else "white"
+                        
+                        # Build confidence badge if available
+                        confidence_badge = ""
+                        if confidence_score > 0:
+                            conf_pct = int(confidence_score * 100)
+                            conf_color = "#28a745" if confidence_score >= 0.7 else "#ffc107" if confidence_score >= 0.5 else "#dc3545"
+                            confidence_badge = f'<span style="font-size: 9px; color: {conf_color}; margin-left: 8px;">({conf_pct}% conf)</span>'
+                        
+                        # Get LLM reasoning if available
+                        reasoning = strategy.get("reasoning", "")
+                        source = strategy.get("source", "unknown")
+                        source_badge = "🤖 AI" if source == "llm" else "📊 Rules" if source == "fallback" else ""
+                        
+                        # Build reasoning preview (LLM-generated explanation)
+                        reasoning_preview = ""
+                        if reasoning and len(reasoning) > 10:
+                            clean_reasoning = reasoning.replace("[Fallback:", "").split("]")[0]  # Remove fallback notice
+                            reasoning_preview = f'<div style="font-size: 10px; color: #555; margin-top: 6px; padding: 6px; background: linear-gradient(135deg, #f8f9fa, #e9ecef); border-radius: 4px; font-style: italic; border-left: 2px solid {color};">"{clean_reasoning[:100]}{"..." if len(clean_reasoning) > 100 else ""}"</div>'
+                        
+                        # Build signals preview if available
+                        signals_preview = ""
+                        if signals_detected and len(signals_detected) > 0:
+                            top_signals = signals_detected[:3]
+                            signals_html = " • ".join([f"<span style='font-size: 9px;'>{s[:20]}</span>" for s in top_signals])
+                            signals_preview = f'<div style="font-size: 9px; color: #888; margin-top: 4px;">{signals_html}</div>'
 
                         st.markdown(f"""
                         <div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px;
                                     border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
                                     opacity: {card_opacity};">
-                            <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase;">#{i+1} PRIORITY</div>
+                            <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                <span>#{i+1} PRIORITY{confidence_badge}</span>
+                                <span style="font-size: 9px; color: #999;">{source_badge}</span>
+                            </div>
                             <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
                             <div style="font-size: 24px; color: {color}; font-weight: 700; margin: 4px 0 4px 0;">{f_money(opportunity_value)}</div>
                             <div style="font-size: 11px; color: #666; margin-top: 2px;">Recoverable</div>
+                            {reasoning_preview}
+                            {signals_preview}
                             <div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
                                 <div style="margin-bottom: 4px;"><strong>Ad:</strong> {ad_action}</div>
                                 <div><strong>Ecom:</strong> {ecom_action}</div>
@@ -947,36 +1069,55 @@ with main_tab1:
             st.caption(f"Showing **{len(display_df)}** products" + (f" in **{selected_problem}**" if selected_problem != "All Products" else "") + " — sorted by revenue")
     
             try:
-                # === APPLY LEGACY AI LOGIC: analyze_strategic_matrix ===
-                # Generate strategy for each row using existing logic
+                # === LLM STRATEGIC CLASSIFIER ===
+                # Generate strategy for each row using LLM or fallback logic
                 strategy_data = []
                 for idx, row in display_df.iterrows():
                     rev = row.get('weekly_sales_filled', 0)
-                    strategy = get_product_strategy(row.to_dict(), revenue=rev)
+                    strategy = get_product_strategy(row.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED)
                     
                     # Truncate title for display
                     title = row.get('title', row.get('asin', ''))
                     short_title = title[:30] + "..." if len(title) > 30 else title
                     
-                    strategy_data.append({
+                    # Build row data
+                    row_data = {
                         "ASIN": row.get('asin', ''),
                         "Product": short_title,
-                        "Status": strategy["problem_category"],
-                        "Ad Action": strategy["ad_action"],
-                        "Ecom Action": strategy["ecom_action"],
+                        "State": strategy.get("strategic_state", ""),
+                        "Action": strategy.get("recommended_plan", strategy["ecom_action"])[:40],
                         "Revenue": rev,
-                        "Opportunity ($)": strategy["opportunity_value"]
-                    })
+                        "Opportunity": strategy["opportunity_value"],
+                        "Conf": strategy.get("confidence_score", 0),
+                    }
+                    
+                    # Add source indicator
+                    source = strategy.get("source", "")
+                    row_data["Src"] = "🤖" if source == "llm" else "📊" if source == "fallback" else "⚙️"
+                    
+                    strategy_data.append(row_data)
                 
                 final_df = pd.DataFrame(strategy_data)
                 
-                # Sort by Opportunity ($) highest to lowest
-                final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Opportunity ($)", ascending=False)
+                # Sort by Opportunity highest to lowest
+                final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Opportunity", ascending=False)
 
                 # Configure column display
                 column_config = {
-                    "Revenue": st.column_config.NumberColumn(format="$%.0f"),
-                    "Opportunity ($)": st.column_config.NumberColumn(format="$%.0f"),
+                    "ASIN": st.column_config.TextColumn("ASIN", width="small"),
+                    "Product": st.column_config.TextColumn("Product", width="medium"),
+                    "State": st.column_config.TextColumn("State", width="small"),
+                    "Action": st.column_config.TextColumn("LLM Recommendation", width="large"),
+                    "Revenue": st.column_config.NumberColumn("Revenue", format="$%.0f", width="small"),
+                    "Opportunity": st.column_config.NumberColumn("Opp ($)", format="$%.0f", width="small"),
+                    "Conf": st.column_config.ProgressColumn(
+                        "Conf",
+                        format="%.0f%%",
+                        min_value=0,
+                        max_value=1,
+                        width="small"
+                    ),
+                    "Src": st.column_config.TextColumn("", width="small"),
                 }
 
                 st.dataframe(

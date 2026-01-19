@@ -1628,17 +1628,46 @@ def calculate_portfolio_intelligence_vectorized(
     if df.empty:
         return df
     
-    # Work with a view, not a copy (memory efficient)
-    result = df
+    # Get actual DataFrame length for consistent Series creation
+    n_rows = len(df)
     
-    # === EXTRACT BASE METRICS (vectorized) ===
-    revenue = result.get('weekly_sales_filled', result.get('revenue_proxy', pd.Series([1000] * len(result)))).fillna(1000)
-    v30 = result.get('velocity_trend_30d', pd.Series([0.0] * len(result))).fillna(0.0)
-    v90 = result.get('velocity_trend_90d', pd.Series([0.0] * len(result))).fillna(0.0)
-    competitor_oos = result.get('competitor_oos_pct', result.get('outOfStockPercentage90', pd.Series([0.0] * len(result)))).fillna(0.0)
-    price_gap = result.get('price_gap_vs_competitor', result.get('price_delta', pd.Series([0.0] * len(result)))).fillna(0.0)
+    # Work with a copy to avoid modifying original (we'll return enriched version)
+    result = df.copy()
     
-    # Normalize competitor OOS to 0-1 range
+    # === EXTRACT BASE METRICS (vectorized) - Ensure all Series have same length ===
+    # Use proper DataFrame column access with fallbacks
+    if 'weekly_sales_filled' in result.columns:
+        revenue = result['weekly_sales_filled'].fillna(1000).values
+    elif 'revenue_proxy' in result.columns:
+        revenue = result['revenue_proxy'].fillna(1000).values
+    else:
+        revenue = np.full(n_rows, 1000.0, dtype=np.float32)
+    
+    if 'velocity_trend_30d' in result.columns:
+        v30 = result['velocity_trend_30d'].fillna(0.0).values
+    else:
+        v30 = np.zeros(n_rows, dtype=np.float32)
+    
+    if 'velocity_trend_90d' in result.columns:
+        v90 = result['velocity_trend_90d'].fillna(0.0).values
+    else:
+        v90 = np.zeros(n_rows, dtype=np.float32)
+    
+    if 'competitor_oos_pct' in result.columns:
+        competitor_oos = result['competitor_oos_pct'].fillna(0.0).values
+    elif 'outOfStockPercentage90' in result.columns:
+        competitor_oos = result['outOfStockPercentage90'].fillna(0.0).values
+    else:
+        competitor_oos = np.zeros(n_rows, dtype=np.float32)
+    
+    if 'price_gap_vs_competitor' in result.columns:
+        price_gap = result['price_gap_vs_competitor'].fillna(0.0).values
+    elif 'price_delta' in result.columns:
+        price_gap = result['price_delta'].fillna(0.0).values
+    else:
+        price_gap = np.zeros(n_rows, dtype=np.float32)
+    
+    # Normalize competitor OOS to 0-1 range (vectorized)
     competitor_oos = np.where(competitor_oos > 1, competitor_oos / 100, competitor_oos)
     
     # === STRATEGIC BIAS WEIGHTS ===
@@ -1751,7 +1780,10 @@ def calculate_portfolio_intelligence_vectorized(
     result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
     
     # Model certainty based on data quality
-    data_weeks = result.get('data_weeks', pd.Series([4] * len(result))).fillna(4)
+    if 'data_weeks' in result.columns:
+        data_weeks = result['data_weeks'].fillna(4).values
+    else:
+        data_weeks = np.full(n_rows, 4.0, dtype=np.float32)
     result['model_certainty'] = np.clip(0.40 + (data_weeks / 48) * 0.55, 0.40, 0.95).astype(np.float32)
     
     return result

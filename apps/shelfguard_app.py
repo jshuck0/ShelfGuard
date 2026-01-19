@@ -1120,13 +1120,14 @@ with main_tab1:
             growth_opportunity_count = predictive_risk.get("growth_opportunity_count", 0)
             
             # Also calculate static recoverable alpha for comparison/fallback
-            if "opportunity_value" not in portfolio_df.columns:
-                portfolio_df["opportunity_value"] = portfolio_df["weekly_sales_filled"] * 0.15
+            # Use enriched_portfolio_df which has all columns
+            if "opportunity_value" not in enriched_portfolio_df.columns:
+                if "weekly_sales_filled" in enriched_portfolio_df.columns:
+                    recoverable_alpha = (enriched_portfolio_df["weekly_sales_filled"] * 0.15).sum()
+                else:
+                    recoverable_alpha = thirty_day_risk  # Fallback to predictive risk
             else:
-                portfolio_df["opportunity_value"] = portfolio_df["opportunity_value"].fillna(
-                    portfolio_df["weekly_sales_filled"] * 0.15
-                )
-            recoverable_alpha = portfolio_df["opportunity_value"].sum()
+                recoverable_alpha = enriched_portfolio_df["opportunity_value"].fillna(0).sum()
 
             # Determine status color based on risk level
             if portfolio_status == "CRITICAL":
@@ -1248,14 +1249,19 @@ with main_tab1:
             st.markdown(f"#### 🎯 {target_brand} Portfolio Actions")
 
             # For single-brand portfolio, show top products by revenue
-            top_products = display_df.nlargest(3, 'weekly_sales_filled')
+            # Find the revenue column (may have different names)
+            rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in display_df.columns else 'revenue_proxy' if 'revenue_proxy' in display_df.columns else None
+            if rev_col:
+                top_products = display_df.nlargest(3, rev_col)
+            else:
+                top_products = display_df.head(3)
 
             if not top_products.empty:
                 priority_cols = st.columns(len(top_products))
 
                 for i, (idx, product) in enumerate(top_products.iterrows()):
-                    rev = product['weekly_sales_filled']
-                    asin = product['asin']
+                    rev = product.get('weekly_sales_filled', product.get('revenue_proxy', 0))
+                    asin = product.get('asin', '')
                     title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
                     # === UNIFIED AI ENGINE (Strategic + Predictive in one call) ===
@@ -1578,7 +1584,14 @@ with main_tab1:
     
             # Use enriched data for visual audit (no redundant copy)
             full_df = enriched_portfolio_df
-            gallery_df = full_df[full_df["main_image"] != ""].nlargest(16, "weekly_sales_filled")
+            # Find the revenue column (may have different names)
+            rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in full_df.columns else 'revenue_proxy' if 'revenue_proxy' in full_df.columns else None
+            if rev_col and 'main_image' in full_df.columns:
+                gallery_df = full_df[full_df["main_image"] != ""].nlargest(16, rev_col)
+            elif 'main_image' in full_df.columns:
+                gallery_df = full_df[full_df["main_image"] != ""].head(16)
+            else:
+                gallery_df = pd.DataFrame()
     
             if not gallery_df.empty:
                 cols = st.columns(4)
@@ -1610,7 +1623,7 @@ with main_tab1:
                                     <span style="font-size: 0.8rem; color: #333; font-weight: 500;">{clean_title}</span>
                                 </div>
                                 <div style="font-size: 1.1rem; color: #00704A; font-weight: 700; margin-top: 6px;">
-                                    {f_money(row['weekly_sales_filled'])}
+                                    {f_money(row.get('weekly_sales_filled', row.get('revenue_proxy', 0)))}
                                 </div>
                                 <div style="font-size: 0.7rem; color: {badge_color}; font-weight: 600; margin-top: 4px;">{problem}</div>
                                 <div style="font-size: 0.65rem; color: {velocity_color}; margin-top: 4px;">

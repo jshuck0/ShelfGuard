@@ -37,7 +37,13 @@ def get_keepa_api_key() -> Optional[str]:
     # Try Streamlit secrets first (for Streamlit Cloud)
     try:
         if hasattr(st, 'secrets'):
+            # Try nested structure: [keepa] api_key = "..."
             key = st.secrets.get("keepa", {}).get("api_key")
+            if key:
+                return key
+            
+            # Try flat structure: keepa_api_key = "..."
+            key = st.secrets.get("keepa_api_key")
             if key:
                 return key
     except Exception:
@@ -45,9 +51,6 @@ def get_keepa_api_key() -> Optional[str]:
     
     # Fall back to environment variables
     return os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
-
-
-KEEPA_API_KEY = get_keepa_api_key()
 
 
 def get_openai_client() -> Optional[OpenAI]:
@@ -80,7 +83,8 @@ def phase1_seed_discovery(
     Returns:
         DataFrame with [asin, title, brand, category_id, category_path, price, bsr]
     """
-    if not KEEPA_API_KEY:
+    api_key = get_keepa_api_key()
+    if not api_key:
         raise ValueError("KEEPA_API_KEY not found")
 
     # Use direct HTTP API (Python keepa library has issues with product_finder)
@@ -104,7 +108,7 @@ def phase1_seed_discovery(
         domain_id = domain_map.get(domain, 1)
 
         # Make HTTP POST request to Keepa API
-        url = f"https://api.keepa.com/query?key={KEEPA_API_KEY}&domain={domain_id}&stats=0"
+        url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
         response = requests.post(url, json=query_json, timeout=30)
 
         if response.status_code != 200:
@@ -123,7 +127,7 @@ def phase1_seed_discovery(
 
         # Fetch full product data using keepa library
         # Process in smaller batches with retry logic to avoid timeout (keepa library has 10s default timeout)
-        api = keepa.Keepa(KEEPA_API_KEY)
+        api = keepa.Keepa(api_key)
         products = []
         keepa_batch_size = 20  # Smaller batches to prevent timeout
         
@@ -255,7 +259,8 @@ def phase2_category_market_mapping(
     Returns:
         Tuple of (validated_df, market_stats)
     """
-    if not KEEPA_API_KEY:
+    api_key = get_keepa_api_key()
+    if not api_key:
         raise ValueError("KEEPA_API_KEY not found")
 
     # Display category info with debugging
@@ -289,7 +294,7 @@ def phase2_category_market_mapping(
     domain_id = domain_map.get(domain, 1)
 
     # Initialize Keepa for query() calls
-    api = keepa.Keepa(KEEPA_API_KEY)
+    api = keepa.Keepa(api_key)
 
     # ========== PROGRESSIVE CATEGORY FALLBACK ==========
     # Per Keepa docs:
@@ -326,7 +331,7 @@ def phase2_category_market_mapping(
                 test_query["rootCategory"] = [int(category_id)]
             
             try:
-                test_url = f"https://api.keepa.com/query?key={KEEPA_API_KEY}&domain={domain_id}&stats=0"
+                test_url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
                 test_response = requests.post(test_url, json=test_query, timeout=15)
                 
                 if test_response.status_code == 200:
@@ -399,7 +404,7 @@ def phase2_category_market_mapping(
 
         try:
             # Make HTTP POST request with retry logic for rate limits
-            url = f"https://api.keepa.com/query?key={KEEPA_API_KEY}&domain={domain_id}&stats=0"
+            url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
             
             max_retries = 3
             retry_delay = 5  # Start with 5 seconds

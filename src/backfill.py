@@ -26,7 +26,13 @@ def get_keepa_api_key() -> Optional[str]:
     # Try Streamlit secrets first (for Streamlit Cloud)
     try:
         if hasattr(st, 'secrets'):
+            # Try nested structure: [keepa] api_key = "..."
             key = st.secrets.get("keepa", {}).get("api_key")
+            if key:
+                return key
+            
+            # Try flat structure: keepa_api_key = "..."
+            key = st.secrets.get("keepa_api_key")
             if key:
                 return key
     except Exception:
@@ -36,7 +42,6 @@ def get_keepa_api_key() -> Optional[str]:
     return os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
 
 
-KEEPA_API_KEY = get_keepa_api_key()
 KEEPA_BASE_URL = "https://api.keepa.com"
 
 # Keepa CSV index constants
@@ -89,7 +94,8 @@ def fetch_90day_history(asins: List[str], domain: int = 1, days: int = 90) -> Li
 
     Note: This is a HEAVY call - use sparingly and batch ASINs
     """
-    if not KEEPA_API_KEY:
+    api_key = get_keepa_api_key()
+    if not api_key:
         raise ValueError("KEEPA_API_KEY not found")
 
     # Batch ASINs (Keepa limit: 100 ASINs per request)
@@ -101,7 +107,7 @@ def fetch_90day_history(asins: List[str], domain: int = 1, days: int = 90) -> Li
         asin_str = ",".join(batch)
 
         params = {
-            "key": KEEPA_API_KEY,
+            "key": api_key,
             "domain": domain,
             "asin": asin_str,
             "history": 1,  # Request full history

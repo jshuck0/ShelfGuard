@@ -24,6 +24,9 @@ archive/
 *.json
 *.sqlite3
 
+# --- Private Documents (Not for GitHub) ---
+private/
+
 # --- IDE & System Files ---
 # Keeps your personal editor settings out of the project
 .vscode/

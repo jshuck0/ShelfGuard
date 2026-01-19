@@ -199,6 +199,7 @@ def phase1_seed_discovery(
 def phase2_category_market_mapping(
     category_id: int,
     seed_product_title: str,
+    seed_asin: Optional[str] = None,  # ✅ ADD SEED ASIN
     target_revenue_pct: float = 80.0,
     max_products: int = 500,
     batch_size: int = 100,
@@ -210,12 +211,13 @@ def phase2_category_market_mapping(
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Phase 2: Dynamically fetch products from category until 80% revenue captured.
-    
+
     Uses progressive category fallback: starts with leaf, walks up tree until min_products found.
 
     Args:
         category_id: Root category ID from seed product
         seed_product_title: Title of seed product (for LLM context)
+        seed_asin: ASIN of seed product (will be force-included in results)
         target_revenue_pct: Stop when this % of revenue is captured (default 80%)
         max_products: Safety limit to prevent runaway fetching
         batch_size: How many products to fetch per iteration
@@ -406,15 +408,25 @@ def phase2_category_market_mapping(
                 if price == 0 or bsr is None or bsr == 0:
                     missing_price_bsr_count += 1
 
+                # Extract brand from title (first word)
+                title = product.get("title", "")
+                brand = title.split()[0] if title else "Unknown"
+
+                # Get product image
+                image_urls = product.get("imagesCSV", "").split(",") if product.get("imagesCSV") else []
+                main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
+
                 product_data = {
                     "asin": product.get("asin"),
-                    "title": product.get("title", ""),
+                    "title": title,
+                    "brand": brand,  # Add brand column
                     "price": price,
                     "monthly_units": monthly_units,
                     "revenue_proxy": revenue,
-                    "bsr": bsr
+                    "bsr": bsr,
+                    "main_image": main_image  # Add image for Visual Audit
                 }
-                
+
                 # Track all valid products
                 all_valid_products.append(product_data)
             
@@ -473,6 +485,65 @@ def phase2_category_market_mapping(
         except Exception as e:
             st.warning(f"Error fetching page {page}: {str(e)}")
             break
+
+    # ========== ENSURE SEED ASIN IS INCLUDED ==========
+    # CRITICAL: The seed ASIN must always be in the results for brand identification
+    if seed_asin:
+        # Check if seed ASIN is already in the results
+        seed_asin_found = any(p.get("asin") == seed_asin for p in all_products)
+
+        if not seed_asin_found:
+            st.warning(f"⚠️ Seed ASIN {seed_asin} not found in category results - fetching explicitly...")
+            try:
+                # Fetch the seed product explicitly
+                seed_products = api.query([seed_asin], stats=90, rating=True)
+                if seed_products and len(seed_products) > 0:
+                    seed_product_data = seed_products[0]
+
+                    # Extract data same as above
+                    csv = seed_product_data.get("csv", [])
+                    price = 0
+                    if csv and len(csv) > 18 and csv[18]:
+                        price_array = csv[18]
+                        if price_array and len(price_array) > 0:
+                            price_cents = price_array[-1] if price_array[-1] else 0
+                            if price_cents and price_cents > 0:
+                                price = price_cents / 100.0
+
+                    bsr = None
+                    if csv and len(csv) > 3 and csv[3]:
+                        bsr_array = csv[3]
+                        if bsr_array and len(bsr_array) > 0:
+                            bsr_value = bsr_array[-1]
+                            if bsr_value and bsr_value != -1 and bsr_value > 0:
+                                bsr = bsr_value
+
+                    monthly_units = 0
+                    if bsr and bsr > 0:
+                        monthly_units = 145000.0 * (bsr ** -0.9)
+
+                    revenue = monthly_units * price
+
+                    title = seed_product_data.get("title", "")
+                    brand = title.split()[0] if title else "Unknown"
+
+                    image_urls = seed_product_data.get("imagesCSV", "").split(",") if seed_product_data.get("imagesCSV") else []
+                    main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
+
+                    # Add to beginning of list (high priority)
+                    all_products.insert(0, {
+                        "asin": seed_asin,
+                        "title": title,
+                        "brand": brand,
+                        "price": price,
+                        "monthly_units": monthly_units,
+                        "revenue_proxy": revenue,
+                        "bsr": bsr,
+                        "main_image": main_image
+                    })
+                    st.success(f"✅ Added seed ASIN {seed_asin} to results")
+            except Exception as e:
+                st.error(f"❌ Failed to fetch seed ASIN {seed_asin}: {str(e)}")
 
     # Remove duplicates (by ASIN) and internal tracking fields
     seen_asins = set()

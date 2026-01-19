@@ -277,6 +277,7 @@ def render_discovery_ui() -> None:
                             market_snapshot, market_stats = phase2_category_market_mapping(
                                 category_id=int(seed_product["category_id"]),
                                 seed_product_title=seed_product["title"],
+                                seed_asin=seed_product["asin"],  # ✅ PASS SEED ASIN
                                 target_revenue_pct=80.0,
                                 max_products=100,  # Fixed at 100 ASINs
                                 batch_size=100,
@@ -309,6 +310,7 @@ def render_discovery_ui() -> None:
                             st.session_state["last_phase2_params"] = {
                                 "category_id": int(seed_product["category_id"]),
                                 "seed_product_title": seed_product["title"],
+                                "seed_product_asin": seed_product["asin"],  # ✅ STORE SEED ASIN
                                 "leaf_category_id": int(leaf_category_id) if leaf_category_id else None,
                                 "category_path": category_path,
                                 "category_tree_ids": category_tree_ids,
@@ -335,6 +337,7 @@ def render_discovery_ui() -> None:
                                 market_snapshot, market_stats = phase2_category_market_mapping(
                                     category_id=params["category_id"],
                                     seed_product_title=params["seed_product_title"],
+                                    seed_asin=params.get("seed_product_asin"),  # ✅ Force-include seed ASIN
                                     target_revenue_pct=80.0,
                                     max_products=100,
                                     batch_size=100,
@@ -549,16 +552,34 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
             
             # Save mapping with detailed data to User Dashboard
             mapping_id = save_market_mapping(
-                project_name, 
-                market_snapshot, 
+                project_name,
+                market_snapshot,
                 stats,
                 df_weekly=df_weekly  # Include detailed weekly data
             )
-            
+
+            # === ACTIVATE COMMAND CENTER ===
+            # Set active project ASIN to enable Command Center
+            if asins:
+                # Get seed product info from last Phase 2 params
+                seed_params = st.session_state.get("last_phase2_params", {})
+                seed_title = seed_params.get("seed_product_title", "")
+                seed_asin = seed_params.get("seed_product_asin", asins[0])  # ✅ GET SEED ASIN
+
+                # Extract brand from seed title (first word usually)
+                seed_brand = seed_title.split()[0] if seed_title else ""
+
+                st.session_state["active_project_asin"] = seed_asin  # ✅ USE SEED ASIN (not asins[0])
+                st.session_state["active_project_data"] = df_weekly  # Store 90-day data
+                st.session_state["active_project_name"] = project_name
+                st.session_state["active_project_market_snapshot"] = market_snapshot  # Store full market
+                st.session_state["active_project_seed_brand"] = seed_brand  # Track seed brand
+                st.session_state["active_project_all_asins"] = asins  # All market ASINs
+
             # Mark as just saved so we show success on rerun
             st.session_state["just_saved_mapping"] = True
             st.session_state["saved_mapping_name"] = project_name
-            
+
             # Try to persist to Supabase (optional - may fail if tables don't exist)
             try:
                 project_id = pin_to_state(
@@ -584,8 +605,14 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
 
             except Exception as e:
                 pass  # Supabase failed, but mapping is saved to session state
-        
-        # Rerun to show success message
+
+        # Show success message with Command Center activation
+        st.success(
+            f"✅ Project '{project_name}' created!\n\n"
+            f"🛡️ **Command Center Activated** - Navigate to the Command Center tab to view your defense perimeter."
+        )
+
+        # Rerun to activate Command Center
         st.rerun()
 
 

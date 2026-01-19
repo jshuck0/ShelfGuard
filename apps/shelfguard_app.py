@@ -581,6 +581,39 @@ with main_tab1:
         # Add is_your_brand flag for backward compatibility (case-insensitive)
         market_snapshot['is_your_brand'] = market_snapshot['brand_lower'] == target_brand_lower
         
+        # === CALCULATE COMPETITIVE INTELLIGENCE FOR GROWTH LAYER ===
+        # Calculate price gaps (your price vs. competitor average price)
+        # This enables the Growth Intelligence layer to detect opportunities
+        price_col = 'current_price' if 'current_price' in market_snapshot.columns else 'avg_price' if 'avg_price' in market_snapshot.columns else None
+        if price_col:
+            # Calculate competitor average price (excluding your brand)
+            competitor_prices = market_snapshot.loc[~market_snapshot['is_your_brand'], price_col]
+            market_avg_price = competitor_prices.mean() if len(competitor_prices) > 0 else 0
+            
+            if market_avg_price > 0:
+                # Price gap: (your_price - market_avg) / market_avg
+                # Negative = you're cheaper (growth opportunity: price lift)
+                # Positive = you're more expensive (risk: price erosion)
+                market_snapshot['price_gap_vs_competitor'] = (
+                    (market_snapshot[price_col] - market_avg_price) / market_avg_price
+                ).fillna(0)
+            else:
+                market_snapshot['price_gap_vs_competitor'] = 0.0
+        else:
+            market_snapshot['price_gap_vs_competitor'] = 0.0
+        
+        # Use Keepa OOS data if available
+        if 'outOfStockPercentage90' in market_snapshot.columns:
+            # Calculate average competitor OOS rate
+            competitor_oos = market_snapshot.loc[~market_snapshot['is_your_brand'], 'outOfStockPercentage90']
+            avg_competitor_oos = competitor_oos.mean() if len(competitor_oos) > 0 else 0
+            # Normalize to 0-1 range if needed
+            if avg_competitor_oos > 1:
+                avg_competitor_oos = avg_competitor_oos / 100
+            market_snapshot['competitor_oos_pct'] = avg_competitor_oos
+        else:
+            market_snapshot['competitor_oos_pct'] = 0.0
+        
         # Debug: Show brand distribution in market
         if len(portfolio_df) <= 1:
             # If only 1 product matched, show what brands are in the market for debugging
@@ -623,6 +656,21 @@ with main_tab1:
         portfolio_snapshot_df['problem_category'] = '✅ Your Brand - Healthy'
         portfolio_snapshot_df['predictive_zone'] = '✅ HOLD'  # Predictive state (replaces capital_zone)
         portfolio_snapshot_df['is_healthy'] = True  # Healthy until analyzed
+        
+        # === CARRY COMPETITIVE INTELLIGENCE INTO PORTFOLIO ===
+        # These columns power the Growth Intelligence layer
+        if 'price_gap_vs_competitor' in market_snapshot.columns:
+            # Merge competitive intel from market_snapshot (which was calculated after portfolio_df was created)
+            portfolio_snapshot_df['price_gap_vs_competitor'] = portfolio_snapshot_df['asin'].map(
+                market_snapshot.set_index('asin')['price_gap_vs_competitor'].to_dict()
+            ).fillna(0.0)
+        else:
+            portfolio_snapshot_df['price_gap_vs_competitor'] = 0.0
+            
+        if 'competitor_oos_pct' in market_snapshot.columns:
+            portfolio_snapshot_df['competitor_oos_pct'] = market_snapshot['competitor_oos_pct'].iloc[0] if len(market_snapshot) > 0 else 0.0
+        else:
+            portfolio_snapshot_df['competitor_oos_pct'] = 0.0
 
         # Create res object that dashboard expects (scoped to YOUR BRAND ONLY)
         res = {

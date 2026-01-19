@@ -823,15 +823,22 @@ def phase2_category_market_mapping(
         # - total_weekly_sales: Sum of weekly_sales_filled over 3 months
         # - monthly_revenue: total_weekly_sales / 3 (for monthly estimate)
         
+        # Count actual weeks of data per ASIN for accurate monthly calculation
+        weeks_per_asin = df_weekly.groupby("asin")["week_start"].count().reset_index()
+        weeks_per_asin.columns = ["asin", "weeks_count"]
+        
         asin_summary = df_weekly.groupby("asin").agg({
-            "filled_price": "mean",                    # Average price over 3 months
-            "sales_rank_filled": "mean",               # Average BSR over 3 months
-            "weekly_sales_filled": "sum",              # Total sales over 3 months
-            "estimated_units": "sum",                  # Total units over 3 months
+            "filled_price": "mean",                    # Average price over available weeks
+            "sales_rank_filled": "mean",               # Average BSR over available weeks
+            "weekly_sales_filled": "sum",              # Total sales over available weeks
+            "estimated_units": "sum",                  # Total units over available weeks
             "title": "first",                          # Keep title
             "brand": "first",                          # Keep brand
             "main_image": "first",                     # Keep image
         }).reset_index()
+        
+        # Merge week counts
+        asin_summary = asin_summary.merge(weeks_per_asin, on="asin", how="left")
         
         # Rename columns for snapshot
         asin_summary = asin_summary.rename(columns={
@@ -841,9 +848,19 @@ def phase2_category_market_mapping(
             "estimated_units": "total_90d_units"
         })
         
-        # Calculate monthly averages (90 days = ~3 months)
-        asin_summary["monthly_units"] = asin_summary["total_90d_units"] / 3.0
-        asin_summary["revenue_proxy"] = asin_summary["total_90d_revenue"] / 3.0
+        # Calculate monthly averages using actual weeks of data
+        # Average weekly revenue * 4.33 weeks per month = monthly revenue
+        # This accounts for varying amounts of historical data (not always exactly 90 days)
+        asin_summary["avg_weekly_revenue"] = asin_summary["total_90d_revenue"] / asin_summary["weeks_count"].clip(lower=1)
+        asin_summary["avg_weekly_units"] = asin_summary["total_90d_units"] / asin_summary["weeks_count"].clip(lower=1)
+        asin_summary["monthly_units"] = asin_summary["avg_weekly_units"] * 4.33  # Average weeks per month
+        asin_summary["revenue_proxy"] = asin_summary["avg_weekly_revenue"] * 4.33  # Average weeks per month
+        
+        # Debug: Show revenue calculation stats
+        avg_weeks = asin_summary["weeks_count"].mean()
+        total_monthly_rev = asin_summary["revenue_proxy"].sum()
+        avg_product_rev = asin_summary["revenue_proxy"].mean()
+        st.caption(f"📊 Revenue calc: {len(asin_summary)} products, avg {avg_weeks:.1f} weeks data, total ${total_monthly_rev:,.0f}/mo, avg ${avg_product_rev:,.0f}/mo per product")
         
         # Fill any NaN values with median from products that have data
         valid_prices = asin_summary[asin_summary["price"] > 0]["price"]

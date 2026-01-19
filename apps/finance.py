@@ -5,47 +5,59 @@ BLEED_MULTIPLIER = 1.5
 TERMINAL_DECAY_MULTIPLIER = 1.2
 ANNUALIZATION_WEEKS = 52
 
-def analyze_capital_efficiency(capital_flow, res_data=None):
+def analyze_capital_efficiency(predictive_zones, res_data=None):
     """
     The CFO's Calculator: Predictive Edition.
-    Calibrated for 2026 Amazon Fee structures & 36-Month Velocity Trends.
+    
+    NOW USES PREDICTIVE ZONES instead of legacy capital_flow:
+    - DEFEND: Products needing immediate action (replaces BLEED/DRAG)
+    - EXPLOIT: Growth opportunities (replaces FRONTIER)
+    - REPLENISH: Inventory alerts
+    - HOLD: Healthy products (replaces FORTRESS)
 
     Performance optimizations:
     - Pre-computed constants
     - Reduced redundant calculations
     - Optimized conditional logic
     """
-    # Extract revenue by zone (with defaults)
-    total_rev = sum(capital_flow.values())
-    drag_rev = capital_flow.get("📉 DRAG (Waste)", 0)
-    terminal_drag_rev = capital_flow.get("📉 DRAG (Terminal Decay)", 0)
-    bleed_rev = capital_flow.get("🩸 BLEED (Negative Margin)", 0)
-    frontier_rev = capital_flow.get("🚀 FRONTIER (Growth)", 0)
-    fortress_rev = capital_flow.get("🏰 FORTRESS (Cash Flow)", 0)
-
-    # 1. PREDICTIVE WASTE CALCULATION
-    # Calculate average velocity decay of underperforming segments (optimized)
+    # Extract revenue by predictive zone (with defaults)
+    total_rev = sum(predictive_zones.values())
+    
+    # NEW: Predictive zone mappings
+    defend_rev = predictive_zones.get("🛡️ DEFEND", 0)
+    replenish_rev = predictive_zones.get("🔄 REPLENISH", 0)
+    exploit_rev = predictive_zones.get("⚡ EXPLOIT", 0)
+    hold_rev = predictive_zones.get("✅ HOLD", 0)
+    
+    # 1. PREDICTIVE RISK CALCULATION
+    # Calculate average velocity decay if data available
     avg_decay = 1.0
     if res_data is not None and not res_data.empty:
-        risk_df = res_data[res_data['capital_zone'].str.contains("DRAG|BLEED", na=False)]
-        if not risk_df.empty:
+        # Use predictive_zone instead of capital_zone
+        if 'predictive_zone' in res_data.columns:
+            risk_df = res_data[res_data['predictive_zone'].str.contains("DEFEND|REPLENISH", na=False)]
+        elif 'is_healthy' in res_data.columns:
+            risk_df = res_data[res_data['is_healthy'] == False]
+        else:
+            risk_df = pd.DataFrame()
+        
+        if not risk_df.empty and 'velocity_decay' in risk_df.columns:
             avg_decay = risk_df['velocity_decay'].mean()
 
-    # Boardroom Logic: If velocity is decaying, waste is harder to recover
+    # Boardroom Logic: Products in DEFEND/REPLENISH are at risk
     predictive_multiplier = max(1.0, avg_decay)
-    weighted_waste = drag_rev + terminal_drag_rev + (bleed_rev * BLEED_MULTIPLIER)
-    annualized_waste = weighted_waste * ANNUALIZATION_WEEKS * predictive_multiplier
+    weighted_risk = (defend_rev * BLEED_MULTIPLIER) + replenish_rev
+    annualized_waste = weighted_risk * ANNUALIZATION_WEEKS * predictive_multiplier
 
     # 2. STRATEGIC RATIOS (optimized calculation)
     if total_rev > 0:
-        # Penalize Bleed (1.5x) and Terminal Decay (1.2x) in the efficiency score
-        inefficiency_ratio = (drag_rev + (terminal_drag_rev * TERMINAL_DECAY_MULTIPLIER) +
-                             (bleed_rev * BLEED_MULTIPLIER)) / total_rev
-        efficiency_score = max(0, (1 - inefficiency_ratio) * 100)
-        growth_alloc = frontier_rev / total_rev
-        drag_pct = (drag_rev + terminal_drag_rev + bleed_rev) / total_rev
+        # Efficiency based on healthy products (HOLD + EXPLOIT)
+        healthy_ratio = (hold_rev + exploit_rev) / total_rev
+        efficiency_score = max(0, healthy_ratio * 100)
+        growth_alloc = exploit_rev / total_rev
+        risk_pct = (defend_rev + replenish_rev) / total_rev
     else:
-        efficiency_score, growth_alloc, inefficiency_ratio, drag_pct = 100, 0, 0, 0
+        efficiency_score, growth_alloc, risk_pct = 100, 0, 0
 
     # 3. 2026 BENCHMARK CHECK (optimized conditional)
     status = "🟢 HEALTHY" if efficiency_score > 85 else ("🟡 OPTIMIZE" if efficiency_score > 70 else "🔴 CRITICAL")
@@ -53,7 +65,7 @@ def analyze_capital_efficiency(capital_flow, res_data=None):
     return {
         "total_rev": total_rev,
         "efficiency_score": efficiency_score,
-        "drag_pct": drag_pct,
+        "risk_pct": risk_pct,  # Renamed from drag_pct
         "growth_alloc": growth_alloc,
         "annualized_waste": annualized_waste,
         "portfolio_status": status,

@@ -1586,10 +1586,15 @@ with main_tab1:
             full_df = enriched_portfolio_df
             # Find the revenue column (may have different names)
             rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in full_df.columns else 'revenue_proxy' if 'revenue_proxy' in full_df.columns else None
-            if rev_col and 'main_image' in full_df.columns:
-                gallery_df = full_df[full_df["main_image"] != ""].nlargest(16, rev_col)
-            elif 'main_image' in full_df.columns:
-                gallery_df = full_df[full_df["main_image"] != ""].head(16)
+            main_image_col = 'main_image'
+            if rev_col is not None and main_image_col in full_df.columns:
+                # Filter for products with images, then get top 16 by revenue
+                filtered_df = full_df.loc[full_df[main_image_col] != ""]
+                gallery_df = filtered_df.nlargest(16, str(rev_col))
+            elif main_image_col in full_df.columns:
+                # Filter for products with images, then get first 16
+                filtered_df = full_df.loc[full_df[main_image_col] != ""]
+                gallery_df = filtered_df.head(16)
             else:
                 gallery_df = pd.DataFrame()
     

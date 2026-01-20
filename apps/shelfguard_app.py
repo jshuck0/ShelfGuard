@@ -1221,6 +1221,31 @@ with main_tab1:
         # Build market summary for LLM (Brand vs Market + Predictive Intelligence)
         if not data_df.empty:
             
+            # Extract TOP RISK PRODUCTS with actual ASINs and individual risk amounts
+            top_risk_lines = ""
+            top_growth_lines = ""
+            
+            if 'thirty_day_risk' in enriched_portfolio_df.columns:
+                # Get top 3 products by risk
+                risk_products = enriched_portfolio_df.nlargest(3, 'thirty_day_risk')[['asin', 'title', 'thirty_day_risk', 'strategic_state']].to_dict('records')
+                if risk_products:
+                    top_risk_lines = "\n    TOP RISK PRODUCTS (Actual ASINs):\n"
+                    for p in risk_products:
+                        if p['thirty_day_risk'] > 100:  # Only show meaningful risk
+                            title_short = str(p.get('title', ''))[:40]
+                            state = str(p.get('strategic_state', 'UNKNOWN'))
+                            top_risk_lines += f"    - {p['asin']}: ${p['thirty_day_risk']:.0f}/mo risk ({state}) - {title_short}\n"
+                
+                # Get top 3 products by growth
+                if 'thirty_day_growth' in enriched_portfolio_df.columns:
+                    growth_products = enriched_portfolio_df[enriched_portfolio_df['thirty_day_growth'] > 0].nlargest(3, 'thirty_day_growth')[['asin', 'title', 'thirty_day_growth', 'opportunity_type']].to_dict('records')
+                    if growth_products:
+                        top_growth_lines = "\n    TOP GROWTH PRODUCTS (Actual ASINs):\n"
+                        for p in growth_products:
+                            title_short = str(p.get('title', ''))[:40]
+                            opp_type = str(p.get('opportunity_type', '')).replace('_', ' ').title()
+                            top_growth_lines += f"    - {p['asin']}: ${p['thirty_day_growth']:.0f}/mo upside ({opp_type}) - {title_short}\n"
+            
             # Build summary for LLM showing brand performance, risk, and growth opportunities
             portfolio_summary = f"""
     BRAND PERFORMANCE ANALYSIS:
@@ -1239,13 +1264,14 @@ with main_tab1:
     - Your Position: {"Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"}
 
     30-DAY PREDICTIVE INTELLIGENCE:
-    - Risk: {f_money(thirty_day_risk)} at risk ({risk_pct:.1f}% of revenue)
-    - Growth Opportunity: {f_money(thirty_day_growth)} ({growth_pct:.1f}% potential)
+    - Total Portfolio Risk: {f_money(thirty_day_risk)} across {defend_count} products ({risk_pct:.1f}% of revenue)
+    - Total Growth Opportunity: {f_money(thirty_day_growth)} across {growth_opportunity_count} products ({growth_pct:.1f}% potential)
     - Opportunity Alpha (Risk + Growth): {f_money(opportunity_alpha)}
-    - Defensive Actions Needed: {defend_count} products
     - Price Lift Opportunities: {price_lift_count} products
     - Conquest Opportunities: {conquest_count} products (competitors vulnerable)
     - Strategic Focus: {strategic_bias}
+    {top_risk_lines}{top_growth_lines}
+    NOTE: Risk is distributed across {defend_count} products, not concentrated in 1-2 products.
     """
         
             # Hash portfolio data for smart caching (only regenerates if metrics actually change)
@@ -1874,49 +1900,77 @@ with main_tab1:
                     # Use PRE-COMPUTED values (no function calls!)
                     asin = row.get('asin', '')
                     title = row.get('title', asin)
-                    short_title = title[:30] + "..." if len(str(title)) > 30 else title
-                    rev = row.get('weekly_sales_filled', 0)
+                    # FIX #1: Show more of the product name (50 chars instead of 30)
+                    short_title = title[:50] + "..." if len(str(title)) > 50 else title
+                    rev = row.get('weekly_sales_filled', 0) or 0
                     
                     # === USE PRE-COMPUTED INTELLIGENCE ===
                     risk = row.get('thirty_day_risk', 0) or 0
                     growth = row.get('thirty_day_growth', 0) or 0
                     pred_state = row.get('predictive_state', 'HOLD')
+                    strategic_state = row.get('strategic_state', 'HARVEST')  # NEW: Get AI strategic state
                     opp_type = row.get('opportunity_type', '')
                     certainty = row.get('model_certainty', 0.5) or 0.5
+                    ai_reasoning = row.get('reasoning', '')  # Get AI reasoning for better actions
                     
-                    # Determine action type
-                    if pred_state in ["DEFEND", "REPLENISH"]:
+                    # FIX #3: Determine action type based on ACTUAL risk/growth values, not just pred_state
+                    # A product with $6K+ risk should NOT show "Hold" even if pred_state is HOLD
+                    risk_pct = (risk / rev * 100) if rev > 0 else 0
+                    
+                    if risk > 1000 or risk_pct > 10:  # Significant risk threshold
                         action_type = "🔴 Risk"
-                        action_emoji = "🚨" if risk > rev * 0.15 else "⚠️"
-                    elif pred_state == "EXPLOIT" or growth > 0:
+                        action_emoji = "🚨" if risk_pct > 15 else "⚠️"
+                    elif growth > 500:  # Growth opportunity
                         action_type = "🟢 Growth"
                         action_emoji = "💰" if opp_type == "CONQUEST" else "📈"
+                    elif pred_state in ["DEFEND", "REPLENISH"]:
+                        action_type = "🔴 Risk"
+                        action_emoji = "⚠️"
+                    elif pred_state == "EXPLOIT":
+                        action_type = "🟢 Growth"
+                        action_emoji = "📈"
                     else:
                         action_type = "⚪ Hold"
                         action_emoji = "✅"
                     
-                    # Build action text based on type
+                    # FIX #3: Build action text based on actual risk/growth values
                     if opp_type == "CONQUEST":
                         action_display = f"{action_emoji} Competitor vulnerable - capture ${growth:.0f} in 30 days"
                     elif opp_type == "PRICE_LIFT":
-                        action_display = f"{action_emoji} Price headroom detected - raise price to capture ${growth:.0f}"
+                        action_display = f"{action_emoji} Price headroom - raise price to capture ${growth:.0f}"
+                    elif opp_type == "PRICE_POWER":
+                        action_display = f"{action_emoji} Test 4-5% price increase - rank #{int(row.get('sales_rank_filled', 0))} supports ${growth:.0f} upside"
+                    elif opp_type == "REVIEW_MOAT":
+                        action_display = f"{action_emoji} Premium pricing opportunity - strong reviews support ${growth:.0f} upside"
+                    elif risk > 1000 and strategic_state == "TRENCH_WAR":
+                        # Trench War + risk = need to defend
+                        action_display = f"{action_emoji} Defend share - ${risk:.0f}/mo at risk, match competitor pricing"
+                    elif risk > 1000 and strategic_state == "DISTRESS":
+                        action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - investigate root cause"
+                    elif risk > 1000:
+                        # Generic risk action
+                        action_display = f"{action_emoji} Action needed - ${risk:.0f}/mo at risk, review pricing/inventory"
                     elif pred_state == "DEFEND":
                         action_display = f"{action_emoji} Defend position - ${risk:.0f} at risk from velocity decline"
                     elif pred_state == "REPLENISH":
-                        action_display = f"{action_emoji} Inventory alert - restock to prevent ${risk:.0f} stockout loss"
+                        action_display = f"{action_emoji} Inventory alert - restock to prevent ${risk:.0f} stockout"
                     elif pred_state == "EXPLOIT":
                         action_display = f"{action_emoji} Exploit momentum - accelerate spend while rank improving"
+                    elif growth > 500:
+                        action_display = f"{action_emoji} Growth opportunity - ${growth:.0f} potential upside"
+                    elif rev > 30000 and risk < 500:  # High revenue, low risk
+                        action_display = f"✅ Strong performer - maintain current strategy"
                     else:
                         action_display = f"✅ Monitor - position stable"
                     
-                    # State display
-                    state_display = f"{pred_state}"
+                    # FIX #2: Show strategic_state (from AI) which is more meaningful than pred_state
+                    # Format: "TRENCH_WAR" → "Trench War"
+                    state_display = strategic_state.replace("_", " ").title() if strategic_state else pred_state
                     
                     strategy_data.append({
                         "ASIN": asin,
                         "Product": short_title,
-                        "Type": action_type,
-                        "State": state_display,
+                        "State": state_display,  # FIX #2: Removed redundant Type column
                         "Action": action_display,
                         "Revenue": rev,
                         "Risk": risk,
@@ -1932,13 +1986,12 @@ with main_tab1:
                 # Sort by combined Opportunity highest to lowest
                 final_df = final_df.drop_duplicates(subset=["ASIN"]).sort_values("Opportunity", ascending=False)
 
-                # Configure column display with Risk/Growth type indicators
+                # Configure column display - cleaner layout with actionable info
                 column_config = {
                     "ASIN": st.column_config.TextColumn("ASIN", width="small"),
-                    "Product": st.column_config.TextColumn("Product", width="medium"),
-                    "Type": st.column_config.TextColumn("Type", width="small", help="🔴 Risk = Defensive action needed, 🟢 Growth = Offensive opportunity"),
-                    "State": st.column_config.TextColumn("State", width="small", help="Strategic State → Predictive State"),
-                    "Action": st.column_config.TextColumn("AI Recommendation", width="large"),
+                    "Product": st.column_config.TextColumn("Product", width="large"),  # FIX #1: Wider product column
+                    "State": st.column_config.TextColumn("AI State", width="small", help="AI Strategic Classification: Fortress, Harvest, Trench War, Distress, Terminal"),
+                    "Action": st.column_config.TextColumn("Recommended Action", width="large"),  # FIX #2: Clearer header
                     "Revenue": st.column_config.NumberColumn("Mo. Rev", format="$%.0f", width="small", help="Monthly revenue (90-day avg)"),
                     "Risk": st.column_config.NumberColumn("Risk", format="$%.0f", width="small", help="Predicted 30-day revenue at risk if no action"),
                     "Growth": st.column_config.NumberColumn("Growth", format="$%.0f", width="small", help="Predicted 30-day revenue from growth opportunities"),
@@ -1953,8 +2006,8 @@ with main_tab1:
                     "Opportunity": None,  # Hide from display (used for sorting only)
                 }
 
-                # Display columns (exclude Opportunity which is just for sorting)
-                display_columns = ["ASIN", "Product", "Type", "State", "Action", "Revenue", "Risk", "Growth", "Certainty"]
+                # Display columns (removed redundant Type column)
+                display_columns = ["ASIN", "Product", "State", "Action", "Revenue", "Risk", "Growth", "Certainty"]
                 
                 st.dataframe(
                     final_df[display_columns],

@@ -143,10 +143,27 @@ class HarvestResult:
 def get_keepa_api_key() -> Optional[str]:
     """Get Keepa API key from secrets or environment."""
     try:
-        return st.secrets.get("KEEPA_API_KEY")
-    except:
-        import os
-        return os.getenv("KEEPA_API_KEY")
+        if hasattr(st, 'secrets'):
+            # Try nested structure first: [keepa] api_key = "..."
+            key = st.secrets.get("keepa", {}).get("api_key")
+            if key:
+                return key
+            
+            # Try flat structure: KEEPA_API_KEY = "..."
+            key = st.secrets.get("KEEPA_API_KEY")
+            if key:
+                return key
+            
+            # Try alternate flat structure: keepa_api_key = "..."
+            key = st.secrets.get("keepa_api_key")
+            if key:
+                return key
+    except Exception:
+        pass
+    
+    # Fall back to environment variables
+    import os
+    return os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
 
 
 def get_domain_id(domain: str) -> int:

@@ -2155,6 +2155,14 @@ def calculate_portfolio_intelligence_vectorized(
     # Velocity gate: block growth for declining ASINs
     growth_validated = (v90 <= 0.15)
     
+    # Extract additional metrics for growth calculation
+    if 'sales_rank_filled' in result.columns:
+        rank = result['sales_rank_filled'].fillna(5000).values
+    elif 'sales_rank' in result.columns:
+        rank = result['sales_rank'].fillna(5000).values
+    else:
+        rank = np.full(n_rows, 1000, dtype=np.float32)
+    
     # Price headroom (negative gap = you're cheaper = headroom)
     price_headroom = np.maximum(0, -price_gap)
     volume_sensitivity = np.clip(0.3 + v90, 0.2, 0.6)
@@ -2164,10 +2172,10 @@ def calculate_portfolio_intelligence_vectorized(
         0
     )
     
-    # Conquest opportunity
+    # Conquest opportunity (competitor OOS)
     conquest_gain = np.where(
         (competitor_oos > 0.30) & growth_validated,
-        revenue * 2 * competitor_oos * conquest_rate,  # Assume competitor rev = 2x yours
+        revenue * 2 * competitor_oos * conquest_rate,
         0
     )
     
@@ -2178,27 +2186,99 @@ def calculate_portfolio_intelligence_vectorized(
         0
     )
     
-    # Total growth
-    thirty_day_growth = np.where(
-        growth_validated,
-        price_lift_gain + conquest_gain + expansion_gain,
+    # === NEW: PRICE POWER OPPORTUNITY ===
+    # For market leaders (top 100 rank, high revenue), assume 3-5% price increase potential
+    # This is a realistic growth signal that doesn't require rare competitor data
+    is_market_leader = (rank <= 100) & (revenue >= 5000)  # Top 100 rank, $5K+/week
+    is_stable_position = (v90 <= 0.10)  # Not declining significantly
+    
+    # Price power: stable leaders can test 3-5% price increases
+    # Conservative estimate: 4% price increase captures 70% of the lift (30% volume loss)
+    price_power_rate = 0.04 * 0.70  # 4% price * 70% retention = 2.8% net gain
+    price_power_gain = np.where(
+        is_market_leader & is_stable_position & growth_validated,
+        revenue * price_power_rate,
         0
     )
     
-    # Opportunity type (priority: CONQUEST > PRICE_LIFT > EXPAND)
+    # === NEW: REVIEW MOAT OPPORTUNITY ===
+    # Products with strong review counts can command premium pricing
+    if 'review_count' in result.columns:
+        review_count = result['review_count'].fillna(0).values
+    else:
+        review_count = np.zeros(n_rows, dtype=np.float32)
+    
+    has_strong_reviews = review_count >= 500  # 500+ reviews = pricing power
+    review_moat_gain = np.where(
+        has_strong_reviews & is_stable_position & growth_validated,
+        revenue * 0.02,  # 2% potential from review moat
+        0
+    )
+    
+    # Total growth (include new opportunity types)
+    thirty_day_growth = np.where(
+        growth_validated,
+        price_lift_gain + conquest_gain + expansion_gain + price_power_gain + review_moat_gain,
+        0
+    )
+    
+    # Opportunity type (priority: CONQUEST > PRICE_LIFT > PRICE_POWER > REVIEW_MOAT > EXPAND)
     opportunity_type = np.where(
         conquest_gain > 0, "CONQUEST",
         np.where(
             price_lift_gain > 0, "PRICE_LIFT",
             np.where(
-                expansion_gain > 0, "EXPAND",
-                ""
+                price_power_gain > 0, "PRICE_POWER",
+                np.where(
+                    review_moat_gain > 0, "REVIEW_MOAT",
+                    np.where(
+                        expansion_gain > 0, "EXPAND",
+                        ""
+                    )
+                )
             )
         )
     )
     
     # === COMBINED OPPORTUNITY ALPHA ===
     opportunity_alpha = thirty_day_risk + thirty_day_growth
+    
+    # === STRATEGIC STATE (vectorized rule-based classification) ===
+    # Uses same logic as LLM classifier but vectorized for speed
+    # Extract additional metrics if available
+    bb_share = result['amazon_bb_share'].fillna(0.5).values if 'amazon_bb_share' in result.columns else np.full(n_rows, 0.5)
+    new_offer_count = result['new_offer_count'].fillna(5).values if 'new_offer_count' in result.columns else np.full(n_rows, 5)
+    
+    # Normalize bb_share if > 1 (assume percentage)
+    bb_share = np.where(bb_share > 1, bb_share / 100, bb_share)
+    
+    # Strategic state classification (priority order)
+    # TERMINAL: Very low BB (<10%), significant risk, negative velocity
+    is_terminal = (bb_share < 0.10) & (v90 > 0.30)
+    
+    # DISTRESS: Low BB (<40%), declining velocity, high risk
+    is_distress = (bb_share < 0.40) & (v90 > 0.20) & (~is_terminal)
+    
+    # TRENCH_WAR: Contested BB (30-60%), many competitors, competitive pressure
+    is_trench = (bb_share >= 0.30) & (bb_share < 0.60) & (new_offer_count >= 8) & (~is_distress) & (~is_terminal)
+    
+    # FORTRESS: High BB (>80%), stable or improving velocity
+    is_fortress = (bb_share >= 0.80) & (v90 <= 0.10)
+    
+    # HARVEST: Everything else (stable, good BB)
+    strategic_state = np.where(
+        is_terminal, "TERMINAL",
+        np.where(
+            is_distress, "DISTRESS",
+            np.where(
+                is_trench, "TRENCH_WAR",
+                np.where(
+                    is_fortress, "FORTRESS",
+                    "HARVEST"
+                )
+            )
+        )
+    )
     
     # === ASSIGN RESULTS TO DATAFRAME (single copy, memory efficient) ===
     result = result.copy()
@@ -2214,10 +2294,11 @@ def calculate_portfolio_intelligence_vectorized(
     result['thirty_day_growth'] = np.asarray(thirty_day_growth, dtype=np.float32)
     result['opportunity_alpha'] = np.asarray(opportunity_alpha, dtype=np.float32)
     result['predictive_state'] = pd.Categorical(predictive_state, categories=["HOLD", "DEFEND", "EXPLOIT", "REPLENISH"])
-    result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND"])
+    result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND", "PRICE_POWER", "REVIEW_MOAT"])
     result['growth_validated'] = np.asarray(growth_validated, dtype=bool)
     result['price_erosion_risk'] = np.asarray(price_erosion, dtype=np.float32)
     result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
+    result['strategic_state'] = pd.Categorical(strategic_state, categories=["FORTRESS", "HARVEST", "TRENCH_WAR", "DISTRESS", "TERMINAL"])
     
     # Model certainty based on data quality
     if 'data_weeks' in result.columns:
@@ -2744,7 +2825,7 @@ async def generate_portfolio_brief(
 
 1. **REVENUE HEALTH** (Most important)
    - Total Monthly Revenue → Portfolio scale
-   - At-Risk Revenue (30-day) → Defensive priority
+   - At-Risk Revenue (30-day) → Defensive priority (spread across ALL products, not just 1-2)
    - Growth Opportunity → Offensive priority
 
 2. **PRODUCT STATUS DISTRIBUTION**
@@ -2752,10 +2833,11 @@ async def generate_portfolio_brief(
    - TRENCH_WAR = Defend (maintain position)
    - DISTRESS/TERMINAL = Fix or Exit
 
-3. **ACTION PRIORITIZATION**
-   - Risk >20% of revenue → Lead with defense
-   - Risk <10% + Growth opportunity → Lead with offense
-   - Products in DISTRESS → Name specific ASINs
+3. **RISK INTERPRETATION (CRITICAL)**
+   - "At-Risk Revenue" is the SUM of risk across the ENTIRE portfolio
+   - Do NOT attribute total portfolio risk to individual products unless data explicitly shows individual risk
+   - If "Top Risk Products" are listed, use THOSE specific amounts per product
+   - If no individual risk data, describe portfolio-wide actions (pricing strategy, inventory review, etc.)
 
 ## BRIEF REQUIREMENTS
 
@@ -2766,20 +2848,46 @@ FORMAT YOUR RESPONSE AS:
 4. **Opportunity Alpha**: Total addressable value (Risk avoided + Growth captured)
 
 RULES:
-- BE SPECIFIC: Name products, quote $ amounts, give percentages
-- BE ACTIONABLE: "Raise price on ASIN X from $24 to $27" not "consider pricing"
-- BE HONEST: If data is limited, say so. Don't fabricate recommendations.
+- ONLY reference ASINs that appear in "Top Risk Products" or "Top Growth Products" sections
+- If no specific products are listed, give portfolio-wide recommendations (not fake ASINs)
+- Do NOT invent or fabricate ASINs - if you don't have specific ASIN data, say "review portfolio" instead
 - QUANTIFY: Always include $ impact of recommended actions
 - MAX 120 WORDS
 
-EXAMPLES:
+## GROWTH OPPORTUNITY TYPES (Use these in recommendations)
+- PRICE_POWER: Top-100 rank products can test 3-5% price increases
+- REVIEW_MOAT: 500+ reviews = pricing power, test premium positioning
+- CONQUEST: Competitor out of stock = capture their customers
+- EXPAND: Improving velocity = increase ad spend to accelerate
 
-Good: "Portfolio: $45K monthly revenue, 12% at risk ($5,400). Priority: Address B0ABC stockout risk — $2,100/mo exposed. Secondary: 3 products have price power, raise B0XYZ by 12% ($800/mo upside). Opportunity Alpha: $6,200."
+## SOPHISTICATED RECOMMENDATIONS (Not kindergarten advice)
+GOOD - Specific and quantified:
+- "Test 5% price increase on top 3 SKUs (rank #29-30) — $X/mo upside if volume holds"
+- "Review variety pack pricing — variety packs at $28 vs singles at $17 may have elasticity opportunity"
+- "Optimize ad spend allocation — shift budget from #216 rank products to top-30 performers"
+- "A/B test Prime-exclusive pricing on [ASIN] — category leaders often capture 8% premium"
 
-Good: "Strong portfolio: $38K/mo, only 5% at risk. Growth mode: 2 competitors OOS in K-Cup category — $4,200 conquest opportunity. Focus: Increase ad spend on vulnerable competitor keywords for B0DEF. Stable products can handle 10% price tests."
+BAD - Generic and vague:
+- "Maintain brand visibility" (meaningless)
+- "Monitor competitor activity" (not actionable)
+- "Ensure marketing efforts maintain market share" (kindergarten level)
 
-Bad: "Monitor the market and maintain current strategy." (Too vague)
-Bad: "Schedule a supply chain review." (Not actionable without context)"""
+## MARKET LEADER ADVICE (For 50%+ market share)
+When brand is market leader, focus on:
+1. Price optimization testing (you have pricing power)
+2. Variety pack vs singles pricing arbitrage
+3. Premium tier product launches
+4. Ad efficiency (reduce waste on already-dominant SKUs)
+
+GOOD PATTERNS:
+- (For market leaders): "Price power opportunity: Top-30 rank with 50%+ share supports 4-6% price tests on [ASIN] — $X/mo upside"
+- "Optimize ad spend: Reduce defensive spend on dominant SKUs, reallocate to variety packs with lower share"
+- (Only if specific ASINs provided): "Priority: [ACTUAL_ASIN] has $X/mo growth potential from [SPECIFIC_REASON]"
+
+BAD PATTERNS:
+- "Address stockout risk for ASIN B0XYZ" (invented ASIN)
+- "Maintain brand visibility" (useless advice)
+- Attributing entire portfolio risk to 1-2 products when no individual data provided"""
                     },
                     {
                         "role": "user",

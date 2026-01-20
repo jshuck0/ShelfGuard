@@ -2353,8 +2353,8 @@ with main_tab1:
                             
                             if reasoning and len(reasoning) > 10:
                                 clean_reasoning = reasoning.replace("[Fallback:", "").split("]")[0]
-                                escaped_reasoning = html.escape(clean_reasoning[:60])
-                                if len(clean_reasoning) > 60:
+                                escaped_reasoning = html.escape(clean_reasoning[:100])
+                                if len(clean_reasoning) > 100:
                                     escaped_reasoning += "..."
                                 reasoning_preview = f'<div style="font-size: 10px; color: #555; margin-top: 6px; padding: 6px; background: linear-gradient(135deg, #f8f9fa, #e9ecef); border-radius: 4px; font-style: italic; border-left: 2px solid {color};">"{escaped_reasoning}"</div>'
                         
@@ -2415,17 +2415,22 @@ with main_tab1:
                         else:
                             specific_action = escaped_ad_action + " / " + escaped_ecom_action
                         
-                        # Build success metrics
-                        success_metrics = ""
+                        # Build outcome metrics - different framing for urgent vs stable products
+                        outcome_metrics = ""
+                        is_optimization = "optimization" in cost_of_inaction.lower() or predictive_state == "HOLD"
+                        
                         if rank > 0:
-                            if strategic_state == "HARVEST" and price_erosion_risk > thirty_day_risk * 0.5:
-                                success_metrics = f"✅ Success: Rank stays #{max(1, rank-5)}-#{rank+5}, Buy Box 45-55%, revenue +$15K in 30 days"
-                            elif predictive_state == "REPLENISH":
-                                success_metrics = "✅ Success: Stockout prevented, revenue protected"
+                            if predictive_state == "REPLENISH":
+                                outcome_metrics = f"✅ Goal: Prevent stockout, protect ${thirty_day_risk:,.0f} revenue"
+                            elif predictive_state == "DEFEND":
+                                outcome_metrics = f"✅ Goal: Maintain Buy Box, stabilize rank #{rank}"
                             elif strategic_state == "TRENCH_WAR":
-                                success_metrics = f"✅ Success: Buy Box maintained 50%+, rank stable #{rank}"
+                                outcome_metrics = f"📊 Target: Buy Box 50%+, rank #{rank} stable"
+                            elif strategic_state == "HARVEST":
+                                # Stable product - no urgent action needed, just opportunity
+                                outcome_metrics = f"📊 Status: Position stable at #{rank}. No urgent action - growth opportunity only."
                             else:
-                                success_metrics = f"✅ Success: Monitor rank #{rank}, maintain current position"
+                                outcome_metrics = ""  # Don't show for HOLD with no action
                         
                         # Build growth section if growth opportunity exists
                         growth_section = ""
@@ -2458,11 +2463,9 @@ with main_tab1:
 <div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">
 <strong>🎯 Action:</strong> {html.escape(specific_action)}
 </div>
-<div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;">
-<strong>⚡ Cost of Inaction:</strong> {escaped_cost}
-</div>
+{f'<div style="font-size: 10px; color: #856404; margin-top: 6px; padding: 6px; background: #fff3cd; border-radius: 4px; border-left: 2px solid #ffc107;"><strong>💰 Optimization Value:</strong> {escaped_cost}</div>' if is_optimization else f'<div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;"><strong>⚡ Cost of Inaction:</strong> {escaped_cost}</div>'}
 {growth_section}
-{('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(success_metrics) + '</div>') if success_metrics else ''}
+{('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(outcome_metrics) + '</div>') if outcome_metrics else ''}
 <div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{escaped_asin}</div>
 <div style="font-size: 10px; color: #666; margin-top: 2px;">{escaped_title}...</div>
 </div>""", unsafe_allow_html=True)

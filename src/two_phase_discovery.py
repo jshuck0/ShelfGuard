@@ -945,23 +945,45 @@ def phase2_category_market_mapping(
                                 
                                 # Extract product data (using safe extraction to handle nested lists)
                                 csv = product.get("csv", [])
-                                
-                                # Price: Try Buy Box (index 18), then Amazon (index 0)
+                                stats = product.get("stats", {})
+
+                                # Price with multi-level fallback (same as competitor fetch)
                                 price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
-                                if price_cents > 0:
-                                    price = price_cents / 100.0
-                                else:
+                                if price_cents <= 0:
                                     price_cents = _safe_csv_value(csv[0] if csv and len(csv) > 0 else None, 0)
-                                    price = price_cents / 100.0 if price_cents > 0 else 0
-                                
-                                # BSR (index 3)
-                                bsr = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
-                                bsr = bsr if bsr > 0 else None
-                                
+                                if price_cents <= 0:
+                                    price_cents = _safe_csv_value(csv[10] if csv and len(csv) > 10 else None, 0)
+
+                                # FALLBACK: Use Keepa avg stats if current price unavailable
+                                if price_cents <= 0 and stats:
+                                    avg30 = stats.get("avg30", []) if isinstance(stats.get("avg30"), list) else []
+                                    avg90 = stats.get("avg90", []) if isinstance(stats.get("avg90"), list) else []
+                                    for idx in [18, 0, 1, 10]:
+                                        if avg30 and len(avg30) > idx and avg30[idx] and avg30[idx] > 0:
+                                            price_cents = avg30[idx]
+                                            break
+                                        if avg90 and len(avg90) > idx and avg90[idx] and avg90[idx] > 0:
+                                            price_cents = avg90[idx]
+                                            break
+
+                                price = price_cents / 100.0 if price_cents > 0 else 0
+
+                                # BSR with fallback to avg stats
+                                bsr_value = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
+                                if bsr_value <= 0 and stats:
+                                    avg30 = stats.get("avg30", []) if isinstance(stats.get("avg30"), list) else []
+                                    avg90 = stats.get("avg90", []) if isinstance(stats.get("avg90"), list) else []
+                                    if avg30 and len(avg30) > 3 and avg30[3] and avg30[3] > 0:
+                                        bsr_value = avg30[3]
+                                    elif avg90 and len(avg90) > 3 and avg90[3] and avg90[3] > 0:
+                                        bsr_value = avg90[3]
+
+                                bsr = bsr_value if bsr_value > 0 else None
+
                                 monthly_units = 0
                                 if bsr and bsr > 0:
                                     monthly_units = 145000.0 * (bsr ** -0.9)
-                                
+
                                 revenue = monthly_units * price
                                 
                                 title = product.get("title", "")
@@ -993,11 +1015,11 @@ def phase2_category_market_mapping(
                                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 1)
                                 new_offer_count = max(1, new_offer_count)
                                 
-                                # Review Count (index 17)
-                                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
-                                
-                                # Rating (index 16) - stored as 10x (45 = 4.5 stars)
-                                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+                                # Review Count (index 16 per Keepa docs)
+                                review_count = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+
+                                # Rating (index 17 per Keepa docs) - stored as 10x (45 = 4.5 stars)
+                                rating_raw = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
                                 rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
                                 
                                 brand_products.append({
@@ -1224,17 +1246,51 @@ def phase2_category_market_mapping(
                 
                 # Calculate revenue proxy (using safe extraction to handle nested lists)
                 csv = product.get("csv", [])
-                
-                # Get price: Try Buy Box (18), then Amazon (0), then New FBA (10)
+                stats = product.get("stats", {})
+
+                # Get price with multi-level fallback:
+                # 1. Current Buy Box (csv[18])
+                # 2. Current Amazon (csv[0])
+                # 3. Current New FBA (csv[10])
+                # 4. 30-day avg price from stats (avg30)
+                # 5. 90-day avg price from stats (avg90)
                 price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
                 if price_cents <= 0:
                     price_cents = _safe_csv_value(csv[0] if csv and len(csv) > 0 else None, 0)
                 if price_cents <= 0:
                     price_cents = _safe_csv_value(csv[10] if csv and len(csv) > 10 else None, 0)
+
+                # FALLBACK: Use Keepa avg stats if current price unavailable
+                if price_cents <= 0 and stats:
+                    # Try avg30 for Amazon/New prices
+                    avg30 = stats.get("avg30", []) if isinstance(stats.get("avg30"), list) else []
+                    avg90 = stats.get("avg90", []) if isinstance(stats.get("avg90"), list) else []
+
+                    # Keepa stats array indices: 0=Amazon, 1=New, 10=NewFBA, 18=BuyBox
+                    # Try multiple price types from avg stats
+                    for idx in [18, 0, 1, 10]:  # BuyBox, Amazon, New, NewFBA
+                        if avg30 and len(avg30) > idx and avg30[idx] and avg30[idx] > 0:
+                            price_cents = avg30[idx]
+                            break
+                        if avg90 and len(avg90) > idx and avg90[idx] and avg90[idx] > 0:
+                            price_cents = avg90[idx]
+                            break
+
                 price = price_cents / 100.0 if price_cents > 0 else 0
 
-                # Get BSR (index 3) - allow None if missing
+                # Get BSR with fallback to avg stats
                 bsr_value = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
+
+                # FALLBACK: Use avg30/avg90 BSR from stats
+                if bsr_value <= 0 and stats:
+                    avg30 = stats.get("avg30", []) if isinstance(stats.get("avg30"), list) else []
+                    avg90 = stats.get("avg90", []) if isinstance(stats.get("avg90"), list) else []
+                    # BSR is at index 3 in stats arrays
+                    if avg30 and len(avg30) > 3 and avg30[3] and avg30[3] > 0:
+                        bsr_value = avg30[3]
+                    elif avg90 and len(avg90) > 3 and avg90[3] and avg90[3] > 0:
+                        bsr_value = avg90[3]
+
                 bsr = bsr_value if bsr_value > 0 else None
 
                 # Calculate monthly units from BSR using power law formula
@@ -1243,13 +1299,6 @@ def phase2_category_market_mapping(
                 monthly_units = 0
                 if bsr and bsr > 0:
                     monthly_units = 145000.0 * (bsr ** -0.9)
-                else:
-                    # Fallback: Try Keepa's avg30 stats if BSR not available
-                    stats = product.get("stats", {})
-                    if stats and "current" in stats:
-                        current_stats = stats["current"]
-                        if isinstance(current_stats, dict) and "avg30" in current_stats:
-                            monthly_units = current_stats["avg30"] or 0
 
                 # Calculate revenue (will be 0 if price or monthly_units is 0/missing)
                 # Keep products even with zero revenue - similar to weekly pipeline
@@ -1297,15 +1346,15 @@ def phase2_category_market_mapping(
                         new_offer_count = _safe_numeric(current_stats.get("COUNT_NEW"), 1)
                 new_offer_count = max(1, int(new_offer_count))  # At least 1 seller
                 
-                # Review Count (index 17)
-                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
+                # Review Count (index 16 per Keepa docs)
+                review_count = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
                 if review_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
                         review_count = _safe_numeric(current_stats.get("COUNT_REVIEWS"), 0)
-                
-                # Rating (index 16) - Keepa stores as 10x
-                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+
+                # Rating (index 17 per Keepa docs) - Keepa stores as 10x
+                rating_raw = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
                 if rating_raw <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):

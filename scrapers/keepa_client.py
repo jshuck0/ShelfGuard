@@ -166,12 +166,16 @@ def extract_weekly_facts(product, window_start=None):
         arr = np.array(raw_list, dtype=float).reshape(-1, 2)
         times = _keepa_time_to_dt(arr[:, 0])
         vals = arr[:, 1]
-        
-        # --- FIX 1: Normalization (Cents to Dollars) ---
+
+        # CRITICAL FIX: Replace Keepa special values (-1 = no data, -2 = out of stock)
+        # BEFORE any normalization. Otherwise -1 becomes -0.01 after cents→dollars conversion.
+        vals = np.where(np.isin(vals, [-1, -2]), np.nan, vals)
+
+        # --- Normalization (Cents to Dollars) ---
         if "price" in col_name:
             vals = vals / 100.0
 
-        v = pd.Series(vals, index=times).replace([-1, -2], np.nan).dropna()
+        v = pd.Series(vals, index=times).dropna()  # NaN already set above
         if v.empty: continue
             
         tmp = pd.DataFrame({"datetime": v.index, col_name: v.values})
@@ -216,23 +220,42 @@ def build_keepa_weekly_table(products, window_start=None):
     df = df.drop_duplicates(subset=["asin", "week_start"])
 
     # Build effective price from available price columns
+    # Priority: buy_box > amazon > new > new_fba
     eff_p = pd.Series(np.nan, index=df.index)
-    for col in ["buy_box_price", "amazon_price", "new_price"]:
+    for col in ["buy_box_price", "amazon_price", "new_price", "new_fba_price"]:
         if col in df.columns:
             eff_p = eff_p.fillna(df[col])
     df["eff_p"] = eff_p
-    df["filled_price"] = df.groupby("asin")["eff_p"].ffill(limit=MAX_PRICE_FFILL_WEEKS)
-    
-    # Fill BSR with interpolation if available, otherwise use default
+
+    # Fill price gaps using forward-fill, then backward-fill for leading gaps
+    # This ensures we use the most recent known price, but also fill early weeks
+    # that had no price data by using the earliest available price
+    df["filled_price"] = df.groupby("asin")["eff_p"].transform(
+        lambda x: x.ffill(limit=MAX_PRICE_FFILL_WEEKS).bfill(limit=MAX_PRICE_FFILL_WEEKS)
+    )
+
+    # ULTIMATE FALLBACK: For any remaining NaN prices, use the ASIN's mean price
+    # This handles cases where price data gaps exceed MAX_PRICE_FFILL_WEEKS
+    asin_mean_prices = df.groupby("asin")["eff_p"].transform("mean")
+    df["filled_price"] = df["filled_price"].fillna(asin_mean_prices)
+
+    # Fill BSR with interpolation if available
     if "sales_rank" in df.columns:
-        df["sales_rank_filled"] = df.groupby("asin")["sales_rank"].transform(lambda x: x.interpolate(limit=MAX_RANK_GAP_WEEKS))
+        # Interpolate BSR to handle gaps smoothly
+        df["sales_rank_filled"] = df.groupby("asin")["sales_rank"].transform(
+            lambda x: x.interpolate(limit=MAX_RANK_GAP_WEEKS).ffill().bfill()
+        )
     else:
         # No BSR data - use high default (low confidence)
         df["sales_rank_filled"] = 100000
-    
+
+    # Fill any remaining NaN BSRs with ASIN's mean
+    asin_mean_bsr = df.groupby("asin")["sales_rank_filled"].transform("mean")
+    df["sales_rank_filled"] = df["sales_rank_filled"].fillna(asin_mean_bsr).fillna(100000)
+
     # CALIBRATED FOR GROCERY VELOCITY
     monthly_units = (145000.0 * (df["sales_rank_filled"].clip(lower=1) ** -0.9))
-    
+
     # SCALE TO WEEKLY BUCKET
     df["estimated_units"] = monthly_units * (7 / 30)
     df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)

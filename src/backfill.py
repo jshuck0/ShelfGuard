@@ -49,6 +49,8 @@ IDX_AMAZON = 0
 IDX_NEW_FBA = 10
 IDX_SALES_RANK = 3
 IDX_BUY_BOX = 18
+IDX_COUNT_REVIEWS = 16  # Review count
+IDX_RATING = 17         # Rating (stored as rating*10, e.g., 45 = 4.5 stars)
 
 
 def keepa_minutes_to_unix(keepa_minutes: int) -> int:
@@ -200,9 +202,11 @@ def build_historical_metrics(products: List[Dict]) -> pd.DataFrame:
     - buy_box_price
     - amazon_price
     - new_fba_price
+    - review_count
+    - rating
 
     Returns:
-        DataFrame with columns: [datetime, asin, sales_rank, buy_box_price, amazon_price, new_fba_price]
+        DataFrame with columns: [datetime, asin, sales_rank, buy_box_price, amazon_price, new_fba_price, review_count, rating]
     """
     all_frames = []
 
@@ -216,9 +220,11 @@ def build_historical_metrics(products: List[Dict]) -> pd.DataFrame:
         bb_df = parse_historical_timeseries(product, IDX_BUY_BOX, "buy_box_price")
         amz_df = parse_historical_timeseries(product, IDX_AMAZON, "amazon_price")
         fba_df = parse_historical_timeseries(product, IDX_NEW_FBA, "new_fba_price")
+        review_df = parse_historical_timeseries(product, IDX_COUNT_REVIEWS, "review_count")
+        rating_df = parse_historical_timeseries(product, IDX_RATING, "rating")
 
         # Merge all metrics on datetime + asin
-        frames_to_merge = [bsr_df, bb_df, amz_df, fba_df]
+        frames_to_merge = [bsr_df, bb_df, amz_df, fba_df, review_df, rating_df]
         frames_to_merge = [f for f in frames_to_merge if not f.empty]
 
         if not frames_to_merge:
@@ -264,6 +270,16 @@ def build_historical_metrics(products: List[Dict]) -> pd.DataFrame:
         # Fallback: if interpolation didn't fill all values, forward fill remaining
         df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank_filled"].ffill()
 
+    # Normalize rating (Keepa stores as rating*10, e.g., 45 = 4.5 stars)
+    if "rating" in df_full.columns:
+        df_full["rating"] = df_full["rating"] / 10.0
+        # Forward fill rating (ratings are stable, change slowly)
+        df_full["rating"] = df_full.groupby("asin")["rating"].ffill()
+
+    # Forward fill review_count (reviews only increase, never decrease)
+    if "review_count" in df_full.columns:
+        df_full["review_count"] = df_full.groupby("asin")["review_count"].ffill()
+
     return df_full
 
 
@@ -294,6 +310,8 @@ def upsert_historical_metrics(
             - buy_box_price (float)
             - amazon_price (float)
             - new_fba_price (float)
+            - review_count (int)
+            - rating (float) - normalized to 0-5 scale
         Indexes:
             - (project_id, asin, datetime) for fast lookups
     """

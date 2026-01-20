@@ -1899,20 +1899,56 @@ class StrategicTriangulator:
         print(brief.ai_recommendation)    # Alert: "📦 Inventory Alert: Stockout by Jan 25..."
     """
     
-    def __init__(self, use_llm: bool = True, timeout: float = 10.0, strategic_bias: str = "Balanced Defense"):
+    def __init__(self, use_llm: bool = True, timeout: float = 10.0, strategic_bias: str = "Balanced Defense",
+                 enable_triggers: bool = False, enable_network: bool = False):
         """
         Initialize the unified AI engine.
-        
+
         Args:
             use_llm: Whether to use LLM classification (default True)
             timeout: Timeout for LLM calls in seconds
             strategic_bias: User's strategic focus (Profit/Balanced/Growth)
+            enable_triggers: Enable trigger event detection (requires historical data)
+            enable_network: Enable network intelligence (requires Supabase connection)
         """
         self.use_llm = use_llm
         self.timeout = timeout
         self.strategic_bias = strategic_bias
+        self.enable_triggers = enable_triggers
+        self.enable_network = enable_network
         self._client = None
         self._model = None
+
+        # Initialize network intelligence if enabled
+        if self.enable_network:
+            try:
+                from src.network_intelligence import NetworkIntelligence
+                from supabase import create_client
+                import os
+
+                supabase_url = os.getenv("SUPABASE_URL")
+                supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+
+                if supabase_url and supabase_key:
+                    supabase = create_client(supabase_url, supabase_key)
+                    self.network_intel = NetworkIntelligence(supabase)
+                else:
+                    self.network_intel = None
+                    if STREAMLIT_AVAILABLE:
+                        import streamlit as st
+                        # Try Streamlit secrets
+                        try:
+                            supabase_url = st.secrets.get("supabase", {}).get("url") or st.secrets.get("url")
+                            supabase_key = st.secrets.get("supabase", {}).get("service_key") or st.secrets.get("key")
+                            if supabase_url and supabase_key:
+                                supabase = create_client(supabase_url, supabase_key)
+                                self.network_intel = NetworkIntelligence(supabase)
+                        except:
+                            pass
+            except Exception as e:
+                self.network_intel = None
+        else:
+            self.network_intel = None
     
     def analyze(self, row: Union[pd.Series, Dict], strategic_bias: Optional[str] = None, revenue: Optional[float] = None) -> StrategicBrief:
         """
@@ -2047,7 +2083,82 @@ class StrategicTriangulator:
         # Update confidence to use model certainty from predictive engine
         # (based on data quality and trend consistency)
         strategic_brief.confidence = predictive.model_certainty
-        
+
+        # === STEP 5: TRIGGER DETECTION (Optional Enhancement) ===
+        if self.enable_triggers and 'historical_df' in row_data:
+            try:
+                from src.trigger_detection import detect_trigger_events
+
+                asin = row_data.get('asin', '')
+                historical_df = row_data['historical_df']
+                competitors_df = row_data.get('competitors_df', pd.DataFrame())
+
+                if not historical_df.empty:
+                    triggers = detect_trigger_events(
+                        asin=asin,
+                        df_historical=historical_df,
+                        df_competitors=competitors_df
+                    )
+
+                    # Add trigger events to reasoning if detected
+                    if triggers:
+                        trigger_summary = "\n\n🎯 Trigger Events Detected:\n"
+                        for t in triggers[:3]:  # Top 3 most severe
+                            severity_emoji = "🔴" if t.severity >= 8 else "🟡" if t.severity >= 6 else "🟢"
+                            trigger_summary += f"{severity_emoji} {t.event_type}: {t.metric_name} changed {t.delta_pct:+.1f}% (severity {t.severity}/10)\n"
+
+                        strategic_brief.reasoning += trigger_summary
+
+                        # Track trigger types in signals_detected
+                        for t in triggers[:5]:
+                            if t.event_type not in strategic_brief.signals_detected:
+                                strategic_brief.signals_detected.append(t.event_type)
+            except Exception as e:
+                # Silently skip trigger detection if it fails
+                pass
+
+        # === STEP 6: NETWORK INTELLIGENCE (Optional Enhancement) ===
+        if self.enable_network and self.network_intel:
+            try:
+                category_id = row_data.get('category_id')
+                asin = row_data.get('asin', '')
+                price = float(row_data.get('price', row_data.get('filled_price', row_data.get('buy_box_price', 0))))
+
+                if category_id and price > 0:
+                    # Get category benchmarks
+                    benchmarks = self.network_intel.get_category_benchmarks(category_id)
+
+                    if benchmarks and benchmarks.get('median_price'):
+                        # Calculate competitive position
+                        position = self.network_intel.get_competitive_position(asin, category_id)
+
+                        # Build network intelligence summary
+                        network_summary = "\n\n📊 Network Intelligence:\n"
+
+                        # Price vs category median
+                        median_price = benchmarks['median_price']
+                        price_vs_median = ((price / median_price) - 1) * 100
+                        network_summary += f"• Your price: ${price:.2f} ({price_vs_median:+.1f}% vs category median of ${median_price:.2f})\n"
+
+                        # Review count vs category
+                        review_count = int(row_data.get('review_count', 0))
+                        median_reviews = benchmarks.get('median_review_count', 0)
+                        if median_reviews > 0:
+                            review_vs_median = ((review_count / median_reviews) - 1) * 100
+                            network_summary += f"• Reviews: {review_count:,} ({review_vs_median:+.1f}% vs median of {int(median_reviews):,})\n"
+
+                        # Competitive advantages
+                        if position and position.get('competitive_advantages'):
+                            advantages = position['competitive_advantages'][:2]  # Top 2
+                            if advantages:
+                                network_summary += f"• Advantages: {', '.join(advantages)}\n"
+
+                        # Add network summary to reasoning
+                        strategic_brief.reasoning += network_summary
+            except Exception as e:
+                # Silently skip network intelligence if it fails
+                pass
+
         return strategic_brief
     
     def analyze_batch(self, rows: List[Union[pd.Series, Dict]]) -> List[StrategicBrief]:

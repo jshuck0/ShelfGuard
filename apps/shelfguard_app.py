@@ -37,6 +37,30 @@ from search_to_state_ui import (
     render_user_dashboard
 )
 
+# Supabase Data Reader - The Oracle's Cache Layer
+try:
+    from src.supabase_reader import (
+        load_project_data,
+        load_snapshot_trends,
+        check_data_freshness,
+        get_market_snapshot_from_cache,
+        # FIX 1.1: Historical metrics from DB for velocity extraction
+        load_historical_metrics_from_db,
+        load_historical_metrics_by_asins,
+        # FIX 1.2: Network intelligence for competitive context
+        get_market_snapshot_with_network_intelligence
+    )
+    SUPABASE_CACHE_ENABLED = True
+except ImportError:
+    SUPABASE_CACHE_ENABLED = False
+    load_project_data = None
+    load_snapshot_trends = None
+    check_data_freshness = None
+    get_market_snapshot_from_cache = None
+    load_historical_metrics_from_db = None
+    load_historical_metrics_by_asins = None
+    get_market_snapshot_with_network_intelligence = None
+
 # AI Engine - Strategic Triangulation (Unified AI Engine)
 try:
     from utils.ai_engine import (
@@ -65,33 +89,54 @@ if OPENAI_SYNC_AVAILABLE:
 _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 
-def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True, strategic_bias: str = "Balanced Defense") -> dict:
+def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True, strategic_bias: str = "Balanced Defense",
+                         enable_triggers: bool = False, enable_network: bool = False) -> dict:
     """
     UNIFIED AI ENGINE - Strategic Classification + Predictive Intelligence
-    
+
     Single entry point for all AI analysis. Returns unified outputs that include:
     - Strategic state (FORTRESS, HARVEST, TRENCH_WAR, DISTRESS, TERMINAL)
     - Predictive 30-day risk forecast
     - Actionable alerts (Inventory, Pricing, Rank)
     - Model certainty based on data quality
-    
+    - Trigger events (optional - requires historical data)
+    - Network intelligence (optional - requires Supabase)
+
     Args:
         row: Product row dictionary with metrics
         revenue: Product revenue for predictive calculations
         use_triangulation: Whether to use unified AI engine (default True)
         strategic_bias: User's strategic focus (Profit/Balanced/Growth)
-        
+        enable_triggers: Enable trigger event detection (requires historical_df in row)
+        enable_network: Enable network intelligence (requires category_id in row)
+
     Returns:
         dict with unified strategic + predictive outputs
     """
     # Convert row to Series for legacy fallback
     row_series = pd.Series(row) if isinstance(row, dict) else row
-    
+
+    # Add historical data from session state if available and triggers enabled
+    if enable_triggers and 'historical_df' not in row:
+        # Try to get historical data from session state
+        if 'df_weekly' in st.session_state and not st.session_state['df_weekly'].empty:
+            asin = row.get('asin', '')
+            if asin:
+                df_weekly = st.session_state['df_weekly']
+                historical_df = df_weekly[df_weekly['asin'] == asin].copy()
+                if not historical_df.empty:
+                    row['historical_df'] = historical_df
+
     # Use unified AI engine
     if use_triangulation and TRIANGULATION_ENABLED:
         try:
-            # Single call to unified engine (strategic + predictive in one)
-            triangulator = StrategicTriangulator(use_llm=True, strategic_bias=strategic_bias)
+            # Single call to unified engine (strategic + predictive + triggers + network)
+            triangulator = StrategicTriangulator(
+                use_llm=True,
+                strategic_bias=strategic_bias,
+                enable_triggers=enable_triggers,
+                enable_network=enable_network
+            )
             brief = triangulator.analyze(row, strategic_bias=strategic_bias, revenue=revenue)
             
             # Map strategic state to legacy categories
@@ -465,9 +510,20 @@ with main_tab1:
     query_params = st.query_params
     
     # If URL has project params but session doesn't, restore from URL
+    # The Oracle will load data from Supabase cache automatically
     if 'project_asin' in query_params and not st.session_state.get('active_project_asin'):
         st.session_state['active_project_asin'] = query_params.get('project_asin')
         st.session_state['active_project_name'] = query_params.get('project_name', 'Restored Project')
+        
+        # Try to restore project ASINs from Supabase tracked_asins table
+        if SUPABASE_CACHE_ENABLED:
+            try:
+                from src.persistence import load_project_asins
+                # Note: This requires the project_id, which we don't have from URL
+                # For now, just mark that we need to load from cache
+                st.session_state['needs_cache_load'] = True
+            except Exception:
+                pass
     
     # === STATE MACHINE ROUTER ===
     # Check if user has activated a project
@@ -512,24 +568,97 @@ with main_tab1:
     # === ACTIVE PROJECT MODE ===
     # If we have an active project, continue with dashboard rendering
     try:
-        # 2. DATA INGESTION FROM DISCOVERY
-        df_weekly = st.session_state.get('active_project_data', pd.DataFrame())
-        market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+        # 2. DATA INGESTION - CACHE-FIRST ARCHITECTURE (The Oracle)
+        # Priority: Supabase Cache > Session State > Redirect to Discovery
+        
         project_name = st.session_state.get('active_project_name', 'Unknown Project')
         seed_asin = st.session_state.get('active_project_asin', None)
+        project_asins = st.session_state.get('active_project_all_asins', [])
+        seed_brand = st.session_state.get('active_project_seed_brand', '')
+        
+        # Initialize data containers
+        df_weekly = pd.DataFrame()
+        market_snapshot = pd.DataFrame()
+        data_source = "none"
+        
+        # === SUPABASE CACHE (PRIMARY) - FIX 1.2: Enhanced with Network Intelligence ===
+        # Try loading from harvested snapshots first (instant 0.1s load)
+        # Now includes category benchmarks for competitive context
+        category_id = st.session_state.get('active_project_category_id')
+        network_stats = {}
+
+        if SUPABASE_CACHE_ENABLED and project_asins:
+            try:
+                # Use enhanced function with network intelligence if available
+                if get_market_snapshot_with_network_intelligence:
+                    market_snapshot, cache_stats = get_market_snapshot_with_network_intelligence(
+                        project_asins, seed_brand, category_id
+                    )
+                    if cache_stats.get('has_network_context'):
+                        network_stats = cache_stats.get('network_intelligence', {})
+                else:
+                    market_snapshot, cache_stats = get_market_snapshot_from_cache(project_asins, seed_brand)
+
+                if not market_snapshot.empty:
+                    data_source = "supabase"
+                    df_weekly = market_snapshot.copy()  # Use snapshot as weekly data
+
+                    # Check freshness and show indicator
+                    freshness = check_data_freshness(project_asins)
+                    if freshness.get("is_stale"):
+                        st.caption(f"⏰ Data last updated {freshness.get('freshness_hours', 'N/A')}h ago")
+
+            except Exception as e:
+                st.caption(f"⚠️ Cache unavailable, using session data")
+        
+        # === SESSION STATE FALLBACK ===
+        # For newly created projects not yet harvested
+        if market_snapshot.empty:
+            df_weekly = st.session_state.get('active_project_data', pd.DataFrame())
+            market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+            if not market_snapshot.empty:
+                data_source = "session"
 
         if df_weekly.empty or market_snapshot.empty:
             st.warning("⚠️ No project data found. Please create a project in Market Discovery.")
             st.stop()
         
-        # 3. VELOCITY EXTRACTION FROM BACKFILL (Predictive Intelligence Fuel)
-        # Extract velocity trends from the 90-day backfill data for each ASIN
-        # This is the critical link between historical data and predictive forecasts
+        # 3. VELOCITY EXTRACTION FROM DATABASE (FIX 1.1 - Critical Pipeline Fix)
+        # Extract velocity trends from historical_metrics table instead of session state
+        # This enables cross-session velocity tracking and uses the 90-day backfill data
         velocity_df = pd.DataFrame()
-        if not df_weekly.empty and 'asin' in df_weekly.columns:
+        historical_df_for_velocity = pd.DataFrame()
+
+        # PRIORITY 1: Try loading from historical_metrics table in Supabase
+        project_id = st.session_state.get('active_project_id')
+        if SUPABASE_CACHE_ENABLED and load_historical_metrics_from_db and project_id:
+            try:
+                historical_df_for_velocity = load_historical_metrics_from_db(project_id)
+                if not historical_df_for_velocity.empty:
+                    st.session_state['velocity_source'] = 'database'
+            except Exception as e:
+                st.caption(f"⚠️ DB velocity load failed: {str(e)[:50]}")
+
+        # PRIORITY 2: Try loading by ASINs if project_id failed
+        if historical_df_for_velocity.empty and SUPABASE_CACHE_ENABLED and load_historical_metrics_by_asins and project_asins:
+            try:
+                asin_tuple = tuple(sorted([a.strip().upper() for a in project_asins]))
+                historical_df_for_velocity = load_historical_metrics_by_asins(asin_tuple, days=90)
+                if not historical_df_for_velocity.empty:
+                    st.session_state['velocity_source'] = 'database_by_asin'
+            except Exception as e:
+                pass  # Silent fallback to session state
+
+        # PRIORITY 3: Fallback to session state df_weekly (for newly created projects)
+        if historical_df_for_velocity.empty and not df_weekly.empty:
+            historical_df_for_velocity = df_weekly
+            st.session_state['velocity_source'] = 'session_state'
+
+        # Extract velocity trends from the historical data
+        if not historical_df_for_velocity.empty and 'asin' in historical_df_for_velocity.columns:
             try:
                 from utils.ai_engine import extract_portfolio_velocity
-                velocity_df = extract_portfolio_velocity(df_weekly)
+                velocity_df = extract_portfolio_velocity(historical_df_for_velocity)
                 # Merge velocity data into market_snapshot
                 if not velocity_df.empty:
                     market_snapshot = market_snapshot.merge(
@@ -549,7 +678,7 @@ with main_tab1:
                 market_snapshot['data_quality'] = 'VERY_LOW'
                 market_snapshot['data_weeks'] = 0
         else:
-            # No backfill data - set defaults
+            # No historical data available - set defaults
             market_snapshot['velocity_trend_30d'] = 0.0
             market_snapshot['velocity_trend_90d'] = 0.0
             market_snapshot['data_quality'] = 'VERY_LOW'
@@ -569,7 +698,20 @@ with main_tab1:
             st.stop()
 
         target_brand = seed_product['brand'].iloc[0]
-        st.caption(f"🎯 Analyzing: **{target_brand}** vs. Market")
+        
+        # Data source indicator (The Oracle status)
+        source_icons = {"supabase": "⚡", "session": "💾", "none": "❓"}
+        source_labels = {"supabase": "Cached (Instant)", "session": "Session", "none": "No Data"}
+        velocity_source = st.session_state.get('velocity_source', 'unknown')
+        velocity_indicator = "📊" if velocity_source.startswith('database') else "💾"
+        network_indicator = "🌐" if network_stats.get('median_price') else ""
+
+        st.caption(
+            f"🎯 Analyzing: **{target_brand}** vs. Market | "
+            f"{source_icons.get(data_source, '❓')} {source_labels.get(data_source, 'Unknown')} | "
+            f"{velocity_indicator} Velocity: {velocity_source.replace('_', ' ').title()} "
+            f"{network_indicator}"
+        )
 
         # Step 2: Create two dataframes
         # Use CONTAINS matching to catch brand variations:
@@ -667,6 +809,68 @@ with main_tab1:
                 non_matched_cols = ['asin', 'title', 'brand', 'revenue_proxy'] if 'revenue_proxy' in non_matched.columns else ['asin', 'title', 'brand']
                 available_non_cols = [c for c in non_matched_cols if c in non_matched.columns]
                 st.dataframe(non_matched[available_non_cols], use_container_width=True)
+
+        # === ENHANCEMENT 2.1: NETWORK INTELLIGENCE DISPLAY ===
+        # Show category benchmarks if available (from network intelligence tables)
+        if network_stats and network_stats.get('median_price'):
+            with st.expander("🌐 Category Intelligence (Network Data)", expanded=False):
+                st.markdown("**Category Benchmarks from Network Intelligence**")
+                st.caption("Data accumulated from searches across ShelfGuard users")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    median_price = network_stats.get('median_price')
+                    if median_price:
+                        st.metric("Median Price", f"${median_price:.2f}")
+
+                        # Compare your portfolio average to median
+                        if 'buy_box_price' in portfolio_df.columns or 'filled_price' in portfolio_df.columns or 'price' in portfolio_df.columns:
+                            price_col = 'buy_box_price' if 'buy_box_price' in portfolio_df.columns else 'filled_price' if 'filled_price' in portfolio_df.columns else 'price'
+                            your_avg_price = portfolio_df[price_col].mean() if price_col in portfolio_df.columns else 0
+                            if your_avg_price > 0:
+                                price_diff_pct = ((your_avg_price / median_price) - 1) * 100
+                                price_indicator = "🟢" if -10 < price_diff_pct < 10 else "🟡" if -20 < price_diff_pct < 20 else "🔴"
+                                st.caption(f"{price_indicator} Your avg: ${your_avg_price:.2f} ({price_diff_pct:+.1f}%)")
+
+                with col2:
+                    median_bsr = network_stats.get('median_bsr')
+                    if median_bsr:
+                        st.metric("Median BSR", f"{int(median_bsr):,}")
+
+                        # Compare your portfolio average to median
+                        if 'sales_rank_filled' in portfolio_df.columns or 'bsr' in portfolio_df.columns:
+                            bsr_col = 'sales_rank_filled' if 'sales_rank_filled' in portfolio_df.columns else 'bsr'
+                            your_avg_bsr = portfolio_df[bsr_col].median() if bsr_col in portfolio_df.columns else 0
+                            if your_avg_bsr > 0:
+                                bsr_diff_pct = ((your_avg_bsr / median_bsr) - 1) * 100
+                                # Lower BSR is better, so invert the indicator logic
+                                bsr_indicator = "🟢" if bsr_diff_pct < -10 else "🟡" if bsr_diff_pct < 20 else "🔴"
+                                st.caption(f"{bsr_indicator} Your median: {int(your_avg_bsr):,} ({bsr_diff_pct:+.1f}%)")
+
+                with col3:
+                    median_reviews = network_stats.get('median_review_count')
+                    if median_reviews:
+                        st.metric("Median Reviews", f"{int(median_reviews):,}")
+
+                        # Compare your portfolio average to median
+                        if 'review_count' in portfolio_df.columns:
+                            your_avg_reviews = portfolio_df['review_count'].median()
+                            if your_avg_reviews > 0:
+                                review_diff_pct = ((your_avg_reviews / median_reviews) - 1) * 100
+                                review_indicator = "🟢" if review_diff_pct > 20 else "🟡" if review_diff_pct > -20 else "🔴"
+                                st.caption(f"{review_indicator} Your median: {int(your_avg_reviews):,} ({review_diff_pct:+.1f}%)")
+
+                # Additional network stats
+                st.markdown("---")
+                col4, col5 = st.columns(2)
+                with col4:
+                    total_tracked = network_stats.get('total_asins_tracked', 0)
+                    data_quality = network_stats.get('data_quality', 'UNKNOWN')
+                    st.caption(f"📊 Network Data: {total_tracked} ASINs tracked | Quality: {data_quality}")
+                with col5:
+                    snapshot_date = network_stats.get('snapshot_date', 'N/A')
+                    st.caption(f"📅 Last updated: {snapshot_date}")
 
         # Step 3: Calculate key metrics
         # Portfolio (Your Brand) metrics

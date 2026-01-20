@@ -26,6 +26,14 @@ from src.persistence import (
 from src.backfill import execute_backfill
 from src.recommendations import generate_resolution_cards, render_resolution_card
 
+# Import cache function for instant return visits
+try:
+    from src.supabase_reader import cache_market_snapshot
+    CACHE_ENABLED = True
+except ImportError:
+    cache_market_snapshot = None
+    CACHE_ENABLED = False
+
 
 def render_discovery_ui() -> None:
     """
@@ -309,7 +317,7 @@ def render_discovery_ui() -> None:
                             # Store in session state so they persist across reruns
                             st.session_state["discovery_market_snapshot"] = market_snapshot
                             st.session_state["discovery_stats"] = stats
-                            
+
                             # Store search parameters for cache restoration
                             st.session_state["last_phase2_params"] = {
                                 "category_id": int(seed_product["category_id"]),
@@ -618,6 +626,66 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
             # Mark as just saved so we show success on rerun
             st.session_state["just_saved_mapping"] = True
             st.session_state["saved_mapping_name"] = project_name
+
+            # === CACHE TO SUPABASE FOR INSTANT RETURN VISITS ===
+            # This is the key to making "search today, cached tomorrow" work
+            # ENHANCEMENT 2.3: Consolidated caching - single write with all fields
+            if CACHE_ENABLED and cache_market_snapshot:
+                try:
+                    # Get category context from last Phase 2 params
+                    seed_params = st.session_state.get("last_phase2_params", {})
+                    category_id = seed_params.get("category_id", 0)
+                    category_path = seed_params.get("category_path", "")
+                    category_name = category_path.split(' > ')[-1] if category_path else 'Unknown'
+                    category_tree = category_path.split(' > ') if category_path else []
+                    category_root = category_tree[0] if category_tree else category_name
+
+                    # Build category context for consolidated write
+                    category_context = {
+                        "category_id": int(category_id) if category_id else None,
+                        "category_name": category_name,
+                        "category_tree": category_tree,
+                        "category_root": category_root
+                    }
+
+                    # Step 1: Cache product snapshots WITH category metadata (consolidated)
+                    cached_count = cache_market_snapshot(market_snapshot, df_weekly, category_context)
+
+                    # Step 2: Accumulate network intelligence (category benchmarks, patterns)
+                    # Skip product snapshot write since we already did it with category metadata
+                    try:
+                        from src.data_accumulation import NetworkIntelligenceAccumulator
+                        from supabase import create_client
+                        import os
+
+                        # Get Supabase credentials
+                        supabase_url = st.secrets.get("supabase", {}).get("url") or st.secrets.get("url") or os.getenv("SUPABASE_URL")
+                        supabase_key = st.secrets.get("supabase", {}).get("service_key") or st.secrets.get("key") or os.getenv("SUPABASE_SERVICE_KEY")
+
+                        if supabase_url and supabase_key:
+                            supabase = create_client(supabase_url, supabase_key)
+                            accumulator = NetworkIntelligenceAccumulator(supabase)
+
+                            # Accumulate network intelligence (skip snapshot write - already done)
+                            accumulator.accumulate_search_data(
+                                market_snapshot=market_snapshot.copy(),
+                                category_id=int(category_id) if category_id else 0,
+                                category_name=category_name,
+                                category_tree=category_tree,
+                                skip_snapshot_write=True  # ENHANCEMENT 2.3: Avoid duplicate write
+                            )
+
+                            if cached_count > 0:
+                                st.caption(f"⚡ Cached {cached_count} products + network intelligence for instant future loads")
+                        else:
+                            if cached_count > 0:
+                                st.caption(f"⚡ Cached {cached_count} products for instant future loads")
+                    except Exception as e:
+                        # Network accumulation failed, but basic cache worked
+                        if cached_count > 0:
+                            st.caption(f"⚡ Cached {cached_count} products for instant future loads")
+                except Exception as e:
+                    pass  # Caching failed, not critical
 
             # Try to persist to Supabase (optional - may fail if tables don't exist)
             try:

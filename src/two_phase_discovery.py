@@ -1548,6 +1548,11 @@ def phase2_category_market_mapping(
         # Sort by BSR (best sellers first)
         df = asin_summary.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
         
+        # CRITICAL: Rename weeks_count to data_weeks for AI confidence calculation
+        # Without this, all products get 40% confidence (assumes 0 weeks of data)
+        if 'weeks_count' in df.columns:
+            df['data_weeks'] = df['weeks_count']
+        
         # Calculate market stats
         brand_product_count = len(brand_products) if target_brand else 0
         competitor_count = len(df) - brand_product_count

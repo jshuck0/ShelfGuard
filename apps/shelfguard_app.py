@@ -1636,39 +1636,59 @@ with main_tab1:
                 action_count += 1
             
             # Add top growth opportunity if we have space
+            # CRITICAL FIX: Exclude ASINs already in risk actions to avoid contradictory recommendations
+            # (same product can't have both "price UP" and "price DOWN" actions)
+            asins_already_shown = {a['asin'] for a in top_actions}
+            
             if action_count < 3 and not growth_products.empty:
-                row = growth_products.iloc[0]
-                asin = row.get('asin', '')
-                title = str(row.get('title', ''))[:40] + "..." if len(str(row.get('title', ''))) > 40 else row.get('title', '')
-                growth = row.get('thirty_day_growth', 0)
-                opp_type = row.get('opportunity_type', '')
-                rank = int(row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0)
-                current_price = row.get('buy_box_price', row.get('price', 0)) or 0
-                
-                if opp_type == "PRICE_POWER":
-                    suggested_price = current_price * 1.04 if current_price > 0 else 0
-                    action = f"Test price increase ${current_price:.2f} → ${suggested_price:.2f} (+4%)" if current_price > 0 else f"Test 4% price increase (rank #{rank})"
-                    why = f"Rank #{rank} = top 0.1% of category. Pricing power opportunity."
-                elif opp_type == "CONQUEST":
-                    action = "Capture competitor customers"
-                    why = "Competitors out of stock. Pricing opportunity."
-                else:
-                    action = "Optimize pricing/spend"
-                    why = f"${growth:,.0f} growth opportunity identified"
-                
-                top_actions.append({
-                    'priority': action_count + 1,
-                    'asin': asin,
-                    'title': title,
-                    'action': action,
-                    'why': why,
-                    'impact': f"+${growth:,.0f}/mo",
-                    'urgency': "📊 REVIEW THIS MONTH",
-                    'urgency_reason': "Growth opportunity",
-                    'confidence': "75% (model estimate)",
-                    'type': 'growth'
-                })
-                action_count += 1
+                # Find first growth product NOT already in risk actions
+                for _, row in growth_products.iterrows():
+                    asin = row.get('asin', '')
+                    if asin in asins_already_shown:
+                        continue  # Skip - already shown as risk action
+                    
+                    title = str(row.get('title', ''))[:40] + "..." if len(str(row.get('title', ''))) > 40 else row.get('title', '')
+                    growth = row.get('thirty_day_growth', 0)
+                    opp_type = row.get('opportunity_type', '')
+                    rank = int(row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0)
+                    current_price = row.get('buy_box_price', row.get('price', 0)) or 0
+                    data_quality = row.get('data_quality', 'MEDIUM')
+                    model_certainty = row.get('model_certainty', 0.75) or 0.75
+                    
+                    if opp_type == "PRICE_POWER":
+                        suggested_price = current_price * 1.04 if current_price > 0 else 0
+                        action = f"Test price increase ${current_price:.2f} → ${suggested_price:.2f} (+4%)" if current_price > 0 else f"Test 4% price increase (rank #{rank})"
+                        why = f"Rank #{rank} = top 0.1% of category. Pricing power opportunity."
+                    elif opp_type == "CONQUEST":
+                        action = "Capture competitor customers"
+                        why = "Competitors out of stock. Pricing opportunity."
+                    else:
+                        action = "Optimize pricing/spend"
+                        why = f"${growth:,.0f} growth opportunity identified"
+                    
+                    # Calculate confidence for growth (use actual model certainty)
+                    confidence_pct = int(model_certainty * 100)
+                    if data_quality == "HIGH":
+                        confidence_text = f"{confidence_pct}% (12+ months data)"
+                    elif data_quality == "MEDIUM":
+                        confidence_text = f"{confidence_pct}% (3-12 months data)"
+                    else:
+                        confidence_text = f"{confidence_pct}% (model estimate)"
+                    
+                    top_actions.append({
+                        'priority': action_count + 1,
+                        'asin': asin,
+                        'title': title,
+                        'action': action,
+                        'why': why,
+                        'impact': f"+${growth:,.0f}/mo",
+                        'urgency': "📊 REVIEW THIS MONTH",
+                        'urgency_reason': "Growth opportunity",
+                        'confidence': confidence_text,
+                        'type': 'growth'
+                    })
+                    action_count += 1
+                    break  # Only add one growth action
         
         # Render Executive Summary
         if top_actions:
@@ -1705,25 +1725,22 @@ with main_tab1:
                 """, unsafe_allow_html=True)
         
         # === SHOW ALERT DETAILS (if alerts exist) ===
-        if action_required_count > 0:
-            with st.expander(f"📋 View {action_required_count} Alert Details", expanded=False):
-                # Get products that triggered alerts - must have BOTH DEFEND/REPLENISH state AND actual revenue/risk
-                if 'predictive_state' in enriched_portfolio_df.columns:
-                    # Get revenue column
+        # FIXED: Use meaningful_risk_count (products with >$100 risk) not just DEFEND/REPLENISH states
+        # This ensures the alert count matches what's shown in the banner
+        if meaningful_risk_count > 0:
+            with st.expander(f"📋 View {meaningful_risk_count} Alert Details", expanded=False):
+                # Get products with meaningful risk (>$100) - includes HARVEST optimization opportunities
+                if 'thirty_day_risk' in enriched_portfolio_df.columns:
+                    risk_values = enriched_portfolio_df['thirty_day_risk'].fillna(0)
                     rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in enriched_portfolio_df.columns else 'revenue_proxy'
-                    risk_col = 'thirty_day_risk' if 'thirty_day_risk' in enriched_portfolio_df.columns else None
-                    
-                    # Filter: DEFEND/REPLENISH AND (revenue > $100 OR risk > $10)
-                    # Products with $0 revenue AND $0 risk are not real alerts
-                    state_mask = enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
-                    
-                    if rev_col in enriched_portfolio_df.columns and risk_col:
-                        revenue_values = enriched_portfolio_df[rev_col].fillna(0)
-                        risk_values = enriched_portfolio_df[risk_col].fillna(0)
-                        has_stake = (revenue_values > 100) | (risk_values > 10)
-                        alert_products = enriched_portfolio_df[state_mask & has_stake].copy()
+                    if rev_col in enriched_portfolio_df.columns:
+                        revenue_values = enriched_portfolio_df[rev_col].fillna(1000)
                     else:
-                        alert_products = enriched_portfolio_df[state_mask].copy()
+                        revenue_values = pd.Series([1000] * len(enriched_portfolio_df))
+                    
+                    # Meaningful risk = >$100 absolute OR >2% of product revenue
+                    has_meaningful_risk = (risk_values > 100) | (risk_values > revenue_values * 0.02)
+                    alert_products = enriched_portfolio_df[has_meaningful_risk].copy()
                 else:
                     alert_products = pd.DataFrame()
                 
@@ -2622,10 +2639,10 @@ with main_tab1:
                         "Product": short_title,
                         "State": state_display,  # FIX #2: Removed redundant Type column
                         "Action": action_display,
-                        "Revenue": rev,
-                        "Risk": risk,
-                        "Growth": growth,
-                        "Certainty": certainty * 100,
+                        "Revenue": round(rev, 2),
+                        "Risk": round(risk, 2),
+                        "Growth": round(growth, 2),
+                        "Certainty": round(certainty * 100, 1),  # FIX: Clean floating point precision
                     })
                 
                 final_df = pd.DataFrame(strategy_data)

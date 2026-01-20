@@ -999,6 +999,35 @@ with main_tab1:
                                 review_indicator = "🟢" if review_diff_pct > 20 else "🟡" if review_diff_pct > -20 else "🔴"
                                 st.caption(f"{review_indicator} Your median: {int(your_avg_reviews):,} ({review_diff_pct:+.1f}%)")
 
+                # BUY BOX & COMPETITION BENCHMARKS (new row)
+                col_bb, col_offers = st.columns(2)
+                with col_bb:
+                    avg_bb_share = network_stats.get('avg_bb_share')
+                    if avg_bb_share:
+                        st.metric("Avg Buy Box %", f"{avg_bb_share*100:.0f}%")
+                        
+                        # Compare your portfolio average to category
+                        if 'amazon_bb_share' in portfolio_df.columns:
+                            your_avg_bb = portfolio_df['amazon_bb_share'].mean()
+                            if your_avg_bb and your_avg_bb > 0:
+                                bb_diff_pct = (your_avg_bb - avg_bb_share) * 100
+                                bb_indicator = "🟢" if bb_diff_pct > 10 else "🟡" if bb_diff_pct > -10 else "🔴"
+                                st.caption(f"{bb_indicator} Your avg: {your_avg_bb*100:.0f}% ({bb_diff_pct:+.1f}pp)")
+                
+                with col_offers:
+                    avg_offer_count = network_stats.get('avg_offer_count')
+                    if avg_offer_count:
+                        st.metric("Avg Sellers/Listing", f"{avg_offer_count:.1f}")
+                        
+                        # Compare your portfolio average to category
+                        if 'new_offer_count' in portfolio_df.columns:
+                            your_avg_offers = portfolio_df['new_offer_count'].mean()
+                            if your_avg_offers and your_avg_offers > 0:
+                                offer_diff_pct = ((your_avg_offers / avg_offer_count) - 1) * 100
+                                # Lower seller count is better (less competition)
+                                offer_indicator = "🟢" if offer_diff_pct < -20 else "🟡" if offer_diff_pct < 20 else "🔴"
+                                st.caption(f"{offer_indicator} Your avg: {your_avg_offers:.1f} ({offer_diff_pct:+.1f}%)")
+
                 # Additional network stats
                 st.markdown("---")
                 col4, col5 = st.columns(2)
@@ -2439,6 +2468,11 @@ with main_tab1:
                     stockout_risk_val = strategy.get("stockout_risk", 0)
                     competitor_count = strategy.get("competitor_count", product.get('competitor_count', 0) or 0)
                     
+                    # KEY METRICS FOR DISPLAY (Rank, Buy Box, Sellers)
+                    display_rank = int(product.get('sales_rank_filled', product.get('sales_rank', 0)) or 0)
+                    display_bb_share = float(product.get('amazon_bb_share', 0.5) or 0.5)
+                    display_seller_count = int(product.get('new_offer_count', competitor_count) or competitor_count or 0)
+                    
                     # Use strategic color if available, otherwise use emoji-based logic
                     if "strategic_color" in strategy and strategy["strategic_color"]:
                         color = strategy["strategic_color"]
@@ -2604,7 +2638,12 @@ with main_tab1:
 {f'<div style="font-size: 10px; color: #856404; margin-top: 6px; padding: 6px; background: #fff3cd; border-radius: 4px; border-left: 2px solid #ffc107;"><strong>💰 Optimization Value:</strong> {escaped_cost}</div>' if is_optimization else f'<div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;"><strong>⚡ Cost of Inaction:</strong> {escaped_cost}</div>'}
 {growth_section}
 {('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(outcome_metrics) + '</div>') if outcome_metrics else ''}
-<div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{escaped_asin}</div>
+<div style="font-size: 10px; color: #555; margin-top: 8px; padding: 4px 0; border-top: 1px solid #eee;">
+    <span style="font-weight: 600;">Rank:</span> #{display_rank:,} • 
+    <span style="font-weight: 600;">Buy Box:</span> {display_bb_share*100:.0f}% • 
+    <span style="font-weight: 600;">Sellers:</span> {display_seller_count}
+</div>
+<div style="font-size: 10px; color: #999; margin-top: 4px; font-family: monospace;">{escaped_asin}</div>
 <div style="font-size: 10px; color: #666; margin-top: 2px;">{escaped_title}...</div>
 </div>""", unsafe_allow_html=True)
 

@@ -114,9 +114,13 @@ class NetworkIntelligenceAccumulator:
                 'rating': float(row.get('rating', 0)) if pd.notna(row.get('rating')) else None,
                 'estimated_weekly_revenue': float(row['revenue_proxy']) if pd.notna(row.get('revenue_proxy')) else None,
                 'estimated_units': int(row.get('monthly_units', 0) / 4) if pd.notna(row.get('monthly_units')) else None,
-                # Competitive metrics (new - fuels AI predictions)
+                # Competitive metrics (fuels AI predictions)
                 'seller_count': int(row.get('new_offer_count', 0)) if pd.notna(row.get('new_offer_count')) else None,
                 'competitor_oos_pct': float(row.get('outOfStockPercentage90', 0)) / 100 if pd.notna(row.get('outOfStockPercentage90')) else None,
+                # BUY BOX METRICS (new - critical for AI competitive analysis)
+                'amazon_bb_share': float(row.get('amazon_bb_share', 0)) if pd.notna(row.get('amazon_bb_share')) else None,
+                'buy_box_switches': int(row.get('buy_box_switches', 0)) if pd.notna(row.get('buy_box_switches')) else 0,
+                'new_offer_count': int(row.get('new_offer_count', 0)) if pd.notna(row.get('new_offer_count')) else None,
                 'title': row.get('title'),
                 'brand': row.get('brand'),
                 'main_image': row.get('main_image'),
@@ -186,6 +190,10 @@ class NetworkIntelligenceAccumulator:
             'median_bsr': int(df['bsr'].median()) if 'bsr' in df and pd.notna(df['bsr'].median()) else None,
             'p25_bsr': int(df['bsr'].quantile(0.25)) if 'bsr' in df and pd.notna(df['bsr'].quantile(0.25)) else None,
             'p75_bsr': int(df['bsr'].quantile(0.75)) if 'bsr' in df and pd.notna(df['bsr'].quantile(0.75)) else None,
+
+            # BUY BOX & COMPETITION BENCHMARKS (new - critical for AI)
+            'avg_bb_share': float(df['amazon_bb_share'].mean()) if 'amazon_bb_share' in df and pd.notna(df['amazon_bb_share'].mean()) else None,
+            'avg_offer_count': float(df['new_offer_count'].mean()) if 'new_offer_count' in df and pd.notna(df['new_offer_count'].mean()) else None,
 
             # Market structure
             'total_asins_tracked': len(df),

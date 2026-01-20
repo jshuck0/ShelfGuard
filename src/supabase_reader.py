@@ -900,6 +900,9 @@ def get_market_snapshot_with_network_intelligence(
                     'median_bsr': benchmarks.get('median_bsr'),
                     'median_review_count': benchmarks.get('median_review_count'),
                     'median_rating': benchmarks.get('median_rating'),
+                    # BUY BOX & COMPETITION BENCHMARKS (new)
+                    'avg_bb_share': benchmarks.get('avg_bb_share'),
+                    'avg_offer_count': benchmarks.get('avg_offer_count'),
                     'total_asins_tracked': benchmarks.get('total_asins_tracked', 0),
                     'data_quality': 'STALE' if not benchmark_valid else benchmarks.get('data_quality', 'LOW'),
                     'snapshot_date': benchmarks.get('snapshot_date'),

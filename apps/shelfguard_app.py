@@ -2085,14 +2085,49 @@ with main_tab1:
                         action_display = f"{action_emoji} Test 4-5% price increase - rank #{int(row.get('sales_rank_filled', 0))} supports ${growth:.0f} upside"
                     elif opp_type == "REVIEW_MOAT":
                         action_display = f"{action_emoji} Premium pricing opportunity - strong reviews support ${growth:.0f} upside"
+                    elif risk > 1000 and strategic_state == "HARVEST":
+                        # Harvest products with risk = optimization opportunity, not actual threat
+                        # Check if we have risk component data to explain source
+                        price_risk = row.get('price_erosion_risk', 0) or 0
+                        share_risk = row.get('share_erosion_risk', 0) or 0
+                        stockout_risk = row.get('stockout_risk', 0) or 0
+                        competitor_count = row.get('competitor_count', 0) or 0
+                        
+                        # Determine risk source
+                        if stockout_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Inventory optimization - ${risk:.0f}/mo opportunity from stockout prevention"
+                        elif price_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Pricing optimization - ${risk:.0f}/mo opportunity (rank #{int(row.get('sales_rank_filled', 0))} supports price test)"
+                        elif share_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Market share protection - ${risk:.0f}/mo at risk from velocity decline"
+                        elif competitor_count > 5:
+                            action_display = f"{action_emoji} Competitive pressure - ${risk:.0f}/mo optimization opportunity ({competitor_count} competitors)"
+                        else:
+                            action_display = f"{action_emoji} Optimization opportunity - ${risk:.0f}/mo potential (stable position, test pricing/spend)"
                     elif risk > 1000 and strategic_state == "TRENCH_WAR":
                         # Trench War + risk = need to defend
-                        action_display = f"{action_emoji} Defend share - ${risk:.0f}/mo at risk, match competitor pricing"
+                        competitor_count = row.get('competitor_count', 0) or 0
+                        action_display = f"{action_emoji} Defend share - ${risk:.0f}/mo at risk from {competitor_count} competitors, match pricing"
                     elif risk > 1000 and strategic_state == "DISTRESS":
-                        action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - investigate root cause"
+                        # Check risk source for distress
+                        price_risk = row.get('price_erosion_risk', 0) or 0
+                        share_risk = row.get('share_erosion_risk', 0) or 0
+                        if share_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - velocity declining, investigate root cause"
+                        elif price_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - pricing pressure, review competitor pricing"
+                        else:
+                            action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - investigate root cause"
                     elif risk > 1000:
-                        # High risk action
-                        action_display = f"{action_emoji} Action needed - ${risk:.0f}/mo at risk, review pricing/inventory"
+                        # High risk action - try to explain source
+                        price_risk = row.get('price_erosion_risk', 0) or 0
+                        share_risk = row.get('share_erosion_risk', 0) or 0
+                        if price_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Pricing pressure - ${risk:.0f}/mo at risk, review competitor pricing"
+                        elif share_risk > risk * 0.5:
+                            action_display = f"{action_emoji} Market share decline - ${risk:.0f}/mo at risk, review velocity trends"
+                        else:
+                            action_display = f"{action_emoji} Action needed - ${risk:.0f}/mo at risk, review pricing/inventory"
                     elif risk > 100:
                         # Medium risk - still needs attention
                         action_display = f"⚠️ Monitor closely - ${risk:.0f}/mo at risk"

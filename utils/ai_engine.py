@@ -353,8 +353,13 @@ Return ONLY valid JSON with this exact structure:
 }
 
 Important:
-- Keep reasoning under 100 characters but be SPECIFIC
-- Reference actual numbers from the data (rank, price, reviews, Buy Box %)
+- Keep reasoning under 150 characters but be SPECIFIC
+- ALWAYS explain the SOURCE of risk/opportunity:
+  * If HARVEST with risk: Explain if it's "optimization opportunity" (leaving money on table) vs actual competitive threat
+  * If TRENCH_WAR: Explain competitive pressure source (new sellers, price undercutting, Buy Box rotation)
+  * If DISTRESS: Explain root cause (velocity decline, margin erosion, inventory issues)
+  * Reference competitive intelligence if available (competitor count, price gaps, OOS rates)
+- Reference actual numbers from the data (rank, price, reviews, Buy Box %, competitor count)
 - Make recommended_action specific and measurable
 - If data is incomplete, lower confidence and note data gaps
 - Return ONLY the JSON object, no other text."""
@@ -1814,11 +1819,46 @@ def calculate_predictive_alpha(
         predictive_state = "HOLD"
         state_emoji = "✅"
         state_description = "Position stable - monitor"
-        cost_of_inaction = f"${thirty_day_risk:,.0f} projected optimization opportunity"
+        
+        # For HOLD/HARVEST products, explain the optimization opportunity source
+        if strategic_state == "HARVEST" and thirty_day_risk > 0:
+            # Harvest products: optimization opportunity, not actual threat
+            if stockout_risk > thirty_day_risk * 0.5:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} optimization opportunity from inventory management"
+            elif abs(price_erosion_risk) > thirty_day_risk * 0.5 and price_erosion_risk < 0:
+                # Negative price_erosion_risk = pricing opportunity
+                cost_of_inaction = f"${thirty_day_risk:,.0f} optimization opportunity from pricing power (rank #{current_bsr} supports price test)"
+            elif price_erosion_risk > thirty_day_risk * 0.5:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} optimization opportunity from pricing defense"
+            elif share_erosion_risk > thirty_day_risk * 0.5:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} optimization opportunity from market share protection"
+            else:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} optimization opportunity (stable position, test pricing/spend efficiency)"
+        elif thirty_day_risk > 0:
+            # Other HOLD products with risk - explain source
+            if price_erosion_risk > thirty_day_risk * 0.5:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} at risk from pricing pressure"
+            elif share_erosion_risk > thirty_day_risk * 0.5:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} at risk from velocity decline"
+            else:
+                cost_of_inaction = f"${thirty_day_risk:,.0f} projected optimization opportunity"
+        else:
+            cost_of_inaction = f"${thirty_day_risk:,.0f} projected optimization opportunity"
     
     # Default AI recommendation if no alert triggered
     if not ai_recommendation:
-        if thirty_day_risk > revenue * 0.2:
+        if strategic_state == "HARVEST" and thirty_day_risk > 0:
+            # Harvest products: explain optimization opportunity
+            if abs(price_erosion_risk) > thirty_day_risk * 0.5 and price_erosion_risk < 0:
+                # Negative price_erosion_risk = pricing opportunity
+                ai_recommendation = f"Stable position. ${thirty_day_risk:,.0f} optimization opportunity from pricing power (rank #{current_bsr} supports price test)."
+            elif price_erosion_risk > thirty_day_risk * 0.5:
+                ai_recommendation = f"Stable position. ${thirty_day_risk:,.0f} optimization opportunity from pricing defense."
+            elif share_erosion_risk > thirty_day_risk * 0.5:
+                ai_recommendation = f"Stable position. ${thirty_day_risk:,.0f} optimization opportunity from market share protection."
+            else:
+                ai_recommendation = f"Stable position. ${thirty_day_risk:,.0f} optimization opportunity available (test pricing/spend efficiency)."
+        elif thirty_day_risk > revenue * 0.2:
             ai_recommendation = f"Monitor closely: ${thirty_day_risk:,.0f} at risk over next 30 days based on current trajectory."
         else:
             ai_recommendation = f"Position stable. ${thirty_day_risk:,.0f} optimization opportunity available."

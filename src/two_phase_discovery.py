@@ -69,6 +69,28 @@ def _safe_csv_value(arr, default=0):
         return default
 
 
+def _safe_numeric(val, default=0):
+    """
+    Safely extract a numeric value from Keepa data.
+    Handles edge cases where Keepa returns lists, None, or other non-numeric types.
+    """
+    if val is None:
+        return default
+    # If it's already a number, return it
+    if isinstance(val, (int, float)):
+        return val
+    # If it's a list/tuple, try to get the last numeric value
+    if isinstance(val, (list, tuple)):
+        if len(val) == 0:
+            return default
+        return _safe_numeric(val[-1], default)
+    # Try to convert string to number
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 # ========================================
 # FIX 1.3: DATABASE CACHE FOR API CALLS
 # ========================================
@@ -942,12 +964,10 @@ def phase2_category_market_mapping(
                                 # === EXTRACT COMPETITIVE METRICS FROM KEEPA (brand products) ===
                                 stats = product.get("stats", {})
                                 
-                                # Out of Stock Percentage (90 days)
-                                oos_90 = 0.0
-                                if stats and "outOfStockPercentage90" in stats:
-                                    oos_90 = stats.get("outOfStockPercentage90", 0) or 0
-                                    if oos_90 > 1:
-                                        oos_90 = oos_90 / 100
+                                # Out of Stock Percentage (90 days) - use safe extraction
+                                oos_90 = _safe_numeric(stats.get("outOfStockPercentage90") if stats else None, 0.0)
+                                if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
+                                    oos_90 = oos_90 / 100
                                 
                                 # Seller Count (index 11) - using safe extraction
                                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 1)
@@ -1230,34 +1250,32 @@ def phase2_category_market_mapping(
                 # These power the Competitive Intelligence panel in the dashboard
                 stats = product.get("stats", {})
                 
-                # Out of Stock Percentage (90 days) - from stats
-                oos_90 = 0.0
-                if stats and "outOfStockPercentage90" in stats:
-                    oos_90 = stats.get("outOfStockPercentage90", 0) or 0
-                    if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
-                        oos_90 = oos_90 / 100
+                # Out of Stock Percentage (90 days) - from stats (use safe extraction)
+                oos_90 = _safe_numeric(stats.get("outOfStockPercentage90") if stats else None, 0.0)
+                if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
+                    oos_90 = oos_90 / 100
                 
                 # Seller Count (index 11) - using safe extraction
                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 0)
                 if new_offer_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
-                        new_offer_count = current_stats.get("COUNT_NEW", 1) or 1
-                new_offer_count = max(1, new_offer_count)  # At least 1 seller
+                        new_offer_count = _safe_numeric(current_stats.get("COUNT_NEW"), 1)
+                new_offer_count = max(1, int(new_offer_count))  # At least 1 seller
                 
                 # Review Count (index 17)
                 review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
                 if review_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
-                        review_count = current_stats.get("COUNT_REVIEWS", 0) or 0
+                        review_count = _safe_numeric(current_stats.get("COUNT_REVIEWS"), 0)
                 
                 # Rating (index 16) - Keepa stores as 10x
                 rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
                 if rating_raw <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
-                        rating_raw = current_stats.get("RATING", 0) or 0
+                        rating_raw = _safe_numeric(current_stats.get("RATING"), 0)
                 rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
 
                 product_data = {

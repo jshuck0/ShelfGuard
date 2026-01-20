@@ -275,7 +275,12 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
             df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
         else:
             df["weekly_sales_filled"] = 0
-    
+
+    # CRITICAL: Add revenue_proxy as alias for weekly_sales_filled
+    # The dashboard expects 'revenue_proxy' for market share calculations
+    if "revenue_proxy" not in df.columns:
+        df["revenue_proxy"] = df["weekly_sales_filled"]
+
     return df
 
 
@@ -563,7 +568,14 @@ def load_historical_metrics_from_db(project_id: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        st.warning(f"⚠️ Failed to load historical metrics: {str(e)}")
+        # Silently handle missing table or empty results - this is expected before backfill
+        error_str = str(e)
+        if "PGRST205" in error_str or "could not find" in error_str.lower():
+            # Table doesn't exist yet - silent fallback
+            pass
+        else:
+            # Only show warning for unexpected errors
+            st.caption(f"⚠️ Historical metrics: {error_str[:80]}")
         return pd.DataFrame()
 
 
@@ -615,7 +627,10 @@ def load_historical_metrics_by_asins(asins: Tuple[str, ...], days: int = 90) -> 
         return df
 
     except Exception as e:
-        st.warning(f"⚠️ Failed to load historical metrics: {str(e)}")
+        # Silently handle missing table - expected before backfill runs
+        error_str = str(e)
+        if "PGRST205" in error_str or "could not find" in error_str.lower():
+            pass  # Silent fallback
         return pd.DataFrame()
 
 

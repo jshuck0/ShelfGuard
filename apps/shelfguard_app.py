@@ -1602,6 +1602,46 @@ with main_tab1:
     <div style="font-size: 0.65rem; color: #666; margin-top: 6px;">{action_line}</div>
 </div>
             """, unsafe_allow_html=True)
+            
+            # === OPPORTUNITY ALPHA BREAKDOWN ===
+            if thirty_day_risk > 0 or thirty_day_growth > 0:
+                with st.expander(f"📊 View Opportunity Breakdown ({defend_count + replenish_count} risks, {growth_opportunity_count} growth)", expanded=False):
+                    col_risk, col_growth = st.columns(2)
+                    
+                    with col_risk:
+                        st.markdown("**🔴 Risk Products (DEFEND/REPLENISH)**")
+                        risk_products = enriched_portfolio_df[
+                            enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
+                        ].copy() if 'predictive_state' in enriched_portfolio_df.columns else pd.DataFrame()
+                        
+                        if not risk_products.empty and 'thirty_day_risk' in risk_products.columns:
+                            risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
+                            for _, row in risk_products.head(10).iterrows():
+                                asin = row.get('asin', '')[:10]
+                                title = str(row.get('title', ''))[:25] + "..."
+                                risk = row.get('thirty_day_risk', 0)
+                                state = row.get('predictive_state', '')
+                                st.markdown(f"• `{asin}` ${risk:,.0f} ({state})")
+                        else:
+                            st.info("No risk products identified")
+                    
+                    with col_growth:
+                        st.markdown("**🟢 Growth Products (EXPLOIT/PRICE_LIFT)**")
+                        growth_products = enriched_portfolio_df[
+                            enriched_portfolio_df['predictive_state'].isin(['EXPLOIT']) | 
+                            (enriched_portfolio_df['opportunity_type'].isin(['PRICE_LIFT', 'PRICE_POWER', 'CONQUEST', 'REVIEW_MOAT']) if 'opportunity_type' in enriched_portfolio_df.columns else False)
+                        ].copy() if 'predictive_state' in enriched_portfolio_df.columns else pd.DataFrame()
+                        
+                        if not growth_products.empty and 'thirty_day_growth' in growth_products.columns:
+                            growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
+                            for _, row in growth_products.head(10).iterrows():
+                                asin = row.get('asin', '')[:10]
+                                title = str(row.get('title', ''))[:25] + "..."
+                                growth = row.get('thirty_day_growth', 0)
+                                opp_type = row.get('opportunity_type', 'EXPLOIT')
+                                st.markdown(f"• `{asin}` ${growth:,.0f} ({opp_type})")
+                        else:
+                            st.info("No growth opportunities identified")
     
         # TILE 4: Risk Averted (Banked from Resolved Actions)
         with c4:

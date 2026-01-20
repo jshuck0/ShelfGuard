@@ -1338,9 +1338,31 @@ with main_tab1:
             competitive_context = f"Concentrated market with {competitor_product_count} key competitors."
     
         # Cascade predictive alerts to system banner (using early calculation from above)
-        has_high_urgency_alerts = (defend_count > 0 or replenish_count > 0)
-        is_predictive_critical = portfolio_status == "CRITICAL"
-        is_predictive_elevated = portfolio_status == "ELEVATED"
+        # FIX: Only count alerts for products with actual revenue or risk (not $0 products)
+        if 'predictive_state' in enriched_portfolio_df.columns:
+            rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in enriched_portfolio_df.columns else 'revenue_proxy'
+            risk_col = 'thirty_day_risk' if 'thirty_day_risk' in enriched_portfolio_df.columns else None
+            
+            state_mask = enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
+            if rev_col in enriched_portfolio_df.columns and risk_col:
+                revenue_values = enriched_portfolio_df[rev_col].fillna(0)
+                risk_values = enriched_portfolio_df[risk_col].fillna(0)
+                has_stake = (revenue_values > 100) | (risk_values > 10)  # Revenue >$100 OR Risk >$10
+                real_alert_count = (state_mask & has_stake).sum()
+            else:
+                real_alert_count = state_mask.sum()
+            
+            # Also recalculate defend/replenish counts with stake filter
+            defend_mask = (enriched_portfolio_df['predictive_state'] == 'DEFEND') & has_stake if 'has_stake' in dir() else (enriched_portfolio_df['predictive_state'] == 'DEFEND')
+            replenish_mask = (enriched_portfolio_df['predictive_state'] == 'REPLENISH') & has_stake if 'has_stake' in dir() else (enriched_portfolio_df['predictive_state'] == 'REPLENISH')
+            defend_count = defend_mask.sum()
+            replenish_count = replenish_mask.sum()
+        else:
+            real_alert_count = 0
+        
+        has_high_urgency_alerts = real_alert_count > 0
+        is_predictive_critical = portfolio_status == "CRITICAL" and real_alert_count > 0
+        is_predictive_elevated = portfolio_status == "ELEVATED" and real_alert_count > 0
         
         # === ACTION A: CHECK AI BRIEF FOR THREAT KEYWORDS AND OVERRIDE STATUS BANNER ===
         # Check if ai_brief contains threat, erosion, or critical keywords
@@ -1398,16 +1420,32 @@ with main_tab1:
         # === SHOW ALERT DETAILS (if alerts exist) ===
         if action_required_count > 0:
             with st.expander(f"📋 View {action_required_count} Alert Details", expanded=False):
-                # Get products that triggered alerts (DEFEND or REPLENISH state)
-                alert_products = enriched_portfolio_df[
-                    enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
-                ].copy() if 'predictive_state' in enriched_portfolio_df.columns else pd.DataFrame()
+                # Get products that triggered alerts - must have BOTH DEFEND/REPLENISH state AND actual revenue/risk
+                if 'predictive_state' in enriched_portfolio_df.columns:
+                    # Get revenue column
+                    rev_col = 'weekly_sales_filled' if 'weekly_sales_filled' in enriched_portfolio_df.columns else 'revenue_proxy'
+                    risk_col = 'thirty_day_risk' if 'thirty_day_risk' in enriched_portfolio_df.columns else None
+                    
+                    # Filter: DEFEND/REPLENISH AND (revenue > $100 OR risk > $10)
+                    # Products with $0 revenue AND $0 risk are not real alerts
+                    state_mask = enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
+                    
+                    if rev_col in enriched_portfolio_df.columns and risk_col:
+                        revenue_values = enriched_portfolio_df[rev_col].fillna(0)
+                        risk_values = enriched_portfolio_df[risk_col].fillna(0)
+                        has_stake = (revenue_values > 100) | (risk_values > 10)
+                        alert_products = enriched_portfolio_df[state_mask & has_stake].copy()
+                    else:
+                        alert_products = enriched_portfolio_df[state_mask].copy()
+                else:
+                    alert_products = pd.DataFrame()
                 
                 if not alert_products.empty:
                     # Sort by risk (highest first)
                     if 'thirty_day_risk' in alert_products.columns:
                         alert_products = alert_products.sort_values('thirty_day_risk', ascending=False)
                     
+                    shown_count = 0
                     for _, row in alert_products.head(15).iterrows():  # Show top 15 alerts
                         asin = row.get('asin', 'Unknown')
                         title = row.get('title', asin)[:50] + "..." if len(str(row.get('title', asin))) > 50 else row.get('title', asin)
@@ -1415,14 +1453,22 @@ with main_tab1:
                         state = row.get('predictive_state', 'UNKNOWN')
                         rev = row.get('weekly_sales_filled', row.get('revenue_proxy', 0))
                         
+                        # Skip if truly zero stake (extra safety check)
+                        if rev <= 0 and risk <= 0:
+                            continue
+                        
+                        shown_count += 1
                         state_emoji = "🛡️" if state == "DEFEND" else "📦" if state == "REPLENISH" else "⚠️"
                         
                         st.markdown(f"""
                         **{state_emoji} {state}** | `{asin}` | {title}  
                         💰 Revenue: ${rev:,.0f}/mo | ⚠️ Risk: ${risk:,.0f}
                         """)
+                    
+                    if shown_count == 0:
+                        st.success("All flagged products have minimal revenue/risk - no action needed")
                 else:
-                    st.info("Alert details calculated from predictive state (DEFEND/REPLENISH products)")
+                    st.success("No products require immediate attention")
     
         # Render the AI brief (full width, no regenerate button)
         st.markdown(f"""

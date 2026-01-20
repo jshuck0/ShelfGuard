@@ -1,89 +1,114 @@
+"""
+ShelfGuard Data Pipeline Tests
+==============================
+Tests for the stateful architecture (product_snapshots + historical_metrics)
+
+Replaces legacy K-Cup specific tests.
+"""
+
 import os
 import sys
-import pandas as pd
-import numpy as np
 from pathlib import Path
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
-# 1. SETUP & PATHS
+# Setup paths
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 load_dotenv(ROOT / ".env")
 
-# 2. CONFIGURATION
-CSV_PATH = ROOT / "outputs/keepa_weekly_kcup_top1000_rows.csv"
-TOTALS_PATH = ROOT / "outputs/keepa_weekly_kcup_top1000_totals.csv"
 
 def run_audit():
-    print("🛡️  SHELFGUARD OS: STARTING FULL AUDIT...\n")
+    """Run a health check on the ShelfGuard data pipeline."""
+    print("🛡️  SHELFGUARD OS: DATA PIPELINE AUDIT\n")
     
-    # --- PHASE 1: LOCAL FILE VALIDATION ---
-    print("📁 PHASE 1: Local File Integrity")
-    if not CSV_PATH.exists():
-        print("❌ CRITICAL: Weekly Rows CSV not found!")
-        return
-    
-    df = pd.read_csv(CSV_PATH)
-    total_rows = len(df)
-    unique_asins = df['asin'].nunique()
-    
-    print(f"✅ Found {total_rows:,} total rows.")
-    print(f"✅ Found {unique_asins} unique ASINs.")
-
-    # Check for "Standard Product" poisoning
-    poisoned = df[df['variation_attributes'] == "Standard Product"].shape[0]
-    poison_pct = (poisoned / total_rows) * 100
-    if poison_pct > 10:
-        print(f"⚠️  WARNING: {poison_pct:.1f}% of rows are generic. Check regex in keepa_client.py.")
-    else:
-        print(f"✅ Variation Parsing: {100-poison_pct:.1f}% health score.")
-
-    # --- PHASE 2: FINANCIAL CALIBRATION ---
-    print("\n💰 PHASE 2: Market Calibration Audit")
-    if TOTALS_PATH.exists():
-        df_t = pd.read_csv(TOTALS_PATH)
-        latest = df_t.sort_values("week_start").iloc[-1]
-        market_size = latest['kcup_sales']
-        sbux_rev = latest['sbux_sales']
-        share = (sbux_rev / market_size) * 100 if market_size > 0 else 0
-        
-        print(f"📊 Market Total: ${market_size:,.2f}")
-        print(f"☕ Starbucks Rev: ${sbux_rev:,.2f}")
-        print(f"📈 Starbucks Share: {share:.1f}%")
-        
-        # Calibration Check
-        if market_size < 10_000_000:
-            print("❌ CALIBRATION ERROR: Market size is too low. Check the 145k constant and sum() aggregation.")
-        elif market_size > 25_000_000:
-            print("⚠️  CALIBRATION WARNING: Market size looks high. Check for double-counting.")
-        else:
-            print("💎 CALIBRATION: Optimized for 2026 Grocery Velocity.")
-
-    # --- PHASE 3: CLOUD RECONCILIATION ---
-    print("\n☁️  PHASE 3: Supabase Cloud Sync Check")
+    # --- PHASE 1: SUPABASE CONNECTION ---
+    print("☁️  PHASE 1: Supabase Connection")
     try:
+        from supabase import create_client
+        
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_SERVICE_KEY")
-        supabase: Client = create_client(url, key)
         
-        # Check ASIN Master
-        master_count = supabase.table("asin_master").select("count", count="exact").execute().count
-        # Check Weekly Rows
-        cloud_rows = supabase.table("keepa_weekly_rows").select("count", count="exact").execute().count
+        if not url or not key:
+            print("❌ SUPABASE_URL or SUPABASE_SERVICE_KEY not set in .env")
+            return
         
-        print(f"✅ Cloud Master Table: {master_count} ASINs synced.")
-        print(f"✅ Cloud Weekly Table: {cloud_rows:,} rows live.")
+        supabase = create_client(url, key)
+        print(f"✅ Connected to Supabase")
         
-        if abs(cloud_rows - total_rows) > 1000:
-             print("⚠️  SYNC GAP: Cloud row count differs significantly from local CSV.")
-        else:
-             print("✅ Cloud-to-Local Reconciled.")
-
     except Exception as e:
-        print(f"❌ Cloud Connection Failed: {e}")
+        print(f"❌ Connection failed: {e}")
+        return
+    
+    # --- PHASE 2: CORE TABLES CHECK ---
+    print("\n📊 PHASE 2: Core Tables Status")
+    
+    core_tables = [
+        "product_snapshots",
+        "projects", 
+        "tracked_asins",
+        "historical_metrics",
+        "resolution_cards"
+    ]
+    
+    for table in core_tables:
+        try:
+            result = supabase.table(table).select("*", count="exact").limit(1).execute()
+            count = result.count if hasattr(result, 'count') else len(result.data)
+            print(f"  ✅ {table}: {count:,} rows")
+        except Exception as e:
+            print(f"  ❌ {table}: Error - {e}")
+    
+    # --- PHASE 3: INTELLIGENCE TABLES CHECK ---
+    print("\n🧠 PHASE 3: Intelligence Tables Status")
+    
+    intel_tables = [
+        "category_intelligence",
+        "brand_intelligence",
+        "strategic_insights",
+        "trigger_events",
+        "market_patterns"
+    ]
+    
+    for table in intel_tables:
+        try:
+            result = supabase.table(table).select("*", count="exact").limit(1).execute()
+            count = result.count if hasattr(result, 'count') else len(result.data)
+            status = "✅" if count > 0 else "⚪"
+            print(f"  {status} {table}: {count:,} rows")
+        except Exception as e:
+            print(f"  ⚠️  {table}: Not found or error - {e}")
+    
+    # --- PHASE 4: DATA QUALITY CHECK ---
+    print("\n🔍 PHASE 4: Product Snapshots Quality")
+    
+    try:
+        result = supabase.table("product_snapshots").select(
+            "asin, estimated_weekly_revenue, sales_rank, filled_price"
+        ).limit(10).execute()
+        
+        if not result.data:
+            print("  ⚪ No snapshots cached yet (run discovery first)")
+        else:
+            has_revenue = sum(1 for r in result.data if r.get("estimated_weekly_revenue"))
+            has_rank = sum(1 for r in result.data if r.get("sales_rank"))
+            has_price = sum(1 for r in result.data if r.get("filled_price"))
+            
+            total = len(result.data)
+            print(f"  Revenue populated: {has_revenue}/{total}")
+            print(f"  Rank populated: {has_rank}/{total}")
+            print(f"  Price populated: {has_price}/{total}")
+            
+            if has_revenue == 0 and has_rank == 0:
+                print("  ⚠️  WARNING: Snapshots have NULL metrics - check cache_market_snapshot()")
+            else:
+                print("  ✅ Data quality looks good")
+                
+    except Exception as e:
+        print(f"  ❌ Quality check failed: {e}")
+    
+    print("\n🏁 AUDIT COMPLETE")
 
-    print("\n🏁 AUDIT COMPLETE: System is ready for demonstration.")
 
 if __name__ == "__main__":
     run_audit()

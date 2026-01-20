@@ -243,7 +243,12 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     Normalize snapshot DataFrame columns to match dashboard expectations.
     
     Maps product_snapshots schema to the format expected by shelfguard_app.py
+    
+    CRITICAL: Also converts numeric columns to proper dtypes to avoid
+    'cannot use method nlargest with dtype object' errors.
     """
+    import numpy as np
+    
     # Column mapping: snapshot_column -> dashboard_column
     column_map = {
         "buy_box_price": "buy_box_price",
@@ -269,17 +274,32 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {k: v for k, v in column_map.items() if k in df.columns}
     df = df.rename(columns=rename_map)
     
-    # Ensure required columns exist
-    if "weekly_sales_filled" not in df.columns:
+    # CRITICAL: Convert numeric columns to proper dtypes
+    # This prevents 'cannot use method nlargest with dtype object' errors
+    numeric_columns = [
+        "weekly_sales_filled", "revenue_proxy", "filled_price", "buy_box_price",
+        "amazon_price", "new_fba_price", "sales_rank_filled", "amazon_bb_share",
+        "estimated_units", "rating", "review_count", "new_offer_count"
+    ]
+    
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Ensure required columns exist with proper values
+    if "weekly_sales_filled" not in df.columns or df["weekly_sales_filled"].sum() == 0:
         if "filled_price" in df.columns and "estimated_units" in df.columns:
-            df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
+            df["weekly_sales_filled"] = pd.to_numeric(df["estimated_units"], errors='coerce').fillna(0) * \
+                                        pd.to_numeric(df["filled_price"], errors='coerce').fillna(0)
         else:
-            df["weekly_sales_filled"] = 0
+            df["weekly_sales_filled"] = 0.0
+
+    # Ensure weekly_sales_filled is numeric
+    df["weekly_sales_filled"] = pd.to_numeric(df["weekly_sales_filled"], errors='coerce').fillna(0)
 
     # CRITICAL: Add revenue_proxy as alias for weekly_sales_filled
     # The dashboard expects 'revenue_proxy' for market share calculations
-    if "revenue_proxy" not in df.columns:
-        df["revenue_proxy"] = df["weekly_sales_filled"]
+    df["revenue_proxy"] = df["weekly_sales_filled"].copy()
 
     return df
 
@@ -413,27 +433,62 @@ def cache_market_snapshot(
         category_root = category_context.get("category_root") if category_context else None
 
         # Build snapshot records
+        # IMPORTANT: Discovery phase uses different column names than Keepa client:
+        # Discovery: bsr, price, revenue_proxy, monthly_units
+        # Keepa:     sales_rank_filled, filled_price, weekly_sales_filled, estimated_units
         records = []
         for _, row in source_df.iterrows():
             asin = row.get("asin")
             if not asin:
                 continue
 
+            # Extract price with fallback chain
+            price_val = _safe_float(
+                row.get("buy_box_price") or 
+                row.get("filled_price") or 
+                row.get("price") or 
+                row.get("avg_price")
+            )
+            
+            # Extract sales rank with fallback chain
+            rank_val = _safe_int(
+                row.get("sales_rank_filled") or 
+                row.get("sales_rank") or 
+                row.get("bsr")
+            )
+            
+            # Extract revenue with fallback chain
+            revenue_val = _safe_float(
+                row.get("weekly_sales_filled") or 
+                row.get("revenue_proxy") or 
+                row.get("estimated_weekly_revenue")
+            )
+            
+            # Extract units with fallback chain
+            units_val = _safe_int(
+                row.get("estimated_units") or 
+                row.get("monthly_units")
+            )
+            
+            # If we have price and units but no revenue, calculate it
+            if revenue_val is None and price_val and units_val:
+                revenue_val = price_val * units_val / 4  # Weekly from monthly
+
             record = {
                 "asin": str(asin).strip().upper(),
                 "snapshot_date": snapshot_date,
-                "buy_box_price": _safe_float(row.get("buy_box_price", row.get("price"))),
+                "buy_box_price": price_val,
                 "amazon_price": _safe_float(row.get("amazon_price")),
                 "new_fba_price": _safe_float(row.get("new_fba_price")),
-                "sales_rank": _safe_int(row.get("sales_rank_filled", row.get("sales_rank", row.get("bsr")))),
+                "sales_rank": rank_val,
                 "amazon_bb_share": _safe_float(row.get("amazon_bb_share")),
                 "buy_box_switches": _safe_int(row.get("buy_box_switches")),
                 "new_offer_count": _safe_int(row.get("new_offer_count")),
                 "review_count": _safe_int(row.get("review_count")),
                 "rating": _safe_float(row.get("rating")),
-                "estimated_units": _safe_int(row.get("estimated_units", row.get("monthly_units"))),
-                "estimated_weekly_revenue": _safe_float(row.get("weekly_sales_filled", row.get("revenue_proxy"))),
-                "filled_price": _safe_float(row.get("filled_price", row.get("price"))),
+                "estimated_units": units_val,
+                "estimated_weekly_revenue": revenue_val,
+                "filled_price": price_val,  # Use same as buy_box_price
                 "title": str(row.get("title", ""))[:500] if row.get("title") else None,
                 "brand": str(row.get("brand", "")) if row.get("brand") else None,
                 "parent_asin": str(row.get("parent_asin", "")) if row.get("parent_asin") else None,

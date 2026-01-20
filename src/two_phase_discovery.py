@@ -832,7 +832,15 @@ def phase2_category_market_mapping(
                 brand_asins = result.get("asinList", [])
                 
                 if brand_asins:
-                    st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
+                    # CRITICAL FIX: Hard cap on brand products to prevent runaway fetching
+                    # Keepa returns ALL matching ASINs (can be 24,000+ for large brands like Purina)
+                    MAX_BRAND_ASINS = 100  # Hard limit - fetch at most 100 brand products
+                    original_count = len(brand_asins)
+                    if original_count > MAX_BRAND_ASINS:
+                        st.warning(f"⚠️ Found {original_count} **{target_brand}** products - limiting to top {MAX_BRAND_ASINS}")
+                        brand_asins = brand_asins[:MAX_BRAND_ASINS]  # Take first 100 (typically best sellers)
+                    else:
+                        st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
                     
                     # Fetch full product data for brand ASINs
                     # Rate limiting: Add delays between batches to avoid hitting Keepa limits

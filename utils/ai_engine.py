@@ -152,7 +152,8 @@ class StrategicBrief:
     asin: str = ""
     
     # === PREDICTIVE INTELLIGENCE ===
-    thirty_day_risk: float = 0.0      # Projected $ at risk over next 30 days
+    thirty_day_risk: float = 0.0      # Projected $ at risk over next 30 days (ACTUAL THREATS ONLY)
+    optimization_value: float = 0.0   # $ opportunity for healthy products (NOT risk)
     daily_burn_rate: float = 0.0      # Current daily loss rate
     velocity_multiplier: float = 1.0  # Trend adjustment (>1 = accelerating loss)
     
@@ -199,8 +200,9 @@ class StrategicBrief:
             "state_color": self.state_color,
             "source": self.source,
             "asin": self.asin,
-            # Predictive outputs
-            "thirty_day_risk": self.thirty_day_risk,
+            # Predictive outputs (SEMANTIC SPLIT: risk vs optimization)
+            "thirty_day_risk": self.thirty_day_risk,          # Actual threats only
+            "optimization_value": self.optimization_value,     # Opportunity for healthy products
             "daily_burn_rate": self.daily_burn_rate,
             "predictive_state": self.predictive_state,
             "predictive_emoji": self.predictive_emoji,
@@ -1423,11 +1425,18 @@ class PredictiveAlpha:
     
     Inventory Logic: If days_until_stockout < supplier_lead_time, calculate as
     total projected profit lost during the predicted stockout window.
+    
+    SEMANTIC CLARITY:
+    - thirty_day_risk = ACTUAL THREATS (will lose money if you don't act)
+    - optimization_value = OPPORTUNITY (could gain money with optimization)
     """
     # Core prediction
-    thirty_day_risk: float              # Predicted $ at risk over next 30 days
+    thirty_day_risk: float              # Predicted $ at risk over next 30 days (ACTUAL THREATS ONLY)
     daily_burn_rate: float              # Current daily loss rate
     velocity_multiplier: float          # Trend-based adjustment (>1 = accelerating, <1 = decelerating)
+    
+    # SEMANTIC SPLIT: Separate risk from opportunity
+    optimization_value: float = 0.0     # $ optimization opportunity (NOT risk) for healthy products
     
     # Risk components
     price_erosion_risk: float           # Risk from competitor pricing pressure
@@ -1779,19 +1788,44 @@ def calculate_predictive_alpha(
             ai_recommendation = f"📊 Competitive Alert: Competitor review velocity {review_velocity_ratio:.1f}x yours. Market share at risk by {predicted_event_date}."
     
     # ========== TOTAL 30-DAY RISK ==========
+    # SEMANTIC FIX: Separate ACTUAL THREATS from OPTIMIZATION OPPORTUNITY
+    # 
+    # ACTUAL RISK = weighted_stockout_risk + weighted_price_risk + weighted_share_risk
+    #   - Only include base_30day_risk if there are actual threat signals
+    #
+    # OPTIMIZATION VALUE = base_30day_risk (for healthy products with no threats)
+    #   - This represents "money left on the table" not "money you'll lose"
+    
     # Apply strategic bias weights to risk components
     weighted_stockout_risk = stockout_risk * inventory_weight
     weighted_price_risk = max(0, price_erosion_risk) * price_weight
     weighted_share_risk = share_erosion_risk * rank_weight
     
-    thirty_day_risk = max(0, (
-        base_30day_risk +
-        weighted_stockout_risk +
-        weighted_price_risk +
-        weighted_share_risk
-    ))
+    # Actual threat total (without baseline)
+    actual_threat_total = weighted_stockout_risk + weighted_price_risk + weighted_share_risk
     
-    # Daily burn rate for trending
+    # Determine if there are ACTUAL threats (not just baseline opportunity)
+    has_actual_threats = (
+        stockout_risk > 0 or                    # Inventory threat
+        price_erosion_risk > 0 or               # Price defense threat  
+        share_erosion_risk > revenue * 0.02 or  # Meaningful velocity decline
+        bsr_trend_30d > 0.15                    # Significant rank decline
+    )
+    
+    # THIRTY_DAY_RISK = only actual threats
+    # For healthy products without threats, this should be $0 (matching vectorized calculation)
+    if has_actual_threats:
+        # Include base risk only when there are actual threat signals
+        thirty_day_risk = max(0, base_30day_risk + actual_threat_total)
+    else:
+        # No actual threats = $0 risk (optimization goes elsewhere)
+        thirty_day_risk = 0.0
+    
+    # OPTIMIZATION VALUE = baseline opportunity for healthy products
+    # This is what shows as "could gain" not "will lose"
+    optimization_value = base_30day_risk if not has_actual_threats else 0.0
+    
+    # Daily burn rate for trending (use actual threat rate, not optimization)
     daily_burn_rate = thirty_day_risk / 30.0
     
     # ========== PREDICTIVE STATE ==========
@@ -1887,6 +1921,7 @@ def calculate_predictive_alpha(
         thirty_day_risk=thirty_day_risk,
         daily_burn_rate=daily_burn_rate,
         velocity_multiplier=velocity_multiplier,
+        optimization_value=optimization_value,  # NEW: Separate from risk
         price_erosion_risk=max(0, price_erosion_risk),
         share_erosion_risk=share_erosion_risk,
         stockout_risk=stockout_risk,
@@ -2684,7 +2719,9 @@ class StrategicTriangulator:
         
         # === STEP 4: MERGE INTO UNIFIED OUTPUT ===
         # Enrich strategic brief with predictive intelligence
+        # SEMANTIC SPLIT: thirty_day_risk = actual threats, optimization_value = opportunity
         strategic_brief.thirty_day_risk = predictive.thirty_day_risk
+        strategic_brief.optimization_value = predictive.optimization_value  # NEW: separate from risk
         strategic_brief.daily_burn_rate = predictive.daily_burn_rate
         strategic_brief.velocity_multiplier = predictive.velocity_multiplier
         strategic_brief.price_erosion_risk = predictive.price_erosion_risk

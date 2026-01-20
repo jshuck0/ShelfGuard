@@ -234,7 +234,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "source": brief.source,
                 
                 # === PREDICTIVE INTELLIGENCE (Defensive) ===
+                # SEMANTIC SPLIT: thirty_day_risk = actual threats only
                 "thirty_day_risk": brief.thirty_day_risk,
+                "optimization_value": brief.optimization_value,  # NEW: separate from risk
                 "daily_burn_rate": brief.daily_burn_rate,
                 "predictive_state": brief.predictive_state,
                 "predictive_emoji": brief.predictive_emoji,
@@ -261,8 +263,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "problem_category": f"{brief.state_emoji} {state_to_category.get(state, state)}",
                 "problem_reason": brief.reasoning[:80] + "..." if len(brief.reasoning) > 80 else brief.reasoning,
                 
-                # === PREDICTIVE RISK (North Star metric) ===
-                "opportunity_value": brief.thirty_day_risk,  # Always use predictive risk
+                # === OPPORTUNITY VALUE (for display) ===
+                # Use actual risk if present, otherwise optimization value
+                "opportunity_value": brief.thirty_day_risk if brief.thirty_day_risk > 0 else brief.optimization_value,
                 
                 # === PREDICTIVE STATE (replaces capital_zone) ===
                 "predictive_zone": f"{brief.predictive_emoji} {brief.predictive_state}",
@@ -278,12 +281,14 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
             from utils.ai_engine import _determine_state_fallback
             brief = _determine_state_fallback(row, reason="Primary analysis failed", strategic_bias=strategic_bias)
             state = brief.strategic_state
+            risk = brief.thirty_day_risk if hasattr(brief, 'thirty_day_risk') else 0
+            opt_val = brief.optimization_value if hasattr(brief, 'optimization_value') else 0
             return {
                 "ad_action": "⚖️ OPTIMIZE ROAS",
                 "ecom_action": "✅ MAINTAIN",
                 "problem_category": f"{brief.state_emoji} {state}",
                 "problem_reason": brief.reasoning[:80] + "..." if len(brief.reasoning) > 80 else brief.reasoning,
-                "opportunity_value": brief.thirty_day_risk if hasattr(brief, 'thirty_day_risk') else 0,
+                "opportunity_value": risk if risk > 0 else opt_val,
                 "confidence_score": brief.confidence,
                 "strategic_state": state,
                 "recommended_plan": brief.recommended_action,
@@ -291,8 +296,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "predictive_emoji": brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else "✅",
                 "predictive_zone": f"{brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else '✅'} {brief.predictive_state if hasattr(brief, 'predictive_state') else 'HOLD'}",
                 "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT", "STABLE", "GROW"] if hasattr(brief, 'predictive_state') else True,
-                # Growth Intelligence
-                "thirty_day_risk": brief.thirty_day_risk if hasattr(brief, 'thirty_day_risk') else 0,
+                # SEMANTIC SPLIT: Risk vs Optimization
+                "thirty_day_risk": risk,
+                "optimization_value": opt_val,
                 "thirty_day_growth": brief.thirty_day_growth if hasattr(brief, 'thirty_day_growth') else 0,
                 "price_lift_opportunity": brief.price_lift_opportunity if hasattr(brief, 'price_lift_opportunity') else 0,
                 "conquest_opportunity": brief.conquest_opportunity if hasattr(brief, 'conquest_opportunity') else 0,
@@ -310,7 +316,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         "ecom_action": "✅ MAINTAIN",
         "problem_category": "📊 Awaiting Analysis",
         "problem_reason": "Analysis pending - insufficient data",
-        "opportunity_value": 0,  # No predictive risk without analysis
+        "opportunity_value": 0,
         "confidence_score": 0.3,
         "strategic_state": "HARVEST",  # Neutral state
         "recommended_plan": "Awaiting analysis",
@@ -318,8 +324,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         "predictive_emoji": "✅",
         "predictive_zone": "✅ STABLE",
         "is_healthy": True,
-        # Growth defaults
+        # SEMANTIC SPLIT: Risk vs Optimization
         "thirty_day_risk": 0,
+        "optimization_value": 0,
         "thirty_day_growth": 0,
         "price_lift_opportunity": 0,
         "conquest_opportunity": 0,

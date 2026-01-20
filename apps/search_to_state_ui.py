@@ -215,7 +215,7 @@ def render_discovery_ui() -> None:
         # Display seed products if available
         if "seed_products_df" in st.session_state:
             seed_df = st.session_state["seed_products_df"]
-            
+
             # Check if we used family harvester (has family_size column)
             used_families = "family_size" in seed_df.columns and "parent_asin" in seed_df.columns
             
@@ -256,7 +256,7 @@ def render_discovery_ui() -> None:
                         family_summary = family_summary.sort_values("Variations", ascending=False)
                         st.dataframe(family_summary.head(10), use_container_width=True)
             else:
-                st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
+            st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
 
             # Check for category ambiguity (keyword-only mode)
             if not category_filter and not seed_df.empty and "category_id" in seed_df.columns:
@@ -302,14 +302,14 @@ def render_discovery_ui() -> None:
                 st.markdown("#### 🗺️ Phase 2: Map Competitive Market")
 
                 seed_brand = seed_product.get("brand", "")
-                
+
                 st.info(
                     f"**Seed**: {seed_product['title'][:100]}\n\n"
                     f"**Target Brand**: {seed_brand}\n\n"
                     f"**Category**: {seed_product['category_path']}\n\n"
                     f"ShelfGuard will fetch ALL **{seed_brand}** products first, then fill with competitors."
                 )
-                
+
                 if st.button("🚀 Map Full Market", type="primary"):
                     st.session_state["trigger_phase2"] = True
                     st.session_state["target_brand"] = seed_brand  # Pass brand to Phase 2
@@ -369,7 +369,7 @@ def render_discovery_ui() -> None:
                             # Store in session state so they persist across reruns
                             st.session_state["discovery_market_snapshot"] = market_snapshot
                             st.session_state["discovery_stats"] = stats
-
+                            
                             # Store search parameters for cache restoration
                             st.session_state["last_phase2_params"] = {
                                 "category_id": int(seed_product["category_id"]),

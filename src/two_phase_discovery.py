@@ -972,6 +972,17 @@ def phase2_category_market_mapping(
                                 if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
                                     oos_90 = oos_90 / 100
                                 
+                                # Buy Box Stats (30/90 day) - Amazon's % ownership
+                                # Try 30-day first, then 90-day, then assume 50% if unavailable
+                                bb_stats_30 = _safe_numeric(stats.get("buyBoxStatsAmazon30") if stats else None, -1)
+                                bb_stats_90 = _safe_numeric(stats.get("buyBoxStatsAmazon90") if stats else None, -1)
+                                if bb_stats_30 >= 0:
+                                    amazon_bb_share = bb_stats_30 / 100.0 if bb_stats_30 > 1 else bb_stats_30
+                                elif bb_stats_90 >= 0:
+                                    amazon_bb_share = bb_stats_90 / 100.0 if bb_stats_90 > 1 else bb_stats_90
+                                else:
+                                    amazon_bb_share = 0.5  # Default to 50% if no data
+                                
                                 # Seller Count (index 11) - using safe extraction
                                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 1)
                                 new_offer_count = max(1, new_offer_count)
@@ -995,6 +1006,7 @@ def phase2_category_market_mapping(
                                     "_is_target_brand": True,
                                     # Competitive metrics (NEW)
                                     "outOfStockPercentage90": oos_90,
+                                    "amazon_bb_share": amazon_bb_share,  # Buy Box ownership
                                     "new_offer_count": new_offer_count,
                                     "review_count": review_count,
                                     "rating": rating,
@@ -1258,6 +1270,16 @@ def phase2_category_market_mapping(
                 if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
                     oos_90 = oos_90 / 100
                 
+                # Buy Box Stats (30/90 day) - Amazon's % ownership (or top seller's)
+                bb_stats_30 = _safe_numeric(stats.get("buyBoxStatsAmazon30") if stats else None, -1)
+                bb_stats_90 = _safe_numeric(stats.get("buyBoxStatsAmazon90") if stats else None, -1)
+                if bb_stats_30 >= 0:
+                    amazon_bb_share = bb_stats_30 / 100.0 if bb_stats_30 > 1 else bb_stats_30
+                elif bb_stats_90 >= 0:
+                    amazon_bb_share = bb_stats_90 / 100.0 if bb_stats_90 > 1 else bb_stats_90
+                else:
+                    amazon_bb_share = 0.5  # Default to 50% if no data
+                
                 # Seller Count (index 11) - using safe extraction
                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 0)
                 if new_offer_count <= 0 and stats and "current" in stats:
@@ -1292,6 +1314,7 @@ def phase2_category_market_mapping(
                     "main_image": main_image,  # Add image for Visual Audit
                     # Competitive metrics (NEW)
                     "outOfStockPercentage90": oos_90,
+                    "amazon_bb_share": amazon_bb_share,  # Buy Box ownership from Keepa stats
                     "new_offer_count": new_offer_count,
                     "review_count": review_count,
                     "rating": rating,

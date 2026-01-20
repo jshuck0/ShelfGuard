@@ -305,14 +305,14 @@ def render_discovery_ui() -> None:
                 
                 st.info(
                     f"**Seed**: {seed_product['title'][:100]}\n\n"
-                    f"**Brand**: {seed_brand}\n\n"
+                    f"**Target Brand**: {seed_brand}\n\n"
                     f"**Category**: {seed_product['category_path']}\n\n"
-                    f"ShelfGuard will fetch the top 100 products from this category."
+                    f"ShelfGuard will fetch ALL **{seed_brand}** products first, then fill with competitors."
                 )
                 
                 if st.button("🚀 Map Full Market", type="primary"):
                     st.session_state["trigger_phase2"] = True
-                    st.session_state["phase2_brand_filter"] = None  # No brand filter - get full market
+                    st.session_state["target_brand"] = seed_brand  # Pass brand to Phase 2
                     st.rerun()
 
                 # Execute Phase 2 if triggered
@@ -329,6 +329,9 @@ def render_discovery_ui() -> None:
                             # Convert to tuple for caching (lists aren't hashable)
                             category_tree_ids = tuple(category_tree_ids_list) if category_tree_ids_list else None
                             
+                            # Get target brand from session state
+                            target_brand = st.session_state.get("target_brand", seed_brand)
+                            
                             market_snapshot, market_stats = phase2_category_market_mapping(
                                 category_id=int(seed_product["category_id"]),
                                 seed_product_title=seed_product["title"],
@@ -339,7 +342,8 @@ def render_discovery_ui() -> None:
                                 domain="US",
                                 leaf_category_id=int(leaf_category_id) if leaf_category_id else None,
                                 category_path=category_path,
-                                category_tree_ids=category_tree_ids
+                                category_tree_ids=category_tree_ids,
+                                target_brand=target_brand  # Fetch ALL brand products first
                             )
 
                             if market_snapshot.empty:
@@ -370,11 +374,12 @@ def render_discovery_ui() -> None:
                             st.session_state["last_phase2_params"] = {
                                 "category_id": int(seed_product["category_id"]),
                                 "seed_product_title": seed_product["title"],
-                                "seed_product_asin": seed_product["asin"],  # ✅ STORE SEED ASIN
+                                "seed_product_asin": seed_product["asin"],
                                 "leaf_category_id": int(leaf_category_id) if leaf_category_id else None,
                                 "category_path": category_path,
                                 "category_tree_ids": category_tree_ids,
-                                "search_keyword": search_keyword
+                                "search_keyword": search_keyword,
+                                "target_brand": target_brand  # Store brand for cache
                             }
 
                             # Clear trigger
@@ -397,14 +402,15 @@ def render_discovery_ui() -> None:
                                 market_snapshot, market_stats = phase2_category_market_mapping(
                                     category_id=params["category_id"],
                                     seed_product_title=params["seed_product_title"],
-                                    seed_asin=params.get("seed_product_asin"),  # ✅ Force-include seed ASIN
+                                    seed_asin=params.get("seed_product_asin"),
                                     target_revenue_pct=80.0,
                                     max_products=100,
                                     batch_size=100,
                                     domain="US",
                                     leaf_category_id=params["leaf_category_id"],
                                     category_path=params["category_path"],
-                                    category_tree_ids=params["category_tree_ids"]
+                                    category_tree_ids=params["category_tree_ids"],
+                                    target_brand=params.get("target_brand")  # Restore brand for cache
                                 )
                                 if not market_snapshot.empty:
                                     # Restore data from cache

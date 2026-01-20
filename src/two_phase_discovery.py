@@ -615,25 +615,27 @@ def phase1_brand_focused_discovery(
 def phase2_category_market_mapping(
     category_id: int,
     seed_product_title: str,
-    seed_asin: Optional[str] = None,  # ✅ ADD SEED ASIN
+    seed_asin: Optional[str] = None,
     target_revenue_pct: float = 80.0,
     max_products: int = 500,
     batch_size: int = 100,
     domain: str = "US",
     leaf_category_id: Optional[int] = None,
     category_path: Optional[str] = None,
-    category_tree_ids: Optional[tuple] = None,  # Tuple for caching (lists aren't hashable)
+    category_tree_ids: Optional[tuple] = None,
     min_products: int = 10,
-    check_cache: bool = False,  # FIX 1.3: Optional cache check (disabled by default for Phase 2)
-    brand_filter: Optional[str] = None  # NEW: Filter API results to specific brand
+    check_cache: bool = False,
+    brand_filter: Optional[str] = None,
+    target_brand: Optional[str] = None  # NEW: Fetch ALL products from this brand first
 ) -> Tuple[pd.DataFrame, Dict]:
     """
-    Phase 2: Dynamically fetch products from category until 80% revenue captured.
+    Phase 2: Map competitive market with brand-first fetching.
 
-    Uses progressive category fallback: starts with leaf, walks up tree until min_products found.
-
-    FIX 1.3: Now supports optional database cache check to reduce API costs.
-    Note: Cache is disabled by default for Phase 2 since users typically want fresh data.
+    Flow:
+    1. Progressive category fallback: Start with leaf, walk up until >= min_products found
+    2. Fetch ALL products from target_brand in that category
+    3. Fill remaining slots with competitors
+    4. Combine into market snapshot
 
     Args:
         category_id: Root category ID from seed product
@@ -642,11 +644,12 @@ def phase2_category_market_mapping(
         target_revenue_pct: Stop when this % of revenue is captured (default 80%)
         max_products: Safety limit to prevent runaway fetching
         batch_size: How many products to fetch per iteration
-        domain: Amazon marketplace ('US', 'GB', 'DE', etc.)
-        leaf_category_id: Most specific subcategory ID (leaf node) - ensures high relevance/purity
-        category_tree_ids: Full list of category IDs from root to leaf (for progressive fallback)
-        min_products: Minimum products needed before walking up category hierarchy (default 10)
-        check_cache: Whether to check database cache first (default False for fresh data)
+        domain: Amazon marketplace
+        leaf_category_id: Most specific subcategory ID (leaf node)
+        category_tree_ids: Full list of category IDs from root to leaf
+        min_products: Minimum products needed before walking up hierarchy (default 10)
+        check_cache: Whether to check database cache first
+        target_brand: Brand name - fetch ALL products from this brand first, then competitors
 
     Returns:
         Tuple of (validated_df, market_stats)
@@ -795,7 +798,128 @@ def phase2_category_market_mapping(
     # Show final category being used
     st.info(f"📂 Fetching from: **{effective_category_path}** (ID: {effective_category_id})")
     
-    # ========== MAIN FETCH LOOP ==========
+    # ========== BRAND-FIRST FETCHING ==========
+    # If target_brand is provided, fetch ALL products from that brand first
+    # Then fill remaining slots with competitors
+    brand_products = []
+    brand_asins_fetched = set()
+    
+    if target_brand:
+        st.info(f"🎯 Step 1: Fetching ALL **{target_brand}** products...")
+        
+        # Query for all products from target brand in this category
+        brand_query = {
+            "brand": [target_brand],
+            "perPage": 100,
+            "page": 0,
+            "current_SALES_gte": 1,
+            "current_SALES_lte": 200000,
+        }
+        
+        # Add category filter using the effective category from progressive fallback
+        if use_categories_include:
+            brand_query["categories_include"] = [int(effective_category_id)]
+            brand_query["rootCategory"] = [int(category_id)]
+        else:
+            brand_query["rootCategory"] = [int(category_id)]
+        
+        try:
+            url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
+            response = requests.post(url, json=brand_query, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                brand_asins = result.get("asinList", [])
+                
+                if brand_asins:
+                    st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
+                    
+                    # Fetch full product data for brand ASINs
+                    for i in range(0, len(brand_asins), 20):
+                        batch_asins = brand_asins[i:i + 20]
+                        try:
+                            batch_products = api.query(batch_asins, stats=90, rating=True)
+                            
+                            for product in batch_products:
+                                asin = product.get("asin")
+                                if not asin:
+                                    continue
+                                
+                                # Skip variation parents (no data)
+                                if product.get("productType") == 5:
+                                    continue
+                                
+                                # Extract product data
+                                csv = product.get("csv", [])
+                                price = 0
+                                if csv and len(csv) > 18 and csv[18]:
+                                    price_array = csv[18]
+                                    if price_array and len(price_array) > 0:
+                                        price_cents = price_array[-1] if price_array[-1] else 0
+                                        if price_cents and price_cents > 0:
+                                            price = price_cents / 100.0
+                                
+                                if price == 0 and csv and len(csv) > 0 and csv[0]:
+                                    price_array = csv[0]
+                                    if price_array and len(price_array) > 0:
+                                        price_cents = price_array[-1] if price_array[-1] else 0
+                                        if price_cents and price_cents > 0:
+                                            price = price_cents / 100.0
+                                
+                                bsr = None
+                                if csv and len(csv) > 3 and csv[3]:
+                                    bsr_array = csv[3]
+                                    if bsr_array and len(bsr_array) > 0:
+                                        bsr_value = bsr_array[-1]
+                                        if bsr_value and bsr_value != -1 and bsr_value > 0:
+                                            bsr = bsr_value
+                                
+                                monthly_units = 0
+                                if bsr and bsr > 0:
+                                    monthly_units = 145000.0 * (bsr ** -0.9)
+                                
+                                revenue = monthly_units * price
+                                
+                                title = product.get("title", "")
+                                brand = product.get("brand", target_brand)
+                                
+                                image_urls = product.get("imagesCSV", "").split(",") if product.get("imagesCSV") else []
+                                main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
+                                
+                                brand_products.append({
+                                    "asin": asin,
+                                    "title": title,
+                                    "brand": brand,
+                                    "price": price,
+                                    "monthly_units": monthly_units,
+                                    "revenue_proxy": revenue,
+                                    "bsr": bsr,
+                                    "main_image": main_image,
+                                    "_is_target_brand": True
+                                })
+                                brand_asins_fetched.add(asin)
+                            
+                            time.sleep(0.5)
+                        except Exception as e:
+                            st.warning(f"⚠️ Error fetching brand batch: {str(e)[:50]}")
+                    
+                    st.caption(f"📊 Fetched {len(brand_products)} {target_brand} products with valid data")
+                else:
+                    st.warning(f"⚠️ No {target_brand} products found in this category")
+            else:
+                st.warning(f"⚠️ Brand query failed: {response.status_code}")
+        except Exception as e:
+            st.warning(f"⚠️ Brand fetch failed: {str(e)[:50]}")
+        
+        # Calculate remaining slots for competitors
+        remaining_slots = target_valid_products - len(brand_products)
+        if remaining_slots > 0:
+            st.info(f"🎯 Step 2: Fetching {remaining_slots} competitor products...")
+        
+        # Pre-populate all_products with brand products
+        all_products = brand_products.copy()
+    
+    # ========== MAIN FETCH LOOP (Competitors) ==========
     max_pages = 10  # Safety limit (10 pages x 100 = 1000 products max)
     
     while len(all_products) < target_valid_products and page < max_pages:
@@ -935,6 +1059,12 @@ def phase2_category_market_mapping(
             products_filtered_by_category = 0
             
             for product in products:
+                asin = product.get("asin")
+                
+                # Skip ASINs already fetched in brand-first pass
+                if asin and asin in brand_asins_fetched:
+                    continue
+                
                 # LIGHT CATEGORY VALIDATION: Just verify root category matches
                 # Since we're using categories_include, Keepa should return correct products
                 # This is a sanity check, not a strict filter
@@ -1203,6 +1333,7 @@ def phase2_category_market_mapping(
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
                 "total_category_revenue": df["revenue_proxy"].sum(),
@@ -1212,7 +1343,10 @@ def phase2_category_market_mapping(
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
                 "validated_revenue": df["revenue_proxy"].sum(),
-                "df_weekly": pd.DataFrame()  # Empty weekly data
+                "df_weekly": pd.DataFrame(),
+                "target_brand": target_brand,
+                "brand_product_count": brand_product_count,
+                "competitor_count": len(df) - brand_product_count
             }
             return df, market_stats
         
@@ -1228,6 +1362,7 @@ def phase2_category_market_mapping(
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
                 "total_category_revenue": df["revenue_proxy"].sum(),
@@ -1237,7 +1372,10 @@ def phase2_category_market_mapping(
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
                 "validated_revenue": df["revenue_proxy"].sum(),
-                "df_weekly": pd.DataFrame()
+                "df_weekly": pd.DataFrame(),
+                "target_brand": target_brand,
+                "brand_product_count": brand_product_count,
+                "competitor_count": len(df) - brand_product_count
             }
             return df, market_stats
         
@@ -1346,6 +1484,9 @@ def phase2_category_market_mapping(
         df = asin_summary.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
         
         # Calculate market stats
+        brand_product_count = len(brand_products) if target_brand else 0
+        competitor_count = len(df) - brand_product_count
+        
         market_stats = {
             "total_products": len(df),
             "total_category_revenue": df["revenue_proxy"].sum(),
@@ -1355,14 +1496,25 @@ def phase2_category_market_mapping(
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
             "validated_revenue": df["revenue_proxy"].sum(),
-            "df_weekly": df_weekly,  # Include full weekly data for Command Center
-            "time_period": "90 days (weekly aggregated)"
+            "df_weekly": df_weekly,
+            "time_period": "90 days (weekly aggregated)",
+            "target_brand": target_brand,
+            "brand_product_count": brand_product_count,
+            "competitor_count": competitor_count
         }
         
-        st.success(
-            f"✅ **Market Snapshot Built from 90 Days of Historical Data**\n\n"
-            f"Products: **{len(df)}** | Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
-        )
+        if target_brand:
+            st.success(
+                f"✅ **Market Snapshot Complete**\n\n"
+                f"**{target_brand}**: {brand_product_count} products | "
+                f"**Competitors**: {competitor_count} products\n\n"
+                f"Total Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
+            )
+        else:
+            st.success(
+                f"✅ **Market Snapshot Built from 90 Days of Historical Data**\n\n"
+                f"Products: **{len(df)}** | Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
+            )
         
         return df, market_stats
         
@@ -1375,6 +1527,10 @@ def phase2_category_market_mapping(
         df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
         df["revenue_proxy"] = df["monthly_units"] * df["price"]
         df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+        
+        brand_product_count = len(brand_products) if target_brand else 0
+        competitor_count = len(df) - brand_product_count
+        
         market_stats = {
             "total_products": len(df),
             "total_category_revenue": df["revenue_proxy"].sum(),
@@ -1384,7 +1540,10 @@ def phase2_category_market_mapping(
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
             "validated_revenue": df["revenue_proxy"].sum(),
-            "df_weekly": pd.DataFrame()
+            "df_weekly": pd.DataFrame(),
+            "target_brand": target_brand,
+            "brand_product_count": brand_product_count,
+            "competitor_count": competitor_count
         }
         return df, market_stats
 

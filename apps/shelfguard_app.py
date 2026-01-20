@@ -1464,6 +1464,12 @@ with main_tab1:
         else:
             meaningful_risk_count = defend_count + replenish_count
         
+        # SEMANTIC FIX: Distinguish URGENT alerts from OPTIMIZATION reviews
+        # - Urgent alerts (DEFEND/REPLENISH): You'll LOSE money if you don't act
+        # - Optimization reviews (HOLD): You COULD gain by optimizing, but no urgent loss
+        urgent_alert_count = defend_count + replenish_count
+        optimization_review_count = meaningful_risk_count - urgent_alert_count
+        
         # Growth count: products with >$100 growth opportunity
         if 'thirty_day_growth' in enriched_portfolio_df.columns:
             meaningful_growth_count = (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 100).sum()
@@ -1475,19 +1481,24 @@ with main_tab1:
         has_threat_keywords = any(keyword in ai_brief_lower for keyword in ["threat", "erosion", "critical"])
         has_threat_keywords = has_threat_keywords or is_predictive_critical
         
-        # === STATUS LOGIC (FIXED: Consistent, meaningful counts) ===
-        # Use meaningful_risk_count for ALL status displays
-        # Also set action_required_count for backward compatibility with alert details section
-        action_required_count = meaningful_risk_count
+        # === STATUS LOGIC (FIXED: Semantic clarity between alerts vs optimizations) ===
+        # Urgent alerts = DEFEND + REPLENISH (actual risk)
+        # Optimization reviews = HOLD products with value (not urgent)
+        action_required_count = meaningful_risk_count  # For backwards compat
         
         if has_threat_keywords or is_predictive_critical:
             status_emoji = "🔴"
             status_text = "DEFENSE PROTOCOL"
-            top_action = f"{meaningful_risk_count} ACTIONS REQUIRED"
+            top_action = f"{urgent_alert_count} URGENT + {optimization_review_count} to optimize" if urgent_alert_count > 0 else f"{meaningful_risk_count} ACTIONS REQUIRED"
+        elif urgent_alert_count > 0:
+            # Has actual risk items (DEFEND/REPLENISH)
+            status_emoji = "🟡"
+            status_text = "ATTENTION"
+            top_action = f"{urgent_alert_count} ALERTS" + (f" + {optimization_review_count} to optimize" if optimization_review_count > 0 else "")
         elif is_predictive_elevated or has_high_urgency_alerts:
             status_emoji = "🟡"
             status_text = "ATTENTION"
-            top_action = f"{meaningful_risk_count} ALERTS"
+            top_action = f"{optimization_review_count} items to optimize" if optimization_review_count > 0 else f"{meaningful_risk_count} items need review"
         elif meaningful_growth_count > 5:
             # Significant growth opportunities
             status_emoji = "🟢"
@@ -1726,10 +1737,17 @@ with main_tab1:
                 """, unsafe_allow_html=True)
         
         # === SHOW ALERT DETAILS (if alerts exist) ===
-        # FIXED: Use meaningful_risk_count (products with >$100 risk) not just DEFEND/REPLENISH states
-        # This ensures the alert count matches what's shown in the banner
+        # Semantic: Separate urgent alerts (DEFEND/REPLENISH) from optimization reviews (HOLD)
         if meaningful_risk_count > 0:
-            with st.expander(f"📋 View {meaningful_risk_count} Alert Details", expanded=False):
+            # Build expander title that clarifies what's inside
+            if urgent_alert_count > 0 and optimization_review_count > 0:
+                expander_title = f"📋 View {urgent_alert_count} Alerts + {optimization_review_count} Optimizations"
+            elif urgent_alert_count > 0:
+                expander_title = f"📋 View {urgent_alert_count} Alert Details"
+            else:
+                expander_title = f"📋 View {optimization_review_count} Optimization Opportunities"
+            
+            with st.expander(expander_title, expanded=False):
                 # Get products with meaningful risk (>$100) - includes HARVEST optimization opportunities
                 if 'thirty_day_risk' in enriched_portfolio_df.columns:
                     risk_values = enriched_portfolio_df['thirty_day_risk'].fillna(0)
@@ -1763,11 +1781,29 @@ with main_tab1:
                             continue
                         
                         shown_count += 1
-                        state_emoji = "🛡️" if state == "DEFEND" else "📦" if state == "REPLENISH" else "⚠️"
+                        
+                        # Different display based on urgency
+                        # DEFEND/REPLENISH = actual risk (you'll lose this if you don't act)
+                        # HOLD = optimization potential (you could gain this by optimizing)
+                        if state == "DEFEND":
+                            state_emoji = "🛡️"
+                            state_label = "DEFEND"
+                            value_label = "⚠️ At Risk"
+                            value_color = "#dc3545"
+                        elif state == "REPLENISH":
+                            state_emoji = "📦"
+                            state_label = "RESTOCK"
+                            value_label = "⚠️ At Risk"
+                            value_color = "#dc3545"
+                        else:
+                            state_emoji = "📊"
+                            state_label = "OPTIMIZE"
+                            value_label = "💰 Potential"
+                            value_color = "#ffc107"
                         
                         st.markdown(f"""
-                        **{state_emoji} {state}** | `{asin}` | {title}  
-                        💰 Revenue: ${rev:,.0f}/mo | ⚠️ Risk: ${risk:,.0f}
+                        **{state_emoji} {state_label}** | `{asin}` | {title}  
+                        💰 Revenue: ${rev:,.0f}/mo | {value_label}: ${risk:,.0f}
                         """)
                     
                     if shown_count == 0:

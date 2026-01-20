@@ -822,12 +822,9 @@ with main_tab1:
         # Combine: is_your_brand if brand matches OR title contains brand name
         market_snapshot['is_your_brand'] = market_snapshot['is_your_brand'] | title_match
         
-        portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
-        market_df = market_snapshot  # View only - no modification needed
-        
-        # CRITICAL FIX: Ensure revenue_proxy exists in market_snapshot early
-        # Discovery creates: revenue_proxy, monthly_units, price, avg_weekly_revenue
-        # But if missing, create it now to prevent KeyError downstream
+        # CRITICAL FIX: Ensure revenue_proxy exists in market_snapshot BEFORE creating portfolio_df
+        # This prevents KeyError when discovery data has poor quality (80% missing price/BSR)
+        # Discovery may create: revenue_proxy, monthly_units, price, avg_weekly_revenue
         if 'revenue_proxy' not in market_snapshot.columns or market_snapshot['revenue_proxy'].isna().all():
             if 'avg_weekly_revenue' in market_snapshot.columns:
                 market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
@@ -838,10 +835,13 @@ with main_tab1:
                 )
             else:
                 market_snapshot['revenue_proxy'] = 0.0
+        else:
+            # Column exists - ensure it's numeric (handles edge case where it's string or mixed type)
+            market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
         
-        # Ensure portfolio_df also has it (should be copied, but ensure it exists)
-        if 'revenue_proxy' not in portfolio_df.columns:
-            portfolio_df['revenue_proxy'] = market_snapshot.loc[market_snapshot['is_your_brand'], 'revenue_proxy'].values if len(portfolio_df) > 0 else 0.0
+        # NOW create portfolio_df - revenue_proxy is guaranteed to exist
+        portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
+        market_df = market_snapshot  # View only - no modification needed
         
         # === CALCULATE COMPETITIVE INTELLIGENCE FOR GROWTH LAYER ===
         # Calculate price gaps (your price vs. competitor average price)
@@ -882,6 +882,16 @@ with main_tab1:
         your_brand_revenue = portfolio_df['revenue_proxy'].sum() if 'revenue_proxy' in portfolio_df.columns else 0
         total_market_revenue_debug = market_snapshot['revenue_proxy'].sum() if 'revenue_proxy' in market_snapshot.columns else 0
         market_share_pct = (your_brand_revenue / total_market_revenue_debug * 100) if total_market_revenue_debug > 0 else 0
+        
+        # DATA QUALITY WARNING: Alert user if most products have $0 revenue (common in niche B2B categories)
+        products_with_revenue = (market_snapshot['revenue_proxy'] > 0).sum() if 'revenue_proxy' in market_snapshot.columns else 0
+        data_quality_pct = (products_with_revenue / len(market_snapshot) * 100) if len(market_snapshot) > 0 else 0
+        if data_quality_pct < 20 and len(market_snapshot) > 10:
+            st.warning(
+                f"⚠️ **Low Data Quality**: Only {products_with_revenue}/{len(market_snapshot)} products ({data_quality_pct:.0f}%) "
+                f"have tracked sales data. This often happens in niche or B2B categories where Keepa has limited tracking. "
+                f"Revenue estimates may be unreliable."
+            )
         
         # Count how many matched by brand vs title
         brand_match_count = market_snapshot['brand_lower'].str.contains(target_brand_lower, case=False, na=False, regex=False).sum() if target_brand_lower else 0

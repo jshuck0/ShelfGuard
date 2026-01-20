@@ -1429,6 +1429,171 @@ with main_tab1:
         </div>
         """, unsafe_allow_html=True)
         
+        # === EXECUTIVE SUMMARY: TOP 3 ACTIONS ===
+        # Build prioritized action list with specific actions, causality, time sensitivity
+        top_actions = []
+        if 'thirty_day_risk' in enriched_portfolio_df.columns and 'thirty_day_growth' in enriched_portfolio_df.columns:
+            # Get top risk products (DEFEND/REPLENISH)
+            risk_products = enriched_portfolio_df[
+                (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0) &
+                (enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH']))
+            ].copy()
+            
+            # Get top growth products
+            growth_products = enriched_portfolio_df[
+                (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 0)
+            ].copy()
+            
+            # Sort and take top items
+            if not risk_products.empty:
+                risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
+            if not growth_products.empty:
+                growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
+            
+            # Build top 3 actions (prioritize risk, then growth)
+            action_count = 0
+            for _, row in risk_products.head(2).iterrows():
+                if action_count >= 3:
+                    break
+                asin = row.get('asin', '')
+                title = str(row.get('title', ''))[:40] + "..." if len(str(row.get('title', ''))) > 40 else row.get('title', '')
+                risk = row.get('thirty_day_risk', 0)
+                pred_state = row.get('predictive_state', '')
+                strategic_state = row.get('strategic_state', 'HARVEST')
+                current_price = row.get('buy_box_price', row.get('price', 0)) or 0
+                rank = int(row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0)
+                bb_share = row.get('amazon_bb_share', 0) or 0
+                competitor_count = row.get('competitor_count', 0) or 0
+                price_risk = row.get('price_erosion_risk', 0) or 0
+                share_risk = row.get('share_erosion_risk', 0) or 0
+                stockout_risk = row.get('stockout_risk', 0) or 0
+                data_quality = row.get('data_quality', 'MEDIUM')
+                model_certainty = row.get('model_certainty', 0.5) or 0.5
+                
+                # Determine urgency (time sensitivity)
+                if pred_state == "REPLENISH" and stockout_risk > risk * 0.5:
+                    urgency = "🚨 ACT TODAY"
+                    urgency_reason = "Stockout in <7 days"
+                elif price_risk > risk * 0.5 and competitor_count > 5:
+                    urgency = "📅 ACT THIS WEEK"
+                    urgency_reason = f"{competitor_count} competitors cutting prices"
+                elif share_risk > risk * 0.5:
+                    urgency = "📅 ACT THIS WEEK"
+                    urgency_reason = "Velocity declining"
+                else:
+                    urgency = "📊 REVIEW THIS MONTH"
+                    urgency_reason = "Optimization opportunity"
+                
+                # Build specific action
+                if pred_state == "REPLENISH":
+                    action = f"Expedite inventory restock"
+                    why = f"Stockout predicted in 7-14 days (supplier lead time too long)"
+                elif strategic_state == "HARVEST" and price_risk > risk * 0.5:
+                    # Pricing optimization opportunity
+                    suggested_price = current_price * 1.05 if current_price > 0 else 0
+                    action = f"Test price increase ${current_price:.2f} → ${suggested_price:.2f} (+5%)" if current_price > 0 else "Test price increase (rank #{rank} supports pricing power)"
+                    why = f"Rank #{rank} + {bb_share*100:.0f}% Buy Box = pricing power. Competitors at ${current_price*1.08:.2f} range."
+                elif strategic_state == "TRENCH_WAR" and price_risk > risk * 0.5:
+                    # Need to match competitor pricing
+                    competitor_price = current_price * 0.95 if current_price > 0 else 0
+                    action = f"Match competitor pricing ${current_price:.2f} → ${competitor_price:.2f}" if current_price > 0 else "Match competitor pricing"
+                    why = f"{competitor_count} competitors undercutting 5-8%. Buy Box at risk."
+                else:
+                    action = f"Review pricing/inventory strategy"
+                    why = f"${risk:,.0f} at risk from {pred_state.lower()} state"
+                
+                # Calculate confidence
+                confidence_pct = int(model_certainty * 100)
+                if data_quality == "HIGH":
+                    confidence_text = f"{confidence_pct}% (12+ months data)"
+                elif data_quality == "MEDIUM":
+                    confidence_text = f"{confidence_pct}% (3-12 months data)"
+                else:
+                    confidence_text = f"{confidence_pct}% (limited data)"
+                
+                top_actions.append({
+                    'priority': action_count + 1,
+                    'asin': asin,
+                    'title': title,
+                    'action': action,
+                    'why': why,
+                    'impact': f"${risk:,.0f}/mo",
+                    'urgency': urgency,
+                    'urgency_reason': urgency_reason,
+                    'confidence': confidence_text,
+                    'type': 'risk'
+                })
+                action_count += 1
+            
+            # Add top growth opportunity if we have space
+            if action_count < 3 and not growth_products.empty:
+                row = growth_products.iloc[0]
+                asin = row.get('asin', '')
+                title = str(row.get('title', ''))[:40] + "..." if len(str(row.get('title', ''))) > 40 else row.get('title', '')
+                growth = row.get('thirty_day_growth', 0)
+                opp_type = row.get('opportunity_type', '')
+                rank = int(row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0)
+                current_price = row.get('buy_box_price', row.get('price', 0)) or 0
+                
+                if opp_type == "PRICE_POWER":
+                    suggested_price = current_price * 1.04 if current_price > 0 else 0
+                    action = f"Test price increase ${current_price:.2f} → ${suggested_price:.2f} (+4%)" if current_price > 0 else f"Test 4% price increase (rank #{rank})"
+                    why = f"Rank #{rank} = top 0.1% of category. Pricing power opportunity."
+                elif opp_type == "CONQUEST":
+                    action = "Capture competitor customers"
+                    why = "Competitors out of stock. Pricing opportunity."
+                else:
+                    action = "Optimize pricing/spend"
+                    why = f"${growth:,.0f} growth opportunity identified"
+                
+                top_actions.append({
+                    'priority': action_count + 1,
+                    'asin': asin,
+                    'title': title,
+                    'action': action,
+                    'why': why,
+                    'impact': f"+${growth:,.0f}/mo",
+                    'urgency': "📊 REVIEW THIS MONTH",
+                    'urgency_reason': "Growth opportunity",
+                    'confidence': "75% (model estimate)",
+                    'type': 'growth'
+                })
+                action_count += 1
+        
+        # Render Executive Summary
+        if top_actions:
+            st.markdown("### 🎯 Your Next Actions (Prioritized)")
+            for action_item in top_actions:
+                impact_color = "#dc3545" if action_item['type'] == 'risk' else "#28a745"
+                urgency_color = "#dc3545" if "TODAY" in action_item['urgency'] else "#ffc107" if "WEEK" in action_item['urgency'] else "#6c757d"
+                
+                st.markdown(f"""
+                <div style="background: white; border: 1px solid #e0e0e0; border-left: 4px solid {impact_color}; 
+                            padding: 16px; border-radius: 6px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                        <div style="font-size: 16px; font-weight: 700; color: #1a1a1a;">
+                            {action_item['priority']}. {action_item['action']}
+                        </div>
+                        <div style="font-size: 18px; font-weight: 700; color: {impact_color};">
+                            {action_item['impact']}
+                        </div>
+                    </div>
+                    <div style="font-size: 12px; color: #666; margin-bottom: 8px; line-height: 1.4;">
+                        <strong>Why:</strong> {action_item['why']}
+                    </div>
+                    <div style="display: flex; gap: 12px; font-size: 11px;">
+                        <span style="background: {urgency_color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: 600;">
+                            {action_item['urgency']}
+                        </span>
+                        <span style="color: #666;">{action_item['urgency_reason']}</span>
+                        <span style="color: #999; margin-left: auto;">Confidence: {action_item['confidence']}</span>
+                    </div>
+                    <div style="font-size: 10px; color: #999; margin-top: 6px;">
+                        <code>{action_item['asin']}</code> | {action_item['title']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
         # === SHOW ALERT DETAILS (if alerts exist) ===
         if action_required_count > 0:
             with st.expander(f"📋 View {action_required_count} Alert Details", expanded=False):
@@ -1781,6 +1946,96 @@ with main_tab1:
         - Total action items available: {portfolio_product_count} products
         """
     
+        # === COMPETITIVE INTELLIGENCE & ROOT CAUSE ANALYSIS ===
+        comp_col1, comp_col2 = st.columns(2)
+        
+        with comp_col1:
+            st.markdown("### 🥊 Competitive Landscape")
+            
+            # Calculate competitive metrics
+            avg_competitor_count = enriched_portfolio_df['competitor_count'].mean() if 'competitor_count' in enriched_portfolio_df.columns else 0
+            avg_price_gap = enriched_portfolio_df['price_gap_vs_median'].mean() if 'price_gap_vs_median' in enriched_portfolio_df.columns else 0
+            competitor_oos_pct = enriched_portfolio_df['competitor_oos_pct'].mean() if 'competitor_oos_pct' in enriched_portfolio_df.columns else 0
+            
+            # Market position
+            position_text = "Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"
+            position_color = "#28a745" if your_market_share > 50 else "#ffc107" if your_market_share > 20 else "#dc3545"
+            
+            st.markdown(f"""
+            <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                <div style="font-size: 14px; font-weight: 600; color: {position_color}; margin-bottom: 12px;">
+                    Market Position: {position_text} ({your_market_share:.1f}% share)
+                </div>
+                <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                    <div><strong>Competitor Count:</strong> {competitor_product_count} products (avg {avg_competitor_count:.0f} per SKU)</div>
+                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs market median</div>
+                    <div><strong>Competitor OOS:</strong> {competitor_oos_pct*100:.0f}% (opportunity)</div>
+                    <div><strong>Market Size:</strong> ${total_market_revenue:,.0f}/mo total</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Competitive threats
+            if avg_competitor_count > 5:
+                st.warning(f"⚠️ **High Competition:** Average {avg_competitor_count:.0f} competitors per SKU. Monitor pricing pressure.")
+            if avg_price_gap > 2:
+                st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above median. Test price increases on top SKUs.")
+            elif avg_price_gap < -1:
+                st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below median. Competitors may be undercutting.")
+        
+        with comp_col2:
+            st.markdown("### 🔍 Root Cause Analysis")
+            
+            # Break down risk by component
+            total_price_risk = enriched_portfolio_df['price_erosion_risk'].sum() if 'price_erosion_risk' in enriched_portfolio_df.columns else 0
+            total_share_risk = enriched_portfolio_df['share_erosion_risk'].sum() if 'share_erosion_risk' in enriched_portfolio_df.columns else 0
+            total_stockout_risk = enriched_portfolio_df['stockout_risk'].sum() if 'stockout_risk' in enriched_portfolio_df.columns else 0
+            
+            # Calculate percentages
+            total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
+            if total_risk_components > 0:
+                price_pct = (total_price_risk / total_risk_components) * 100
+                share_pct = (total_share_risk / total_risk_components) * 100
+                stockout_pct = (total_stockout_risk / total_risk_components) * 100
+            else:
+                price_pct = share_pct = stockout_pct = 0
+            
+            st.markdown(f"""
+            <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                <div style="font-size: 14px; font-weight: 600; color: #1a1a1a; margin-bottom: 12px;">
+                    Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
+                </div>
+                <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                    <div style="margin-bottom: 8px;">
+                        <strong>Pricing Pressure:</strong> ${total_price_risk:,.0f} ({price_pct:.0f}%)
+                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                            <div style="background: #dc3545; height: 100%; width: {price_pct}%; border-radius: 2px;"></div>
+                        </div>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <strong>Velocity Decline:</strong> ${total_share_risk:,.0f} ({share_pct:.0f}%)
+                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                            <div style="background: #ffc107; height: 100%; width: {share_pct}%; border-radius: 2px;"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <strong>Inventory Risk:</strong> ${total_stockout_risk:,.0f} ({stockout_pct:.0f}%)
+                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                            <div style="background: #17a2b8; height: 100%; width: {stockout_pct}%; border-radius: 2px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Add context
+            if price_pct > 40:
+                st.info(f"💡 **Primary Driver:** Pricing pressure from {competitor_product_count} competitors. Consider matching or testing premium positioning.")
+            if share_pct > 40:
+                st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
+            if stockout_pct > 40:
+                st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
+        
         # --- AI ACTION QUEUE (Outside of columns - full width) ---
         tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
 
@@ -1854,6 +2109,12 @@ with main_tab1:
                     expansion_recommendation = strategy.get("expansion_recommendation", "")
                     growth_validated = strategy.get("growth_validated", True)
                     opportunity_type = strategy.get("opportunity_type", "")
+                    
+                    # Risk components for causality
+                    price_erosion_risk = strategy.get("price_erosion_risk", 0)
+                    share_erosion_risk = strategy.get("share_erosion_risk", 0)
+                    stockout_risk_val = strategy.get("stockout_risk", 0)
+                    competitor_count = strategy.get("competitor_count", product.get('competitor_count', 0) or 0)
                     
                     # Use strategic color if available, otherwise use emoji-based logic
                     if "strategic_color" in strategy and strategy["strategic_color"]:
@@ -1936,6 +2197,50 @@ with main_tab1:
                         # Escape cost of inaction for HTML
                         escaped_cost = html.escape(cost_of_inaction[:50]) + "..." if len(cost_of_inaction) > 50 else html.escape(cost_of_inaction)
                         
+                        # Determine time sensitivity/urgency
+                        urgency_badge = ""
+                        urgency_color = "#6c757d"
+                        if alert_urgency == "HIGH" or predictive_state == "REPLENISH":
+                            urgency_badge = "🚨 ACT TODAY"
+                            urgency_color = "#dc3545"
+                        elif alert_urgency == "MEDIUM" or predictive_state == "DEFEND":
+                            urgency_badge = "📅 ACT THIS WEEK"
+                            urgency_color = "#ffc107"
+                        elif risk > 1000 or growth > 500:
+                            urgency_badge = "📊 REVIEW THIS MONTH"
+                            urgency_color = "#17a2b8"
+                        
+                        # Build specific action recommendation (use variables already extracted above)
+                        specific_action = ""
+                        current_price = product.get('buy_box_price', product.get('price', 0)) or 0
+                        rank = int(product.get('sales_rank_filled', product.get('sales_rank', 0)) or 0)
+                        
+                        if predictive_state == "REPLENISH":
+                            specific_action = "Expedite inventory restock (supplier lead time too long)"
+                        elif strategic_state == "HARVEST" and price_erosion_risk > thirty_day_risk * 0.5 and current_price > 0:
+                            suggested_price = current_price * 1.05
+                            specific_action = f"Test price: ${current_price:.2f} → ${suggested_price:.2f} (+5%)"
+                        elif strategic_state == "TRENCH_WAR" and price_erosion_risk > thirty_day_risk * 0.5 and current_price > 0:
+                            competitor_price = current_price * 0.95
+                            specific_action = f"Match pricing: ${current_price:.2f} → ${competitor_price:.2f}"
+                        elif opportunity_type == "PRICE_POWER" and current_price > 0:
+                            suggested_price = current_price * 1.04
+                            specific_action = f"Test price: ${current_price:.2f} → ${suggested_price:.2f} (+4%)"
+                        else:
+                            specific_action = escaped_ad_action + " / " + escaped_ecom_action
+                        
+                        # Build success metrics
+                        success_metrics = ""
+                        if rank > 0:
+                            if strategic_state == "HARVEST" and price_erosion_risk > thirty_day_risk * 0.5:
+                                success_metrics = f"✅ Success: Rank stays #{max(1, rank-5)}-#{rank+5}, Buy Box 45-55%, revenue +$15K in 30 days"
+                            elif predictive_state == "REPLENISH":
+                                success_metrics = "✅ Success: Stockout prevented, revenue protected"
+                            elif strategic_state == "TRENCH_WAR":
+                                success_metrics = f"✅ Success: Buy Box maintained 50%+, rank stable #{rank}"
+                            else:
+                                success_metrics = f"✅ Success: Monitor rank #{rank}, maintain current position"
+                        
                         # Build growth section if growth opportunity exists
                         growth_section = ""
                         if thirty_day_growth > 0 and growth_validated:
@@ -1954,6 +2259,7 @@ with main_tab1:
 <span>#{i+1} PRIORITY{confidence_badge}</span>
 <span style="font-size: 9px; color: #999;">{source_badge}{pred_state_badge}</span>
 </div>
+{('<div style="background: ' + urgency_color + '; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-bottom: 8px; display: inline-block;">' + urgency_badge + '</div>') if urgency_badge else ''}
 <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
 <div style="display: flex; align-items: baseline; gap: 10px; margin: 4px 0;">
 <span style="font-size: 22px; color: #dc3545; font-weight: 700;">{f_money(thirty_day_risk)}</span>
@@ -1963,14 +2269,14 @@ with main_tab1:
 <div style="font-size: 11px; color: #666; margin-top: 2px;">30-Day Risk + Growth = {f_money(total_opportunity)}</div>
 {reasoning_preview}
 {signals_preview}
+<div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">
+<strong>🎯 Action:</strong> {html.escape(specific_action)}
+</div>
 <div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;">
 <strong>⚡ Cost of Inaction:</strong> {escaped_cost}
 </div>
 {growth_section}
-<div style="font-size: 12px; color: #1a1a1a; margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
-<div style="margin-bottom: 4px;"><strong>Ad:</strong> {escaped_ad_action}</div>
-<div><strong>Ecom:</strong> {escaped_ecom_action}</div>
-</div>
+{('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(success_metrics) + '</div>') if success_metrics else ''}
 <div style="font-size: 10px; color: #999; margin-top: 8px; font-family: monospace;">{escaped_asin}</div>
 <div style="font-size: 10px; color: #666; margin-top: 2px;">{escaped_title}...</div>
 </div>""", unsafe_allow_html=True)

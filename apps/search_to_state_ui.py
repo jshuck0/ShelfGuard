@@ -256,7 +256,7 @@ def render_discovery_ui() -> None:
                         family_summary = family_summary.sort_values("Variations", ascending=False)
                         st.dataframe(family_summary.head(10), use_container_width=True)
             else:
-            st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
+                st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
 
             # Check for category ambiguity (keyword-only mode)
             if not category_filter and not seed_df.empty and "category_id" in seed_df.columns:

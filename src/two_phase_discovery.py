@@ -469,6 +469,9 @@ def phase1_seed_discovery(
             "page": 0,
             "current_SALES_gte": 1,
             "current_SALES_lte": 100000,
+            # CRITICAL: Sort by Sales Rank ascending (lower rank = better seller)
+            # Without this, Keepa returns by "relevance" which misses high-volume hero ASINs
+            "sort": [["current_SALES", "asc"]]
         }
 
         # Add category filter if provided (category-first mode)
@@ -861,6 +864,9 @@ def phase2_category_market_mapping(
             "page": 0,
             "current_SALES_gte": 1,
             "current_SALES_lte": 200000,
+            # CRITICAL: Sort by Sales Rank ascending (lower rank = better seller)
+            # Ensures we capture hero ASINs (bulk packs, 1P listings) before hitting caps
+            "sort": [["current_SALES", "asc"]]
         }
         
         # Add category filter using the effective category from progressive fallback
@@ -884,8 +890,8 @@ def phase2_category_market_mapping(
                     MAX_BRAND_ASINS = 100  # Hard limit - fetch at most 100 brand products
                     original_count = len(brand_asins)
                     if original_count > MAX_BRAND_ASINS:
-                        st.warning(f"⚠️ Found {original_count} **{target_brand}** products - limiting to top {MAX_BRAND_ASINS}")
-                        brand_asins = brand_asins[:MAX_BRAND_ASINS]  # Take first 100 (typically best sellers)
+                        st.warning(f"⚠️ Found {original_count} **{target_brand}** products - limiting to top {MAX_BRAND_ASINS} by Sales Rank")
+                        brand_asins = brand_asins[:MAX_BRAND_ASINS]  # Take first 100 (best sellers due to sort by current_SALES asc)
                     else:
                         st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
                     
@@ -1044,6 +1050,9 @@ def phase2_category_market_mapping(
             "page": page,
             "current_SALES_gte": 1,
             "current_SALES_lte": 100000,
+            # CRITICAL: Sort by Sales Rank ascending (lower rank = better seller)
+            # Ensures we get top-selling competitors first, capturing 80-90% of market revenue
+            "sort": [["current_SALES", "asc"]]
         }
         
         # Add category filter based on our progressive fallback decision

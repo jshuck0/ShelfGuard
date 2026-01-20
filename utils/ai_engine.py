@@ -1430,30 +1430,31 @@ class PredictiveAlpha:
     - thirty_day_risk = ACTUAL THREATS (will lose money if you don't act)
     - optimization_value = OPPORTUNITY (could gain money with optimization)
     """
-    # Core prediction
+    # Core prediction (required fields - no defaults)
     thirty_day_risk: float              # Predicted $ at risk over next 30 days (ACTUAL THREATS ONLY)
     daily_burn_rate: float              # Current daily loss rate
     velocity_multiplier: float          # Trend-based adjustment (>1 = accelerating, <1 = decelerating)
     
-    # SEMANTIC SPLIT: Separate risk from opportunity
-    optimization_value: float = 0.0     # $ optimization opportunity (NOT risk) for healthy products
-    
-    # Risk components
+    # Risk components (required fields - no defaults)
     price_erosion_risk: float           # Risk from competitor pricing pressure
     share_erosion_risk: float           # Risk from market share loss
     stockout_risk: float                # Risk from inventory stockout
     
-    # Predictive state
+    # Predictive state (required fields - no defaults)
     predictive_state: str               # DEFEND, EXPLOIT, REPLENISH, HOLD
     state_emoji: str                    # Visual indicator
     state_description: str              # Human-readable explanation
     
-    # Model confidence
+    # Model confidence (required fields - no defaults)
     model_certainty: float              # R-squared / confidence (0-1)
     data_quality: str                   # "HIGH" (12+ months), "MEDIUM" (3-12), "LOW" (<3)
     
-    # Actionable insight
+    # Actionable insight (required field - no default)
     cost_of_inaction: str               # Human-readable consequence
+    
+    # === OPTIONAL FIELDS WITH DEFAULTS (must come after required fields) ===
+    # SEMANTIC SPLIT: Separate risk from opportunity
+    optimization_value: float = 0.0     # $ optimization opportunity (NOT risk) for healthy products
     
     # Predictive Alerts (for AI Recommendation field)
     ai_recommendation: str = ""         # Full predictive recommendation for UI

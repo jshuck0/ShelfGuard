@@ -1668,9 +1668,6 @@ with main_tab1:
                 <div style="font-size: 14px; color: #333; line-height: 1.5;">
                     {ai_brief}
                 </div>
-                <div style="font-size: 12px; color: #666; margin-top: 10px;">
-                    {share_context} {competitive_context}
-                </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1947,15 +1944,28 @@ with main_tab1:
         """
     
         # === COMPETITIVE INTELLIGENCE & ROOT CAUSE ANALYSIS ===
-        comp_col1, comp_col2 = st.columns(2)
-        
-        with comp_col1:
-            st.markdown("### 🥊 Competitive Landscape")
+        # Only show if we have enriched portfolio data
+        if not enriched_portfolio_df.empty and len(enriched_portfolio_df) > 0:
+            comp_col1, comp_col2 = st.columns(2)
             
-            # Calculate competitive metrics
-            avg_competitor_count = enriched_portfolio_df['competitor_count'].mean() if 'competitor_count' in enriched_portfolio_df.columns else 0
-            avg_price_gap = enriched_portfolio_df['price_gap_vs_median'].mean() if 'price_gap_vs_median' in enriched_portfolio_df.columns else 0
-            competitor_oos_pct = enriched_portfolio_df['competitor_oos_pct'].mean() if 'competitor_oos_pct' in enriched_portfolio_df.columns else 0
+            with comp_col1:
+                st.markdown("### 🥊 Competitive Landscape")
+            
+            # Calculate competitive metrics (with safe fallbacks)
+            try:
+                avg_competitor_count = float(enriched_portfolio_df['competitor_count'].mean()) if 'competitor_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['competitor_count'].isna().all() else 0
+            except:
+                avg_competitor_count = 0
+            
+            try:
+                avg_price_gap = float(enriched_portfolio_df['price_gap_vs_median'].mean()) if 'price_gap_vs_median' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_gap_vs_median'].isna().all() else 0
+            except:
+                avg_price_gap = 0
+            
+            try:
+                competitor_oos_pct = float(enriched_portfolio_df['competitor_oos_pct'].mean()) if 'competitor_oos_pct' in enriched_portfolio_df.columns and not enriched_portfolio_df['competitor_oos_pct'].isna().all() else 0
+            except:
+                competitor_oos_pct = 0
             
             # Market position
             position_text = "Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"
@@ -1986,10 +1996,21 @@ with main_tab1:
         with comp_col2:
             st.markdown("### 🔍 Root Cause Analysis")
             
-            # Break down risk by component
-            total_price_risk = enriched_portfolio_df['price_erosion_risk'].sum() if 'price_erosion_risk' in enriched_portfolio_df.columns else 0
-            total_share_risk = enriched_portfolio_df['share_erosion_risk'].sum() if 'share_erosion_risk' in enriched_portfolio_df.columns else 0
-            total_stockout_risk = enriched_portfolio_df['stockout_risk'].sum() if 'stockout_risk' in enriched_portfolio_df.columns else 0
+            # Break down risk by component (with safe fallbacks)
+            try:
+                total_price_risk = float(enriched_portfolio_df['price_erosion_risk'].sum()) if 'price_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_erosion_risk'].isna().all() else 0
+            except:
+                total_price_risk = 0
+            
+            try:
+                total_share_risk = float(enriched_portfolio_df['share_erosion_risk'].sum()) if 'share_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['share_erosion_risk'].isna().all() else 0
+            except:
+                total_share_risk = 0
+            
+            try:
+                total_stockout_risk = float(enriched_portfolio_df['stockout_risk'].sum()) if 'stockout_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['stockout_risk'].isna().all() else 0
+            except:
+                total_stockout_risk = 0
             
             # Calculate percentages
             total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
@@ -2035,6 +2056,9 @@ with main_tab1:
                 st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
             if stockout_pct > 40:
                 st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
+        else:
+            # Fallback if no enriched data available
+            st.info("📊 Competitive intelligence and root cause analysis will appear here once portfolio data is loaded.")
         
         # --- AI ACTION QUEUE (Outside of columns - full width) ---
         tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
@@ -2206,7 +2230,7 @@ with main_tab1:
                         elif alert_urgency == "MEDIUM" or predictive_state == "DEFEND":
                             urgency_badge = "📅 ACT THIS WEEK"
                             urgency_color = "#ffc107"
-                        elif risk > 1000 or growth > 500:
+                        elif thirty_day_risk > 1000 or thirty_day_growth > 500:
                             urgency_badge = "📊 REVIEW THIS MONTH"
                             urgency_color = "#17a2b8"
                         

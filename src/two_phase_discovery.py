@@ -529,17 +529,13 @@ def phase1_seed_discovery(
             # Build category path (breadcrumb)
             category_path = " > ".join([cat.get("name", "") for cat in category_tree]) if category_tree else "Unknown"
 
-            # Get price
+            # Get price (using safe extraction for nested lists)
             csv = product.get("csv", [])
-            price = 0
-            if csv and len(csv) > 18 and csv[18]:
-                price_cents = csv[18][-1] if len(csv[18]) > 0 else 0
-                price = (price_cents / 100.0) if price_cents > 0 else 0
+            price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
+            price = price_cents / 100.0 if price_cents > 0 else 0
 
-            # Get BSR
-            bsr = 0
-            if csv and len(csv) > 3 and csv[3]:
-                bsr = csv[3][-1] if len(csv[3]) > 0 and csv[3][-1] != -1 else 0
+            # Get BSR (using safe extraction)
+            bsr = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
 
             # Extract brand from Keepa data (use brand field directly, fallback to title)
             brand = product.get("brand", "")

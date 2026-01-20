@@ -4,9 +4,11 @@ Unified Intelligence Pipeline Orchestrator
 Master pipeline that orchestrates all intelligence systems:
 1. Trigger Detection → Identify market changes
 2. Network Intelligence → Get category benchmarks
-3. AI Classification (v2) → Strategic state
-4. AI Insight Generation (v3) → Actionable recommendations
-5. Database Storage → Store unified intelligence
+3. Strategic Triangulator → Unified AI Classification + Insight Generation
+4. Database Storage → Store unified intelligence
+
+REFACTORED: Now uses the main StrategicTriangulator instead of separate v2/v3 engines.
+This eliminates ~1000 lines of duplicate code.
 
 This is the main entry point for generating portfolio intelligence.
 """
@@ -22,8 +24,9 @@ from src.models.unified_intelligence import UnifiedIntelligence
 from src.trigger_detection import detect_trigger_events
 from src.network_intelligence import NetworkIntelligence
 from src.data_accumulation import NetworkIntelligenceAccumulator
-from utils.ai_engine_v2 import TriggerAwareAIEngine, validate_classification_quality
-from utils.ai_engine_v3 import NetworkAwareInsightEngine, validate_insight_quality, calculate_net_expected_value
+
+# REFACTORED: Use unified StrategicTriangulator instead of separate v2/v3 engines
+from utils.ai_engine import StrategicTriangulator, StrategicState
 
 
 class IntelligencePipeline:
@@ -55,8 +58,14 @@ class IntelligencePipeline:
         # Initialize subsystems
         self.network_intelligence = NetworkIntelligence(supabase)
         self.accumulator = NetworkIntelligenceAccumulator(supabase) if enable_data_accumulation else None
-        self.ai_classifier = TriggerAwareAIEngine(openai_api_key)
-        self.ai_insight_engine = NetworkAwareInsightEngine(openai_api_key)
+        
+        # REFACTORED: Use unified StrategicTriangulator with triggers and network enabled
+        self.triangulator = StrategicTriangulator(
+            use_llm=True,
+            strategic_bias="Balanced Defense",
+            enable_triggers=True,
+            enable_network=True
+        )
 
     def generate_portfolio_intelligence(
         self,
@@ -118,12 +127,13 @@ class IntelligencePipeline:
         """
         Generate unified intelligence for a single ASIN.
 
-        This is the main orchestration logic:
-        1. Detect trigger events
-        2. Get network intelligence
-        3. Classify strategic state (AI v2)
-        4. Generate insight (AI v3)
-        5. Combine into UnifiedIntelligence
+        REFACTORED: Now uses unified StrategicTriangulator which combines:
+        - Trigger detection
+        - Network intelligence
+        - Strategic classification
+        - Insight generation
+        
+        All in a single call, eliminating separate v2/v3 engines.
 
         Args:
             asin: Product ASIN
@@ -137,7 +147,42 @@ class IntelligencePipeline:
         """
 
         try:
-            # STEP 1: Detect trigger events
+            # STEP 1: Get network intelligence (for benchmarks)
+            print(f"  🌐 Querying network intelligence...")
+            category_id = category_context.get('category_id')
+            network_intel = self._gather_network_intelligence(asin, category_id, current_metrics)
+
+            # STEP 2: Prepare row data for StrategicTriangulator
+            # The triangulator expects a dict with all metrics + historical/competitor data
+            row_data = {
+                'asin': asin,
+                **current_metrics,
+                # Inject historical and competitor data for trigger detection
+                'historical_df': historical_data,
+                'competitors_df': competitor_data,
+                # Inject network intelligence for competitive context
+                'category_id': category_id,
+                **network_intel.get('competitive_position', {}),
+            }
+            
+            # Add category benchmarks to row data
+            benchmarks = network_intel.get('category_benchmarks', {})
+            if benchmarks:
+                row_data['median_price'] = benchmarks.get('median_price')
+                row_data['median_bsr'] = benchmarks.get('median_bsr')
+                row_data['median_review_count'] = benchmarks.get('median_review_count')
+
+            # STEP 3: Run unified StrategicTriangulator
+            print(f"  🤖 Running unified AI analysis...")
+            revenue = current_metrics.get('estimated_monthly_revenue', 0)
+            brief = self.triangulator.analyze(row_data, revenue=revenue)
+
+            print(f"     State: {brief.strategic_state}")
+            print(f"     Confidence: {brief.confidence:.0f}%")
+            print(f"     30-Day Risk: ${brief.thirty_day_risk:.2f}")
+            print(f"     30-Day Growth: ${brief.thirty_day_growth:.2f}")
+
+            # STEP 4: Detect trigger events (for storage/display)
             print(f"  🔍 Detecting trigger events...")
             trigger_events = detect_trigger_events(
                 asin=asin,
@@ -147,58 +192,31 @@ class IntelligencePipeline:
             )
             print(f"     Found {len(trigger_events)} trigger events")
 
-            # STEP 2: Get network intelligence
-            print(f"  🌐 Querying network intelligence...")
-            category_id = category_context.get('category_id')
-            network_intel = self._gather_network_intelligence(asin, category_id, current_metrics)
-
-            # STEP 3: Calculate historical trends
-            historical_trends = self._calculate_historical_trends(historical_data)
-
-            # STEP 4: Classify strategic state (AI v2)
-            print(f"  🤖 Classifying strategic state...")
-            classification = self.ai_classifier.classify_strategic_state(
-                asin=asin,
-                current_metrics=current_metrics,
-                historical_trends=historical_trends,
-                trigger_events=trigger_events,
-                competitor_data=self._summarize_competitors(competitor_data)
-            )
-
-            # Validate classification quality
-            if not validate_classification_quality(classification):
-                print(f"  ⚠️  Classification failed quality gates - retrying...")
-                # Could retry here, but for now just proceed with warning
-                classification['confidence'] = max(30, classification['confidence'] - 20)
-
-            print(f"     Status: {classification['product_status'].value}")
-            print(f"     Confidence: {classification['confidence']:.0f}%")
-
-            # STEP 5: Generate actionable insight (AI v3)
-            print(f"  💡 Generating actionable insight...")
-            insight = self.ai_insight_engine.generate_insight(
-                asin=asin,
-                classification=classification,
-                trigger_events=trigger_events,
-                network_intelligence=network_intel,
-                current_metrics=current_metrics
-            )
-
-            # Validate insight quality
-            if not validate_insight_quality(insight):
-                print(f"  ⚠️  Insight failed quality gates - using fallback...")
-                insight['confidence'] = 30
-                insight['recommendation'] = "Insufficient data quality for specific recommendation. Monitor metrics and wait for clearer signals."
-
-            print(f"     Action: {insight['action_type']}")
-            print(f"     Upside: ${insight['projected_upside_monthly']:.2f}/mo")
-            print(f"     Downside: ${insight['downside_risk_monthly']:.2f}/mo")
+            # STEP 5: Map strategic state to ProductStatus
+            state_to_status = {
+                "FORTRESS": ProductStatus.STABLE,
+                "HARVEST": ProductStatus.OPPORTUNITY,
+                "TRENCH_WAR": ProductStatus.WATCH,
+                "DISTRESS": ProductStatus.CRITICAL,
+                "TERMINAL": ProductStatus.CRITICAL,
+            }
+            product_status = state_to_status.get(brief.strategic_state, ProductStatus.WATCH)
 
             # STEP 6: Calculate net expected value
-            net_ev = calculate_net_expected_value(insight)
+            net_ev = brief.thirty_day_growth - brief.thirty_day_risk
             print(f"     Net EV: ${net_ev:+.2f}/mo")
 
-            # STEP 7: Combine into UnifiedIntelligence
+            # STEP 7: Determine action type from strategic state
+            state_to_action = {
+                "FORTRESS": "defend",
+                "HARVEST": "optimize",
+                "TRENCH_WAR": "repair",
+                "DISTRESS": "repair",
+                "TERMINAL": "exit",
+            }
+            action_type = state_to_action.get(brief.strategic_state, "monitor")
+
+            # STEP 8: Combine into UnifiedIntelligence
             unified = UnifiedIntelligence(
                 # Identity
                 asin=asin,
@@ -208,23 +226,23 @@ class IntelligencePipeline:
                 trigger_events=trigger_events,
                 primary_trigger=trigger_events[0].event_type if trigger_events else None,
 
-                # Strategic classification
-                product_status=classification['product_status'],
-                strategic_state=classification['strategic_state'],
-                confidence=min(classification['confidence'], insight['confidence']),  # Use lower confidence
-                reasoning=classification['reasoning'],
+                # Strategic classification (from StrategicTriangulator)
+                product_status=product_status,
+                strategic_state=brief.strategic_state,
+                confidence=brief.confidence,
+                reasoning=brief.reasoning,
 
-                # Predictive intelligence
-                thirty_day_risk=classification['risk_score'],
-                thirty_day_growth=classification['growth_score'],
+                # Predictive intelligence (from StrategicTriangulator)
+                thirty_day_risk=brief.thirty_day_risk,
+                thirty_day_growth=brief.thirty_day_growth,
                 net_expected_value=net_ev,
 
-                # Actionable insight
-                recommendation=insight['recommendation'],
-                projected_upside_monthly=insight['projected_upside_monthly'],
-                downside_risk_monthly=insight['downside_risk_monthly'],
-                action_type=insight['action_type'],
-                time_horizon_days=insight['time_horizon_days'],
+                # Actionable insight (from StrategicTriangulator)
+                recommendation=brief.ai_recommendation or brief.recommended_plan,
+                projected_upside_monthly=brief.thirty_day_growth,
+                downside_risk_monthly=brief.thirty_day_risk,
+                action_type=action_type,
+                time_horizon_days=30 if brief.strategic_state in ["DISTRESS", "TERMINAL"] else 90,
 
                 # Network context (metadata only)
                 category_benchmarks_summary=self._summarize_category_benchmarks(

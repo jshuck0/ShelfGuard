@@ -5,7 +5,6 @@ AI-powered strategic intelligence for Amazon portfolio management.
 
 This module contains:
 - ai_engine: UNIFIED AI ENGINE (Strategic Classification + Predictive Intelligence)
-- keepa_extended_fields: Extended Keepa Product Finder field definitions
 - data_healer: Universal data filling and interpolation for all metrics
 
 The AI Engine combines:
@@ -39,18 +38,6 @@ from utils.ai_engine import (
     ExpansionAlpha,
     calculate_expansion_alpha,
     is_growth_eligible,
-)
-
-from utils.keepa_extended_fields import (
-    KeepaField,
-    AmazonDomain,
-    ALL_EXTENDED_FIELDS,
-    get_recommended_fields_for_triangulation,
-    build_product_finder_query,
-    transform_product_finder_row,
-    normalize_keepa_price,
-    keepa_minutes_to_days,
-    keepa_rating_to_stars,
 )
 
 from utils.data_healer import (
@@ -89,17 +76,6 @@ __all__ = [
     "ExpansionAlpha",               # Growth opportunity dataclass
     "calculate_expansion_alpha",    # Calculate growth potential
     "is_growth_eligible",           # Velocity validation gate
-    
-    # Keepa Extended Fields
-    "KeepaField",
-    "AmazonDomain",
-    "ALL_EXTENDED_FIELDS",
-    "get_recommended_fields_for_triangulation",
-    "build_product_finder_query",
-    "transform_product_finder_row",
-    "normalize_keepa_price",
-    "keepa_minutes_to_days",
-    "keepa_rating_to_stars",
     
     # Data Healer
     "clean_and_interpolate_metrics",

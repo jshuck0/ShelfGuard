@@ -98,15 +98,27 @@ SOCIAL_COMPETITIVE_METRICS = MetricGroup(
 )
 
 # Special handling for specific metrics
+# These defaults are used when no data is available after fill strategies
+# Chosen to be "neutral" values that don't trigger aggressive AI recommendations
 SPECIAL_DEFAULTS = {
+    # Ratings: 0 means "no rating data" - AI should handle gracefully
     "rating": 0.0,
     "current_RATING": 0.0,
+    # Reviews: 0 means "no review data" - AI should not assume product is new
     "review_count": 0,
     "current_COUNT_REVIEWS": 0,
-    "new_offer_count": 1,  # Assume at least 1 seller
+    # Sellers: Assume at least 1 seller (the product is being sold)
+    "new_offer_count": 1,
     "current_COUNT_NEW": 1,
     "used_offer_count": 0,
     "current_COUNT_USED": 0,
+    # Buy Box: Assume 50% if unknown (neutral, doesn't trigger "zero BB" alerts)
+    "amazon_bb_share": 0.5,
+    "buy_box_switches": 0,
+    # Velocity: Assume stable (no decay/growth) if unknown
+    "velocity_decay": 1.0,
+    "velocity_trend_30d": 0.0,
+    "velocity_trend_90d": 0.0,
 }
 
 # Group D: Buy Box & Ownership Metrics
@@ -160,7 +172,8 @@ ALL_METRIC_GROUPS = [
 def clean_and_interpolate_metrics(
     df: pd.DataFrame,
     group_by_column: str = "asin",
-    verbose: bool = False
+    verbose: bool = False,
+    force: bool = False
 ) -> pd.DataFrame:
     """
     Universal Data Healer: Fill and interpolate ALL numerical metrics.
@@ -170,14 +183,24 @@ def clean_and_interpolate_metrics(
     2. Apply group-specific fill strategies (interpolate/ffill/bfill)
     3. Apply default fallbacks for remaining gaps
     
+    OPTIMIZATION: Skips healing if DataFrame was already healed (uses attrs flag).
+    This prevents redundant healing when data passes through multiple pipeline stages.
+    
     Args:
         df: DataFrame with time-series data
         group_by_column: Column to group by (usually "asin")
         verbose: Print detailed fill statistics
+        force: Force healing even if already healed (default False)
         
     Returns:
-        DataFrame with all numerical gaps filled
+        DataFrame with all numerical gaps filled and 'healed' attr set to True
     """
+    # OPTIMIZATION: Skip if already healed (prevents 4x redundant healing)
+    if not force and hasattr(df, 'attrs') and df.attrs.get('healed', False):
+        if verbose:
+            print("[DATA HEALER] Skipping - DataFrame already healed")
+        return df
+    
     df = df.copy()
     fill_stats = {}
     
@@ -248,6 +271,9 @@ def clean_and_interpolate_metrics(
             for col, stats in fill_stats.items():
                 if stats["gaps_remaining"] > 0:
                     print(f"  - {col}: {stats['gaps_remaining']} gaps remain")
+    
+    # OPTIMIZATION: Mark DataFrame as healed to prevent redundant healing
+    df.attrs['healed'] = True
     
     return df
 

@@ -1128,7 +1128,8 @@ def phase2_category_market_mapping(
         weeks_per_asin = df_weekly.groupby("asin")["week_start"].count().reset_index()
         weeks_per_asin.columns = ["asin", "weeks_count"]
         
-        asin_summary = df_weekly.groupby("asin").agg({
+        # Build aggregation dict dynamically based on available columns
+        agg_dict = {
             "filled_price": "mean",                    # Average price over available weeks
             "sales_rank_filled": "mean",               # Average BSR over available weeks
             "weekly_sales_filled": "sum",              # Total sales over available weeks
@@ -1136,7 +1137,26 @@ def phase2_category_market_mapping(
             "title": "first",                          # Keep title
             "brand": "first",                          # Keep brand
             "main_image": "first",                     # Keep image
-        }).reset_index()
+        }
+        
+        # Add critical AI metrics if available (needed for intelligent recommendations)
+        if "amazon_bb_share" in df_weekly.columns:
+            agg_dict["amazon_bb_share"] = "mean"       # Average Buy Box share
+        if "review_count" in df_weekly.columns:
+            agg_dict["review_count"] = "last"          # Most recent review count
+        if "rating" in df_weekly.columns:
+            agg_dict["rating"] = "mean"                # Average rating
+        if "new_offer_count" in df_weekly.columns:
+            agg_dict["new_offer_count"] = "last"       # Most recent seller count
+        if "buy_box_switches" in df_weekly.columns:
+            agg_dict["buy_box_switches"] = "sum"       # Total Buy Box switches
+        if "parent_asin" in df_weekly.columns:
+            agg_dict["parent_asin"] = "first"          # Keep parent ASIN
+        
+        # Only include columns that exist in the DataFrame
+        agg_dict = {k: v for k, v in agg_dict.items() if k in df_weekly.columns}
+        
+        asin_summary = df_weekly.groupby("asin").agg(agg_dict).reset_index()
         
         # Merge week counts
         asin_summary = asin_summary.merge(weeks_per_asin, on="asin", how="left")

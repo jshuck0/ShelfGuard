@@ -11,6 +11,9 @@ Key Features:
 - Fallback to session state for new projects
 - Trend comparison queries
 - Project-scoped data access
+- SINGLETON PATTERN: Single connection reused across all calls
+
+REFACTORED: Uses singleton pattern to avoid creating 20+ connections per request.
 """
 
 import pandas as pd
@@ -21,14 +24,38 @@ from datetime import date, timedelta
 from supabase import Client
 
 
+# ============================================
+# SUPABASE SINGLETON - Reuses single connection
+# ============================================
+
+_supabase_client: Optional[Client] = None
+
+
+def get_supabase_client() -> Client:
+    """
+    Get or create Supabase client using singleton pattern.
+    
+    PERFORMANCE: This avoids creating 20+ connections per request.
+    The client is cached in a module-level variable and reused.
+    
+    Returns: Authenticated Supabase client (singleton)
+    """
+    global _supabase_client
+    
+    if _supabase_client is None:
+        from supabase import create_client
+        _supabase_client = create_client(st.secrets["url"], st.secrets["key"])
+    
+    return _supabase_client
+
+
 def create_supabase_client() -> Client:
     """
-    Initialize Supabase client using Streamlit secrets.
+    DEPRECATED: Use get_supabase_client() instead.
     
-    Returns: Authenticated Supabase client
+    Kept for backward compatibility - now just calls get_supabase_client().
     """
-    from supabase import create_client
-    return create_client(st.secrets["url"], st.secrets["key"])
+    return get_supabase_client()
 
 
 @st.cache_data(ttl=300)  # 5 minute cache
@@ -301,6 +328,14 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     # The dashboard expects 'revenue_proxy' for market share calculations
     df["revenue_proxy"] = df["weekly_sales_filled"].copy()
 
+    # === DATA HEALER: Fill any remaining gaps ===
+    # Ensures all metrics have values before reaching AI engine
+    try:
+        from utils.data_healer import clean_and_interpolate_metrics
+        df = clean_and_interpolate_metrics(df, group_by_column="asin", verbose=False)
+    except ImportError:
+        pass  # Data healer not available
+
     return df
 
 
@@ -423,14 +458,20 @@ def cache_market_snapshot(
         return 0
 
     # CRITICAL FIX: df_weekly has multiple rows per ASIN (one per week).
-    # We need to aggregate to get the MOST RECENT week's data per ASIN.
-    # Otherwise, we might pick up old rows with missing values.
+    # We need to aggregate to get the MOST RECENT NON-NULL values per ASIN.
+    # The most recent week might have NaN for some metrics, so we forward-fill then take last.
     if df_weekly is not None and not df_weekly.empty and "week_start" in df_weekly.columns:
-        # Sort by week descending and take first (most recent) per ASIN
-        source_df = df_weekly.sort_values("week_start", ascending=False).drop_duplicates(
-            subset=["asin"], keep="first"
-        ).copy()
-        st.caption(f"📊 Using most recent week's data: {len(source_df)} unique ASINs from {len(df_weekly)} total rows")
+        # Sort by week ascending
+        df_sorted = df_weekly.sort_values(["asin", "week_start"], ascending=True)
+        
+        # Forward-fill NaN values within each ASIN group, then take the last row
+        # This ensures we get the most recent non-null value for each metric
+        df_filled = df_sorted.groupby("asin", group_keys=False).apply(
+            lambda g: g.ffill()
+        )
+        
+        # Take the last (most recent) row per ASIN after forward-fill
+        source_df = df_filled.groupby("asin", as_index=False).last()
 
     try:
         supabase = create_supabase_client()
@@ -487,25 +528,47 @@ def cache_market_snapshot(
             if revenue_val is None and price_val and units_val:
                 revenue_val = price_val * units_val / 4  # Weekly from monthly
 
+            # Extract additional metrics with fallback chains (use row_dict)
+            bb_share_val = _get_first_valid(
+                row_dict,
+                ["amazon_bb_share", "buybox_share", "bb_share"],
+                _safe_float
+            )
+            review_count_val = _get_first_valid(
+                row_dict,
+                ["review_count", "reviews", "current_COUNT_REVIEWS"],
+                _safe_int
+            )
+            rating_val = _get_first_valid(
+                row_dict,
+                ["rating", "current_RATING"],
+                _safe_float
+            )
+            offer_count_val = _get_first_valid(
+                row_dict,
+                ["new_offer_count", "offer_count", "current_COUNT_NEW"],
+                _safe_int
+            )
+
             record = {
                 "asin": str(asin).strip().upper(),
                 "snapshot_date": snapshot_date,
                 "buy_box_price": price_val,
-                "amazon_price": _safe_float(row.get("amazon_price")),
-                "new_fba_price": _safe_float(row.get("new_fba_price")),
+                "amazon_price": _safe_float(row_dict.get("amazon_price")),
+                "new_fba_price": _safe_float(row_dict.get("new_fba_price")),
                 "sales_rank": rank_val,
-                "amazon_bb_share": _safe_float(row.get("amazon_bb_share")),
-                "buy_box_switches": _safe_int(row.get("buy_box_switches")),
-                "new_offer_count": _safe_int(row.get("new_offer_count")),
-                "review_count": _safe_int(row.get("review_count")),
-                "rating": _safe_float(row.get("rating")),
+                "amazon_bb_share": bb_share_val,
+                "buy_box_switches": _safe_int(row_dict.get("buy_box_switches")),
+                "new_offer_count": offer_count_val,
+                "review_count": review_count_val,
+                "rating": rating_val,
                 "estimated_units": units_val,
                 "estimated_weekly_revenue": revenue_val,
                 "filled_price": price_val,  # Use same as buy_box_price
-                "title": str(row.get("title", ""))[:500] if row.get("title") else None,
-                "brand": str(row.get("brand", "")) if row.get("brand") else None,
-                "parent_asin": str(row.get("parent_asin", "")) if row.get("parent_asin") else None,
-                "main_image": str(row.get("main_image", "")) if row.get("main_image") else None,
+                "title": str(row_dict.get("title", ""))[:500] if row_dict.get("title") else None,
+                "brand": str(row_dict.get("brand", "")) if row_dict.get("brand") else None,
+                "parent_asin": str(row_dict.get("parent_asin", "")) if row_dict.get("parent_asin") else None,
+                "main_image": str(row_dict.get("main_image", "")) if row_dict.get("main_image") else None,
                 "source": "discovery",
                 "fetched_at": datetime.now().isoformat()
             }

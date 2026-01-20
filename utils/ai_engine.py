@@ -220,67 +220,131 @@ class StrategicBrief:
 STRATEGIST_SYSTEM_PROMPT = """You are a Senior CPG Strategist with 20 years of Amazon experience.
 Analyze the following product metrics and classify it into ONE of 5 Strategic States.
 
-## Strategic States
+## Strategic States (in order of health)
 
-1. **FORTRESS** - Dominant market position
-   - Strong Buy Box ownership (>80%)
-   - Healthy margins (>15%)
+1. **FORTRESS** - Dominant market position, pricing power
+   - Buy Box ownership >80%
+   - Healthy margins (>15%) or clear pricing power
+   - Strong reviews (500+ with 4.3+ rating)
    - Stable or improving rank
    - Low competitive pressure
-   - Example: Market leader with pricing power
-
+   - Action: Optimize, test price increases, harvest profits
+   
 2. **HARVEST** - Cash cow, maximize extraction
-   - Stable rank (not growing, not declining significantly)
-   - Good margins
-   - Low ad spend efficiency (can reduce spend)
+   - Stable rank (not growing, not declining >10%)
+   - Good margins (>10%)
+   - Mature review base (100+ reviews)
    - Premium price holding despite competition
-   - Example: Mature product with implicit pricing power
+   - Action: Reduce spend, raise prices, harvest cash
 
 3. **TRENCH_WAR** - Competitive battle, defend share
-   - Increasing competitor count
-   - Price pressure (competitors undercutting)
-   - Rank volatility
-   - Buy Box rotation/loss
-   - Example: Category under attack from new entrants
+   - Increasing competitor count (+3 or more in 30d)
+   - Price pressure (competitors undercutting 5%+)
+   - Rank volatility or declining
+   - Buy Box rotation/loss (<60% ownership)
+   - Action: Match pricing, defend keywords, protect share
 
 4. **DISTRESS** - Needs intervention, value at risk
-   - Margin compression (<10%)
-   - Velocity decay (rank worsening)
+   - Margin compression (<10%) or erosion trend
+   - Velocity decay (rank worsening 20%+ in 90d)
    - Review velocity stagnant or negative
    - Stock issues or pricing problems
-   - Example: Product losing relevance, needs fixing
+   - Low Buy Box ownership (<40%)
+   - Action: Fix root cause, investigate, restructure
 
 5. **TERMINAL** - Exit required, cut losses
    - Severely negative or zero margins
-   - Sustained rank decline (>30% over 90 days)
+   - Sustained rank decline (>50% worse over 90 days)
    - Zero path to profitability
-   - Example: End of lifecycle, liquidate inventory
+   - No Buy Box ownership (<10%) with no recovery path
+   - <50 reviews with 3.5 or lower rating
+   - Action: Liquidate, exit, stop all spend
 
-## Analysis Guidelines
+## Decision Framework
 
-- Focus on the 90-DAY TREND, not daily noise
-- Look for NUANCED COMBINATIONS:
-  * High Price + Low Competition + Stable Rank = FORTRESS (luxury positioning)
-  * Declining Rank + Healthy Margin = DISTRESS (fixable problem)
-  * Price War + High Volume = TRENCH_WAR (defend share)
-  * Negative Margin + Any Velocity = TERMINAL (exit immediately)
-- Consider CONTEXT: A rank drop from #100 to #150 is different from #10,000 to #15,000
-- Trust your CPG instincts about brand dynamics and category health
+### Revenue Context (CRITICAL)
+- Weekly Revenue >$5K = High-value asset, be cautious about TERMINAL
+- Weekly Revenue $1K-$5K = Mid-tier, focus on margin optimization
+- Weekly Revenue <$1K = Low volume, assess if worth the effort
+
+### Buy Box Ownership Thresholds
+- >80% = Strong (FORTRESS signal)
+- 50-80% = Healthy (HARVEST possible)
+- 30-50% = Contested (TRENCH_WAR signal)
+- <30% = Critical (DISTRESS or TERMINAL)
+- Missing/Unknown = Assume 50% (neutral)
+
+### Review Count Context
+- 1000+ reviews = Established, hard to displace
+- 500-1000 = Strong social proof
+- 100-500 = Competitive
+- <100 = Vulnerable, needs growth
+- 0 = Critical problem (consider DISTRESS)
+
+### Rank Change Interpretation
+- IMPROVING rank (negative % change) = Growth signal
+- STABLE rank (±10%) = Steady state
+- DECLINING rank (+10-30%) = Warning
+- COLLAPSING rank (+30%+) = DISTRESS or TERMINAL
+
+### Data Quality Rules
+- If key metrics are missing, do NOT assume the worst
+- Missing Buy Box ≠ 0% ownership (assume 50%)
+- Missing reviews ≠ 0 reviews (check if it's a data gap)
+- Missing price data = Confidence should be lower
+
+## Nuanced Pattern Recognition
+
+### FORTRESS Patterns
+- High reviews (500+) + High price + Stable rank = Pricing power
+- Strong Buy Box (80%+) + Few competitors = Market control
+- Premium brand recognition + Loyal customer base
+
+### HARVEST Patterns  
+- Stable mature product + Good margins = Cash cow
+- Declining ad efficiency but holding rank = Reduce spend
+- Category leader maintaining position organically
+
+### TRENCH_WAR Patterns
+- New sellers entering (competitor_count increasing)
+- Price compression trend (current price < 90d avg)
+- Buy Box rotating among sellers
+
+### DISTRESS Patterns
+- Rank decay + Margin erosion = Spiral risk
+- Lost Buy Box + Inventory issues = Revenue at risk
+- Review velocity stagnant while competitors grow
+
+### TERMINAL Patterns
+- Negative margins sustained >90 days
+- Rank collapse with no recovery
+- Category obsolescence (technology shift)
+
+## Specific Action Guidelines
+
+ALWAYS make recommendations SPECIFIC and QUANTIFIED:
+- BAD: "Optimize pricing" 
+- GOOD: "Raise price from $24.99 to $27.99 (+12%)"
+- BAD: "Reduce ad spend"
+- GOOD: "Cut PPC spend 30%, current ACOS likely unsustainable"
+- BAD: "Monitor situation"
+- GOOD: "Hold position, review in 2 weeks if rank drops below #500"
 
 ## Output Format
 
 Return ONLY valid JSON with this exact structure:
 {
     "strategic_state": "STATE_NAME",
-    "confidence": 0.95,
-    "reasoning": "1-2 clear sentences explaining WHY. Be specific and direct.",
-    "recommended_action": "One specific action (e.g., 'Reduce ad spend 20%', 'Increase price to $X', 'Improve listing images')"
+    "confidence": 0.85,
+    "reasoning": "1-2 clear sentences explaining WHY. Reference specific metrics.",
+    "recommended_action": "One specific, quantified action with clear next step"
 }
 
 Important:
-- Keep reasoning under 80 characters
+- Keep reasoning under 100 characters but be SPECIFIC
+- Reference actual numbers from the data (rank, price, reviews, Buy Box %)
 - Make recommended_action specific and measurable
-- Use business language, not military jargon
+- If data is incomplete, lower confidence and note data gaps
 - Return ONLY the JSON object, no other text."""
 
 
@@ -294,30 +358,55 @@ def _get_strategic_bias_instructions(strategic_bias: str) -> str:
         "Profit Maximization": """
 ## 🎯 STRATEGIC BIAS: PROFIT MAXIMIZATION
 
-The user has set their priority to **Profit**. Adjust your analysis accordingly:
+The user prioritizes **Profit over Growth**. Adjust your analysis:
 
-- **Heavily penalize low margins** (<10%): Classify as DISTRESS even if velocity is good
-- **Reward price increases**: If price is up and margin improved, prefer FORTRESS or HARVEST
-- **Be aggressive on cost**: Recommend "Cut ad spend" or "Raise price" before "Scale ads"
-- **Question growth spending**: If ad spend is high but margin is thin, recommend pullback
-- **Example**: Product with 8% margin and growing rank → DISTRESS ("Unsustainable growth")
+SCORING ADJUSTMENTS:
+- Margin <10% → Automatic DISTRESS signal (even with good velocity)
+- Margin >20% → Strong FORTRESS/HARVEST signal
+- Price increase + stable rank → FORTRESS
+- Volume growth + thin margins → DISTRESS ("Unprofitable growth")
+
+RECOMMENDED ACTIONS:
+- Always prefer "Raise price" or "Cut ad spend" over "Scale"
+- Question any growth investment if margin <15%
+- Emphasize cash extraction, reduce reinvestment
+- Recommend cutting underperforming products faster
+
+EXAMPLE CLASSIFICATIONS:
+- 8% margin + rank improving → DISTRESS ("Growth is unprofitable")
+- 25% margin + rank flat → HARVEST ("Extract cash, raise prices")
+- Negative margin + any velocity → TERMINAL ("Exit immediately")
 """,
         "Balanced Defense": """
 ## 🎯 STRATEGIC BIAS: BALANCED DEFENSE
 
-The user has set their priority to **Balanced**. Use standard strategic logic:
+The user prioritizes **Balanced approach**. Use standard logic:
 
-- Evaluate all factors equally (margin, velocity, competition, reviews)
-- Apply the standard state definitions without heavy bias
-- Recommend balanced actions that consider both profitability and market position
+SCORING ADJUSTMENTS:
+- Weight margin, velocity, competition, and reviews equally
+- Consider both short-term profitability and long-term market position
+- Don't over-penalize growth investments if they're building share
+
+RECOMMENDED ACTIONS:
+- Balance cash extraction with market defense
+- Maintain competitive position while optimizing margins
+- Invest in products with clear ROI paths
+
+EXAMPLE CLASSIFICATIONS:
+- 12% margin + rank stable → HARVEST
+- 8% margin + rank improving → TRENCH_WAR
+- 20% margin + rank declining → DISTRESS (investigate cause)
 """,
         "Aggressive Growth": """
 ## 🎯 STRATEGIC BIAS: AGGRESSIVE GROWTH
 
-The user has set their priority to **Growth**. Adjust your analysis accordingly:
+The user prioritizes **Growth over Profit**. Adjust your analysis:
 
-- **Forgive margin compression** if rank is improving: 5% margin + improving rank = TRENCH_WAR, not TERMINAL
-- **Reward velocity gains**: Prioritize products with improving sales rank
+SCORING ADJUSTMENTS:
+- Forgive margin compression if rank is improving significantly
+- 5% margin + 30% rank improvement → TRENCH_WAR (acceptable growth investment)
+- Prioritize velocity gains over margin preservation
+- Reward review velocity and market share gains
 - **Encourage investment**: Recommend "Increase ad spend" or "Scale campaigns" for products with momentum
 - **Be patient with new launches**: Don't classify as TERMINAL unless rank is catastrophic (>100k) AND declining
 - **Example**: Product with 3% margin but rank improving 20% → TRENCH_WAR ("Acceptable sacrifice for share gain")
@@ -509,19 +598,39 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Clean and format row data for LLM consumption.
     
-    Removes noise, formats numbers nicely, focuses on key metrics.
+    Comprehensive metric extraction for intelligent AI analysis.
+    Includes all available Keepa signals, inventory, competition, and trends.
     """
     clean = {}
     
-    # Identity
+    # =============================================
+    # IDENTITY & CONTEXT
+    # =============================================
     if "asin" in row_data:
         clean["asin"] = row_data["asin"]
     if "title" in row_data:
         title = str(row_data["title"])[:80]
         clean["title"] = title + "..." if len(str(row_data.get("title", ""))) > 80 else title
     
-    # Pricing metrics
-    price_fields = ["filled_price", "buy_box_price", "amazon_price", "current_AMAZON"]
+    # Brand (critical for premium positioning analysis)
+    if "brand" in row_data and row_data["brand"]:
+        clean["brand"] = str(row_data["brand"])[:50]
+    
+    # Category context
+    if "category_tree" in row_data:
+        clean["category"] = str(row_data["category_tree"])[:100]
+    elif "rootCategory" in row_data:
+        clean["category"] = str(row_data["rootCategory"])[:100]
+    
+    # Parent ASIN (for variation analysis)
+    if "parent_asin" in row_data and row_data["parent_asin"]:
+        clean["parent_asin"] = row_data["parent_asin"]
+        clean["is_variation"] = True
+    
+    # =============================================
+    # PRICING METRICS (Core signal)
+    # =============================================
+    price_fields = ["filled_price", "buy_box_price", "amazon_price", "current_AMAZON", "price"]
     for field in price_fields:
         if field in row_data and row_data[field] is not None:
             val = _safe_float(row_data[field])
@@ -530,93 +639,251 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
                 if val > 500:
                     val = val / 100
                 clean["current_price"] = f"${val:.2f}"
+                clean["current_price_raw"] = val  # For calculations
                 break
     
-    # Price trend
+    # Price 90d average (for trend analysis)
     if "avg90_AMAZON" in row_data or "price_90d_avg" in row_data:
         avg = _safe_float(row_data.get("avg90_AMAZON") or row_data.get("price_90d_avg"))
         if avg and avg > 0:
             if avg > 500:
                 avg = avg / 100
             clean["price_90d_avg"] = f"${avg:.2f}"
+            # Calculate price trend if we have current price
+            if "current_price_raw" in clean:
+                price_change_pct = ((clean["current_price_raw"] - avg) / avg) * 100
+                if abs(price_change_pct) > 2:  # Only report significant changes
+                    clean["price_trend_90d"] = f"{price_change_pct:+.1f}%"
     
-    # Margin
+    # Min/Max price (volatility indicator)
+    if "min90_AMAZON" in row_data:
+        min_p = _safe_float(row_data["min90_AMAZON"])
+        if min_p and min_p > 0:
+            if min_p > 500:
+                min_p = min_p / 100
+            clean["price_90d_min"] = f"${min_p:.2f}"
+    
+    if "max90_AMAZON" in row_data:
+        max_p = _safe_float(row_data["max90_AMAZON"])
+        if max_p and max_p > 0:
+            if max_p > 500:
+                max_p = max_p / 100
+            clean["price_90d_max"] = f"${max_p:.2f}"
+    
+    # =============================================
+    # MARGIN & PROFITABILITY
+    # =============================================
     if "net_margin" in row_data:
         margin = _safe_float(row_data["net_margin"])
         if margin is not None:
             clean["net_margin"] = f"{margin*100:.1f}%"
+            # Add margin health indicator
+            if margin > 0.20:
+                clean["margin_health"] = "STRONG"
+            elif margin > 0.10:
+                clean["margin_health"] = "HEALTHY"
+            elif margin > 0:
+                clean["margin_health"] = "THIN"
+            else:
+                clean["margin_health"] = "NEGATIVE"
     
-    # Rank metrics
-    rank_fields = ["sales_rank_filled", "sales_rank", "current_SALES"]
+    # =============================================
+    # RANK (Sales Velocity Proxy)
+    # =============================================
+    rank_fields = ["sales_rank_filled", "sales_rank", "current_SALES", "bsr"]
     for field in rank_fields:
         if field in row_data and row_data[field] is not None:
             rank = _safe_float(row_data[field])
             if rank and rank > 0:
                 clean["current_sales_rank"] = int(rank)
+                # Add rank tier
+                if rank < 1000:
+                    clean["rank_tier"] = "TOP_1K (High Volume)"
+                elif rank < 10000:
+                    clean["rank_tier"] = "TOP_10K (Strong)"
+                elif rank < 50000:
+                    clean["rank_tier"] = "TOP_50K (Moderate)"
+                elif rank < 100000:
+                    clean["rank_tier"] = "TOP_100K (Low-Moderate)"
+                else:
+                    clean["rank_tier"] = "LONG_TAIL (Low Volume)"
                 break
     
-    # Rank trends
+    # Rank trends (critical for velocity analysis)
     if "deltaPercent30_SALES" in row_data or "rank_delta_30d_pct" in row_data:
         delta = _safe_float(row_data.get("deltaPercent30_SALES") or row_data.get("rank_delta_30d_pct"))
         if delta is not None:
             clean["rank_change_30d"] = f"{delta:+.1f}%"
+            # Interpret trend
+            if delta < -15:
+                clean["rank_trend_30d"] = "ACCELERATING"
+            elif delta < -5:
+                clean["rank_trend_30d"] = "IMPROVING"
+            elif delta < 5:
+                clean["rank_trend_30d"] = "STABLE"
+            elif delta < 15:
+                clean["rank_trend_30d"] = "SLOWING"
+            else:
+                clean["rank_trend_30d"] = "DECLINING"
     
     if "deltaPercent90_SALES" in row_data or "rank_delta_90d_pct" in row_data:
         delta = _safe_float(row_data.get("deltaPercent90_SALES") or row_data.get("rank_delta_90d_pct"))
         if delta is not None:
             clean["rank_change_90d"] = f"{delta:+.1f}%"
+            # Interpret long-term trend
+            if delta < -20:
+                clean["rank_trend_90d"] = "STRONG_GROWTH"
+            elif delta < 0:
+                clean["rank_trend_90d"] = "GROWING"
+            elif delta < 20:
+                clean["rank_trend_90d"] = "STABLE"
+            elif delta < 50:
+                clean["rank_trend_90d"] = "DECLINING"
+            else:
+                clean["rank_trend_90d"] = "COLLAPSING"
     
+    # Velocity decay multiplier
     if "velocity_decay" in row_data:
         decay = _safe_float(row_data["velocity_decay"], default=1.0)
         if decay != 1.0:
             if decay < 0.9:
-                clean["velocity_trend"] = f"Accelerating ({decay:.2f}x)"
+                clean["velocity_trend"] = f"ACCELERATING ({decay:.2f}x)"
             elif decay > 1.1:
-                clean["velocity_trend"] = f"Decaying ({decay:.2f}x)"
+                clean["velocity_trend"] = f"DECAYING ({decay:.2f}x)"
             else:
-                clean["velocity_trend"] = "Stable"
+                clean["velocity_trend"] = "STABLE"
     
-    # Competition
-    offer_fields = ["new_offer_count", "current_COUNT_NEW"]
-    for field in offer_fields:
+    # =============================================
+    # BUY BOX (Critical ownership signal)
+    # =============================================
+    bb_fields = ["amazon_bb_share", "buybox_share", "buyBoxPercentage"]
+    for field in bb_fields:
         if field in row_data and row_data[field] is not None:
-            count = _safe_float(row_data[field])
-            if count is not None:
-                clean["competitor_count"] = int(count)
+            bb = _safe_float(row_data[field])
+            if bb is not None:
+                # Normalize to 0-1 if percentage
+                if bb > 1:
+                    bb = bb / 100
+                clean["buybox_ownership"] = f"{bb*100:.0f}%"
+                # Add Buy Box health indicator
+                if bb >= 0.80:
+                    clean["buybox_health"] = "DOMINANT"
+                elif bb >= 0.50:
+                    clean["buybox_health"] = "HEALTHY"
+                elif bb >= 0.30:
+                    clean["buybox_health"] = "CONTESTED"
+                else:
+                    clean["buybox_health"] = "CRITICAL"
                 break
     
-    if "delta30_COUNT_NEW" in row_data:
-        delta = _safe_float(row_data["delta30_COUNT_NEW"])
-        if delta is not None and delta != 0:
-            clean["competitor_change_30d"] = f"{delta:+.0f} sellers"
-    
-    # Buy Box
-    if "amazon_bb_share" in row_data:
-        bb = _safe_float(row_data["amazon_bb_share"])
-        if bb is not None:
-            clean["buybox_ownership"] = f"{bb*100:.0f}%"
-    
+    # Buy Box 30d stats
     if "buyBoxStatsAmazon30" in row_data:
         bb = _safe_float(row_data["buyBoxStatsAmazon30"])
         if bb is not None:
             clean["amazon_buybox_30d"] = f"{bb:.0f}%"
     
-    # Reviews
-    review_fields = ["review_count", "current_COUNT_REVIEWS"]
+    # Buy Box switches (volatility indicator)
+    if "buy_box_switches" in row_data:
+        switches = _safe_float(row_data["buy_box_switches"])
+        if switches is not None and switches > 0:
+            clean["buybox_switches"] = int(switches)
+            if switches > 10:
+                clean["buybox_volatility"] = "HIGH"
+            elif switches > 3:
+                clean["buybox_volatility"] = "MODERATE"
+            else:
+                clean["buybox_volatility"] = "LOW"
+    
+    # =============================================
+    # COMPETITION
+    # =============================================
+    offer_fields = ["new_offer_count", "current_COUNT_NEW", "offerCountNew"]
+    for field in offer_fields:
+        if field in row_data and row_data[field] is not None:
+            count = _safe_float(row_data[field])
+            if count is not None:
+                clean["competitor_count"] = int(count)
+                # Add competition level
+                if count <= 3:
+                    clean["competition_level"] = "LOW"
+                elif count <= 10:
+                    clean["competition_level"] = "MODERATE"
+                elif count <= 25:
+                    clean["competition_level"] = "HIGH"
+                else:
+                    clean["competition_level"] = "SATURATED"
+                break
+    
+    # Competitor change (market dynamics)
+    if "delta30_COUNT_NEW" in row_data:
+        delta = _safe_float(row_data["delta30_COUNT_NEW"])
+        if delta is not None and delta != 0:
+            clean["competitor_change_30d"] = f"{delta:+.0f} sellers"
+            if delta > 5:
+                clean["competition_trend"] = "INCREASING_RAPIDLY"
+            elif delta > 0:
+                clean["competition_trend"] = "INCREASING"
+            elif delta < -5:
+                clean["competition_trend"] = "DECREASING_RAPIDLY"
+            else:
+                clean["competition_trend"] = "DECREASING"
+    
+    # Price gap vs competitors
+    if "price_gap" in row_data:
+        gap = _safe_float(row_data["price_gap"])
+        if gap is not None and abs(gap) > 0.03:
+            clean["price_vs_competitor"] = f"{gap*100:+.0f}%"
+    
+    # Competitor out of stock (opportunity signal)
+    if "competitor_oos_pct" in row_data or "outOfStockPercentage90" in row_data:
+        oos = _safe_float(row_data.get("competitor_oos_pct") or row_data.get("outOfStockPercentage90"))
+        if oos is not None and oos > 0:
+            if oos > 1:  # Normalize percentage
+                oos = oos / 100
+            clean["competitor_oos_rate"] = f"{oos*100:.0f}%"
+            if oos > 0.20:
+                clean["oos_opportunity"] = "HIGH (competitors struggling)"
+    
+    # =============================================
+    # REVIEWS & SOCIAL PROOF
+    # =============================================
+    review_fields = ["review_count", "current_COUNT_REVIEWS", "reviewCount"]
     for field in review_fields:
         if field in row_data and row_data[field] is not None:
             count = _safe_float(row_data[field])
             if count is not None:
                 clean["review_count"] = int(count)
+                # Add review tier
+                if count >= 1000:
+                    clean["review_tier"] = "ESTABLISHED (1K+)"
+                elif count >= 500:
+                    clean["review_tier"] = "STRONG (500+)"
+                elif count >= 100:
+                    clean["review_tier"] = "COMPETITIVE (100+)"
+                elif count >= 25:
+                    clean["review_tier"] = "DEVELOPING (25+)"
+                else:
+                    clean["review_tier"] = "NEW (<25)"
                 break
     
+    # Review velocity (growth signal)
     if "delta30_COUNT_REVIEWS" in row_data:
         delta = _safe_float(row_data["delta30_COUNT_REVIEWS"])
         if delta is not None and delta != 0:
             clean["reviews_added_30d"] = int(delta)
+            if delta > 50:
+                clean["review_velocity"] = "EXPLOSIVE"
+            elif delta > 20:
+                clean["review_velocity"] = "STRONG"
+            elif delta > 5:
+                clean["review_velocity"] = "HEALTHY"
+            elif delta > 0:
+                clean["review_velocity"] = "SLOW"
+            else:
+                clean["review_velocity"] = "NEGATIVE"
     
     # Rating
-    rating_fields = ["rating", "current_RATING"]
+    rating_fields = ["rating", "current_RATING", "avgRating"]
     for field in rating_fields:
         if field in row_data and row_data[field] is not None:
             rating = _safe_float(row_data[field])
@@ -625,25 +892,163 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
                 if rating > 10:
                     rating = rating / 10
                 clean["rating"] = f"{rating:.1f}★"
+                # Add rating health
+                if rating >= 4.5:
+                    clean["rating_health"] = "EXCELLENT"
+                elif rating >= 4.0:
+                    clean["rating_health"] = "GOOD"
+                elif rating >= 3.5:
+                    clean["rating_health"] = "CONCERNING"
+                else:
+                    clean["rating_health"] = "CRITICAL"
                 break
     
-    # Revenue (for context)
-    if "weekly_sales_filled" in row_data:
-        rev = _safe_float(row_data["weekly_sales_filled"])
-        if rev is not None and rev > 0:
-            clean["weekly_revenue"] = f"${rev:,.0f}"
+    # =============================================
+    # REVENUE & SALES VOLUME
+    # =============================================
+    rev_fields = ["weekly_sales_filled", "revenue_proxy", "estimated_weekly_revenue"]
+    for field in rev_fields:
+        if field in row_data:
+            rev = _safe_float(row_data[field])
+            if rev is not None and rev > 0:
+                clean["weekly_revenue"] = f"${rev:,.0f}"
+                clean["monthly_revenue_est"] = f"${rev * 4.33:,.0f}"
+                # Add revenue tier
+                if rev >= 10000:
+                    clean["revenue_tier"] = "HIGH_VALUE ($10K+/wk)"
+                elif rev >= 5000:
+                    clean["revenue_tier"] = "STRONG ($5K+/wk)"
+                elif rev >= 1000:
+                    clean["revenue_tier"] = "MODERATE ($1K+/wk)"
+                else:
+                    clean["revenue_tier"] = "LOW (<$1K/wk)"
+                break
     
-    # Monthly sold (if available)
+    # Monthly units sold
     if "monthlySold" in row_data:
         sold = _safe_float(row_data["monthlySold"])
         if sold is not None and sold > 0:
             clean["monthly_units_sold"] = f"{int(sold):,}+"
     
-    # Price gap
-    if "price_gap" in row_data:
-        gap = _safe_float(row_data["price_gap"])
-        if gap is not None and abs(gap) > 0.03:
-            clean["price_vs_competitor"] = f"{gap*100:+.0f}%"
+    # Estimated units (from various sources)
+    if "estimated_units" in row_data:
+        units = _safe_float(row_data["estimated_units"])
+        if units is not None and units > 0:
+            clean["estimated_weekly_units"] = int(units)
+    
+    # =============================================
+    # INVENTORY & STOCK (If available)
+    # =============================================
+    if "days_to_stockout" in row_data:
+        days = _safe_float(row_data["days_to_stockout"])
+        if days is not None and days < 90:
+            clean["days_to_stockout"] = int(days)
+            if days < 7:
+                clean["stockout_risk"] = "CRITICAL"
+            elif days < 14:
+                clean["stockout_risk"] = "HIGH"
+            elif days < 30:
+                clean["stockout_risk"] = "MODERATE"
+            else:
+                clean["stockout_risk"] = "LOW"
+    
+    if "fbaFees" in row_data or "fba_fees" in row_data:
+        fees = _safe_float(row_data.get("fbaFees") or row_data.get("fba_fees"))
+        if fees is not None and fees > 0:
+            if fees > 100:  # Convert cents
+                fees = fees / 100
+            clean["fba_fees"] = f"${fees:.2f}"
+    
+    # =============================================
+    # COMPETITIVE CONTEXT (Enriched from market analysis)
+    # =============================================
+    
+    # Price gap vs median (market positioning)
+    if "price_gap_vs_median" in row_data:
+        gap = _safe_float(row_data["price_gap_vs_median"])
+        if gap is not None:
+            pct = gap * 100
+            if abs(pct) > 3:
+                clean["price_vs_market_median"] = f"{pct:+.0f}%"
+                if pct < -10:
+                    clean["price_position"] = "UNDERPRICED (opportunity to raise)"
+                elif pct < -5:
+                    clean["price_position"] = "Below market"
+                elif pct > 10:
+                    clean["price_position"] = "PREMIUM (justify or reduce)"
+                elif pct > 5:
+                    clean["price_position"] = "Above market"
+                else:
+                    clean["price_position"] = "At market"
+    
+    # Median competitor price (benchmark)
+    if "median_competitor_price" in row_data:
+        median_price = _safe_float(row_data["median_competitor_price"])
+        if median_price and median_price > 0:
+            clean["market_median_price"] = f"${median_price:.2f}"
+    
+    # Review advantage
+    if "review_advantage_pct" in row_data:
+        adv = _safe_float(row_data["review_advantage_pct"])
+        if adv is not None:
+            pct = adv * 100
+            if abs(pct) > 20:
+                clean["review_vs_market"] = f"{pct:+.0f}%"
+                if pct > 50:
+                    clean["review_position"] = "DOMINANT (strong moat)"
+                elif pct > 20:
+                    clean["review_position"] = "Advantage"
+                elif pct < -50:
+                    clean["review_position"] = "VULNERABLE (needs growth)"
+                elif pct < -20:
+                    clean["review_position"] = "Disadvantage"
+    
+    # Competitor count (explicit)
+    if "competitor_count" in row_data and "competitor_count" not in clean:
+        count = _safe_float(row_data["competitor_count"])
+        if count is not None and count > 0:
+            clean["total_market_competitors"] = int(count)
+    
+    # Best/worst competitor rank (market intensity)
+    if "best_competitor_rank" in row_data:
+        best_rank = _safe_float(row_data["best_competitor_rank"])
+        if best_rank and best_rank > 0:
+            clean["best_competitor_rank"] = int(best_rank)
+    
+    # Competitor OOS (opportunity)
+    if "competitor_oos_pct" in row_data:
+        oos = _safe_float(row_data["competitor_oos_pct"])
+        if oos is not None and oos > 0.05:  # >5% OOS
+            oos_pct = oos * 100 if oos <= 1 else oos
+            clean["competitor_oos_rate"] = f"{oos_pct:.0f}%"
+            if oos_pct > 30:
+                clean["oos_opportunity"] = "HIGH (competitors struggling - conquest opportunity)"
+            elif oos_pct > 15:
+                clean["oos_opportunity"] = "MODERATE (some supply issues)"
+    
+    # =============================================
+    # DATA QUALITY INDICATOR
+    # =============================================
+    # Count how many key metrics we have
+    key_metrics = ["current_price", "current_sales_rank", "buybox_ownership", "review_count", "rating", "weekly_revenue"]
+    metrics_present = sum(1 for m in key_metrics if m in clean)
+    
+    # Also count competitive context
+    competitive_metrics = ["price_vs_market_median", "review_vs_market", "total_market_competitors"]
+    competitive_present = sum(1 for m in competitive_metrics if m in clean)
+    
+    if metrics_present >= 5:
+        clean["data_quality"] = "HIGH"
+        if competitive_present >= 2:
+            clean["competitive_context"] = "ENRICHED"
+    elif metrics_present >= 3:
+        clean["data_quality"] = "MEDIUM"
+    else:
+        clean["data_quality"] = "LOW"
+        clean["data_quality_note"] = f"Only {metrics_present}/6 key metrics available"
+    
+    # Remove raw values used for calculations
+    clean.pop("current_price_raw", None)
     
     return clean
 
@@ -2298,22 +2703,48 @@ async def generate_portfolio_brief(
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are ShelfGuard's AI strategist, analyzing Amazon portfolio performance. Generate a clear, actionable strategic brief that balances DEFENSIVE (risk avoidance) and OFFENSIVE (growth capture) priorities.
+                        "content": """You are ShelfGuard's AI strategist analyzing Amazon portfolio health. Generate a clear, actionable executive brief.
 
-Guidelines:
-- Be direct and prescriptive. Focus on what to do, not what happened.
-- Start with the most urgent issue — could be Risk OR Growth opportunity.
-- If 30-Day Risk is high (>15% of revenue), lead with defensive priorities.
-- If Growth Opportunity is significant, call out conquest/price lift opportunities.
-- Quantify everything ($ amounts, counts, percentages).
-- Reference the Opportunity Alpha (Risk + Growth combined) as the total addressable value.
-- End with one clear action for this session.
-- Keep it under 100 words.
-- Use clear business language - avoid military/tactical jargon.
+## ANALYSIS FRAMEWORK
 
-Example outputs:
-- "Risk: $2,400 at risk this month across 5 products. Growth: $1,800 upside via 2 price lifts. Priority: Address ASIN B001 stockout (50% of risk). Total opportunity: $4,200."
-- "Growth mode active: $3,100 conquest opportunity — 3 competitors OOS. Risk stable at 8%. Focus: Scale ad spend on vulnerable competitor keywords."""
+1. **REVENUE HEALTH** (Most important)
+   - Total Monthly Revenue → Portfolio scale
+   - At-Risk Revenue (30-day) → Defensive priority
+   - Growth Opportunity → Offensive priority
+
+2. **PRODUCT STATUS DISTRIBUTION**
+   - FORTRESS/HARVEST = Healthy (extract value)
+   - TRENCH_WAR = Defend (maintain position)
+   - DISTRESS/TERMINAL = Fix or Exit
+
+3. **ACTION PRIORITIZATION**
+   - Risk >20% of revenue → Lead with defense
+   - Risk <10% + Growth opportunity → Lead with offense
+   - Products in DISTRESS → Name specific ASINs
+
+## BRIEF REQUIREMENTS
+
+FORMAT YOUR RESPONSE AS:
+1. **Status Line**: One sentence portfolio health summary with $ amounts
+2. **Priority Action**: The single most important action with specific $ impact
+3. **Secondary Focus**: What to do after the priority action
+4. **Opportunity Alpha**: Total addressable value (Risk avoided + Growth captured)
+
+RULES:
+- BE SPECIFIC: Name products, quote $ amounts, give percentages
+- BE ACTIONABLE: "Raise price on ASIN X from $24 to $27" not "consider pricing"
+- BE HONEST: If data is limited, say so. Don't fabricate recommendations.
+- QUANTIFY: Always include $ impact of recommended actions
+- MAX 120 WORDS
+
+EXAMPLES:
+
+Good: "Portfolio: $45K monthly revenue, 12% at risk ($5,400). Priority: Address B0ABC stockout risk — $2,100/mo exposed. Secondary: 3 products have price power, raise B0XYZ by 12% ($800/mo upside). Opportunity Alpha: $6,200."
+
+Good: "Strong portfolio: $38K/mo, only 5% at risk. Growth mode: 2 competitors OOS in K-Cup category — $4,200 conquest opportunity. Focus: Increase ad spend on vulnerable competitor keywords for B0DEF. Stable products can handle 10% price tests."
+
+Bad: "Monitor the market and maintain current strategy." (Too vague)
+Bad: "Schedule a supply chain review." (Not actionable without context)"""
                     },
                     {
                         "role": "user",
@@ -2321,11 +2752,11 @@ Example outputs:
 
 {portfolio_summary}
 
-Generate a strategic brief. What should be the focus this session? Consider both Risk (defensive) and Growth (offensive) opportunities."""
+Generate an executive strategic brief. Focus on the highest-impact actions. If Risk is significant, prioritize defense. If Risk is low, prioritize growth. Always be specific and quantify recommendations."""
                     }
                 ],
-                max_tokens=200,
-                temperature=0.7
+                max_tokens=250,
+                temperature=0.5  # Lower temperature for more consistent output
             ),
             timeout=timeout
         )

@@ -153,7 +153,8 @@ EVENT_CATEGORIES = {
         "price_spike",
         "price_drop",
         "competitor_price_increase",
-        "competitor_price_decrease"
+        "competitor_price_decrease",
+        "opportunity_price_power"  # New: underpriced opportunity
     ],
     "buybox": [
         "buybox_share_collapse",
@@ -163,21 +164,66 @@ EVENT_CATEGORIES = {
     "rank": [
         "rank_degradation",
         "rank_improvement",
-        "rank_volatility_high"
+        "rank_volatility_high",
+        "momentum_acceleration",    # New: growth acceleration
+        "momentum_sustained"        # New: sustained growth
     ],
     "reviews": [
         "review_velocity_spike",
         "review_velocity_stagnant",
         "rating_decline",
+        "rating_critical",          # New: rating fell below threshold
         "competitor_review_surge"
     ],
     "market": [
         "new_competitor_entered",
         "competitor_exit",
         "category_growth",
-        "category_decline"
+        "category_decline",
+        "seller_consolidation",     # New: competitors leaving
+        "low_competition"           # New: market opportunity
     ]
 }
+
+# Event type to opportunity/threat classification
+EVENT_NATURE = {
+    # THREATS (defensive priorities)
+    "competitor_restocked": "threat",
+    "price_war_active": "threat",
+    "price_drop": "threat",
+    "competitor_price_decrease": "threat",
+    "buybox_share_collapse": "threat",
+    "buybox_rotation": "threat",
+    "rank_degradation": "threat",
+    "rank_volatility_high": "threat",
+    "review_velocity_stagnant": "threat",
+    "rating_decline": "threat",
+    "rating_critical": "threat",
+    "new_competitor_entered": "threat",
+    "competitor_review_surge": "threat",
+    "category_decline": "threat",
+    
+    # OPPORTUNITIES (offensive priorities)
+    "competitor_oos_imminent": "opportunity",
+    "inventory_low": "opportunity",
+    "price_spike": "opportunity",
+    "competitor_price_increase": "opportunity",
+    "opportunity_price_power": "opportunity",
+    "buybox_share_gained": "opportunity",
+    "rank_improvement": "opportunity",
+    "momentum_acceleration": "opportunity",
+    "momentum_sustained": "opportunity",
+    "review_velocity_spike": "opportunity",
+    "competitor_exit": "opportunity",
+    "category_growth": "opportunity",
+    "seller_consolidation": "opportunity",
+    "low_competition": "opportunity"
+}
+
+
+def get_event_nature(event_type: str) -> str:
+    """Classify event as 'opportunity' or 'threat'."""
+    return EVENT_NATURE.get(event_type, "neutral")
 
 
 def get_event_category(event_type: str) -> str:

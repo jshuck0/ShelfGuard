@@ -233,4 +233,13 @@ def build_keepa_weekly_table(products, window_start=None):
         df["estimated_units"] = monthly_units * (7 / 30)
         df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
     
+    # === DATA HEALER INTEGRATION ===
+    # Apply comprehensive gap-filling for ALL metrics before data reaches AI
+    # This ensures review_count, rating, amazon_bb_share, etc. are filled
+    try:
+        from utils.data_healer import clean_and_interpolate_metrics
+        df = clean_and_interpolate_metrics(df, group_by_column="asin", verbose=False)
+    except ImportError:
+        pass  # Data healer not available, use unhealed data
+    
     return df

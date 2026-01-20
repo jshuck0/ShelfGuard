@@ -22,13 +22,17 @@ def detect_trigger_events(
     """
     Detect all trigger events for a product.
 
-    Runs 6 core detectors:
-    1. Competitor inventory drops (OOS detection)
-    2. Price wars (3+ drops in 7d)
-    3. Review velocity spikes
-    4. BuyBox share collapse
-    5. Rank degradation
-    6. New competitor detection
+    Runs 10 core detectors for comprehensive market intelligence:
+    1. Competitor inventory drops (OOS detection) - OPPORTUNITY
+    2. Price wars (3+ drops in 7d) - THREAT
+    3. Review velocity spikes - OPPORTUNITY
+    4. BuyBox share collapse - THREAT
+    5. Rank degradation - THREAT
+    6. New competitor detection - THREAT
+    7. Price power opportunity (underpriced) - OPPORTUNITY
+    8. Rating decline - THREAT  
+    9. Momentum acceleration - OPPORTUNITY
+    10. Seller consolidation - OPPORTUNITY
 
     Args:
         asin: Product ASIN to analyze
@@ -42,13 +46,19 @@ def detect_trigger_events(
 
     events: List[TriggerEvent] = []
 
-    # Run all detectors
-    events.extend(detect_competitor_inventory_events(asin, df_competitors))
+    # === THREAT DETECTORS ===
     events.extend(detect_price_war_events(asin, df_historical, lookback_days))
-    events.extend(detect_review_velocity_events(asin, df_historical, lookback_days))
     events.extend(detect_buybox_events(asin, df_historical, lookback_days))
     events.extend(detect_rank_events(asin, df_historical, lookback_days))
     events.extend(detect_new_competitor_events(asin, df_competitors))
+    events.extend(detect_rating_decline_events(asin, df_historical, lookback_days))
+    
+    # === OPPORTUNITY DETECTORS ===
+    events.extend(detect_competitor_inventory_events(asin, df_competitors))
+    events.extend(detect_review_velocity_events(asin, df_historical, lookback_days))
+    events.extend(detect_price_power_events(asin, df_historical, df_competitors))
+    events.extend(detect_momentum_events(asin, df_historical, lookback_days))
+    events.extend(detect_seller_consolidation_events(asin, df_competitors))
 
     # Sort by severity (highest first)
     events = sorted(events, key=lambda e: e.severity, reverse=True)
@@ -386,6 +396,284 @@ def detect_new_competitor_events(
                     affected_asin=asin,
                     related_asin=comp.get('asin')
                 ))
+
+    return events
+
+
+# ========================================
+# DETECTOR 7: PRICE POWER OPPORTUNITY
+# ========================================
+
+def detect_price_power_events(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect pricing power opportunity (product is underpriced relative to position).
+
+    Triggers:
+    - Strong reviews + lower than median price = opportunity to raise price
+    - Stable/improving rank + price below category = pricing power
+    """
+    events = []
+
+    if df_historical.empty or df_competitors.empty:
+        return events
+
+    # Get current product metrics
+    if len(df_historical) == 0:
+        return events
+    
+    current = df_historical.iloc[-1] if hasattr(df_historical, 'iloc') else {}
+    
+    # Get current price and review count
+    current_price = current.get('price', current.get('buy_box_price', 0))
+    current_reviews = current.get('review_count', 0)
+    
+    if pd.isna(current_price) or current_price <= 0:
+        return events
+    
+    # Get median price from competitors
+    if 'buy_box_price' in df_competitors.columns:
+        prices = df_competitors['buy_box_price'].dropna()
+        if len(prices) > 0:
+            median_price = prices.median()
+            
+            # Check if we have price below median + strong reviews
+            if current_price < median_price * 0.9:  # 10%+ below median
+                # Check review strength
+                median_reviews = 0
+                if 'review_count' in df_competitors.columns:
+                    reviews = df_competitors['review_count'].dropna()
+                    if len(reviews) > 0:
+                        median_reviews = reviews.median()
+                
+                # Strong reviews = 50%+ above median
+                if current_reviews > median_reviews * 1.5:
+                    price_gap_pct = ((current_price / median_price) - 1) * 100
+                    review_advantage_pct = ((current_reviews / median_reviews) - 1) * 100 if median_reviews > 0 else 100
+                    
+                    events.append(TriggerEvent(
+                        event_type="opportunity_price_power",
+                        severity=7,  # High priority opportunity
+                        detected_at=datetime.now(),
+                        metric_name="price_vs_median",
+                        baseline_value=float(median_price),
+                        current_value=float(current_price),
+                        delta_pct=price_gap_pct,
+                        affected_asin=asin
+                    ))
+
+    return events
+
+
+# ========================================
+# DETECTOR 8: RATING DECLINE
+# ========================================
+
+def detect_rating_decline_events(
+    asin: str,
+    df_historical: pd.DataFrame,
+    lookback_days: int = 30
+) -> List[TriggerEvent]:
+    """
+    Detect rating decline events.
+
+    Triggers:
+    - Rating dropped 0.3+ stars in 30 days
+    - Rating fell below 4.0 stars
+    """
+    events = []
+
+    if df_historical.empty or 'rating' not in df_historical.columns:
+        return events
+
+    recent = df_historical.tail(lookback_days * 24) if len(df_historical) > lookback_days * 24 else df_historical
+    if len(recent) < 2:
+        return events
+
+    # Get rating values (handle Keepa's rating*10 format)
+    ratings = recent['rating'].dropna()
+    if len(ratings) < 2:
+        return events
+    
+    current_rating = ratings.iloc[-1]
+    baseline_rating = ratings.iloc[0]
+    
+    # Normalize if stored as rating*10
+    if current_rating > 10:
+        current_rating = current_rating / 10
+    if baseline_rating > 10:
+        baseline_rating = baseline_rating / 10
+    
+    rating_drop = baseline_rating - current_rating
+    
+    # Significant rating decline
+    if rating_drop >= 0.3:
+        severity = 8 if current_rating < 4.0 else 6
+        
+        events.append(TriggerEvent(
+            event_type="rating_decline",
+            severity=severity,
+            detected_at=datetime.now(),
+            metric_name="rating",
+            baseline_value=float(baseline_rating),
+            current_value=float(current_rating),
+            delta_pct=-rating_drop * 20,  # Approximate % impact
+            affected_asin=asin
+        ))
+    
+    # Critical rating threshold
+    if current_rating < 3.5 and baseline_rating >= 3.5:
+        events.append(TriggerEvent(
+            event_type="rating_critical",
+            severity=9,
+            detected_at=datetime.now(),
+            metric_name="rating",
+            baseline_value=float(baseline_rating),
+            current_value=float(current_rating),
+            delta_pct=-rating_drop * 20,
+            affected_asin=asin
+        ))
+
+    return events
+
+
+# ========================================
+# DETECTOR 9: MOMENTUM ACCELERATION
+# ========================================
+
+def detect_momentum_events(
+    asin: str,
+    df_historical: pd.DataFrame,
+    lookback_days: int = 30
+) -> List[TriggerEvent]:
+    """
+    Detect positive momentum acceleration (growth opportunity).
+
+    Triggers:
+    - Rank improving 20%+ in 30 days (accelerating sales)
+    - Sustained upward trajectory
+    """
+    events = []
+
+    if df_historical.empty or 'bsr' not in df_historical.columns:
+        return events
+
+    recent = df_historical.tail(lookback_days * 24) if len(df_historical) > lookback_days * 24 else df_historical
+    if len(recent) < 2:
+        return events
+
+    bsr_values = recent['bsr'].dropna()
+    if len(bsr_values) < 2:
+        return events
+
+    current_bsr = bsr_values.iloc[-1]
+    baseline_bsr = bsr_values.iloc[0]
+
+    if baseline_bsr <= 0:
+        return events
+
+    # Calculate BSR improvement (negative = rank improved)
+    bsr_change_pct = ((current_bsr - baseline_bsr) / baseline_bsr) * 100
+
+    # Rank improved significantly (more negative = better)
+    if bsr_change_pct < -20:  # Rank improved by 20%+
+        severity = 7 if bsr_change_pct < -40 else 6
+        
+        events.append(TriggerEvent(
+            event_type="momentum_acceleration",
+            severity=severity,
+            detected_at=datetime.now(),
+            metric_name="sales_rank_improvement",
+            baseline_value=float(baseline_bsr),
+            current_value=float(current_bsr),
+            delta_pct=bsr_change_pct,
+            affected_asin=asin
+        ))
+    
+    # Check for sustained momentum (3 consecutive weeks of improvement)
+    if len(bsr_values) >= 21 * 24:  # 3 weeks of hourly data
+        week1_avg = bsr_values.iloc[:7*24].mean()
+        week2_avg = bsr_values.iloc[7*24:14*24].mean()
+        week3_avg = bsr_values.iloc[14*24:21*24].mean()
+        
+        if week1_avg > week2_avg > week3_avg > 0:
+            # Sustained improvement
+            events.append(TriggerEvent(
+                event_type="momentum_sustained",
+                severity=6,
+                detected_at=datetime.now(),
+                metric_name="bsr_3_week_trend",
+                baseline_value=float(week1_avg),
+                current_value=float(week3_avg),
+                delta_pct=((week3_avg - week1_avg) / week1_avg) * 100,
+                affected_asin=asin
+            ))
+
+    return events
+
+
+# ========================================
+# DETECTOR 10: SELLER CONSOLIDATION
+# ========================================
+
+def detect_seller_consolidation_events(
+    asin: str,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect seller consolidation (competitors leaving = opportunity).
+
+    Triggers:
+    - Competitor count decreased significantly
+    - Market is consolidating (fewer sellers)
+    """
+    events = []
+
+    if df_competitors.empty:
+        return events
+
+    # Check for competitor count change
+    if 'delta30_offer_count' in df_competitors.columns or 'seller_count_change_30d' in df_competitors.columns:
+        col = 'delta30_offer_count' if 'delta30_offer_count' in df_competitors.columns else 'seller_count_change_30d'
+        
+        for _, row in df_competitors.iterrows():
+            if row.get('asin') == asin:
+                delta = row.get(col, 0)
+                if delta is not None and delta < -3:  # 3+ sellers left
+                    events.append(TriggerEvent(
+                        event_type="seller_consolidation",
+                        severity=6,
+                        detected_at=datetime.now(),
+                        metric_name="seller_count_change",
+                        baseline_value=0.0,
+                        current_value=float(delta),
+                        delta_pct=float(delta) * 10,  # Rough % indicator
+                        affected_asin=asin
+                    ))
+                break
+    
+    # Check for low competition opportunity
+    if 'offer_count' in df_competitors.columns or 'offerCountNew' in df_competitors.columns:
+        col = 'offer_count' if 'offer_count' in df_competitors.columns else 'offerCountNew'
+        
+        for _, row in df_competitors.iterrows():
+            if row.get('asin') == asin:
+                count = row.get(col, 99)
+                if count is not None and count <= 3:  # Very low competition
+                    events.append(TriggerEvent(
+                        event_type="low_competition",
+                        severity=5,
+                        detected_at=datetime.now(),
+                        metric_name="seller_count",
+                        baseline_value=10.0,  # Typical
+                        current_value=float(count),
+                        delta_pct=((count - 10) / 10) * 100,
+                        affected_asin=asin
+                    ))
+                break
 
     return events
 

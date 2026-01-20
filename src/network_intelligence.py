@@ -292,31 +292,72 @@ class NetworkIntelligence:
         product: Dict[str, Any],
         benchmarks: Dict[str, Any]
     ) -> List[str]:
-        """Identify competitive advantages."""
+        """Identify competitive advantages with actionable context."""
         advantages = []
 
-        # Review advantage
+        # Review advantage (pricing power indicator)
         if product.get('review_count') and benchmarks.get('median_review_count'):
-            if product['review_count'] > benchmarks['median_review_count'] * 1.5:
+            review_ratio = product['review_count'] / benchmarks['median_review_count'] if benchmarks['median_review_count'] > 0 else 1
+            if review_ratio > 1.5:
                 advantages.append(
-                    f"Review advantage: {product['review_count']} vs "
-                    f"{int(benchmarks['median_review_count'])} median"
+                    f"PRICING POWER: {int(product['review_count'])} reviews vs "
+                    f"{int(benchmarks['median_review_count'])} median ({(review_ratio-1)*100:.0f}% above) → Test 5-10% price increase"
+                )
+            elif review_ratio > 1.2:
+                advantages.append(
+                    f"Review advantage: {int(product['review_count'])} vs "
+                    f"{int(benchmarks['median_review_count'])} median (+{(review_ratio-1)*100:.0f}%)"
                 )
 
         # Rating advantage
         if product.get('rating') and benchmarks.get('median_rating'):
-            if product['rating'] > benchmarks['median_rating'] + 0.3:
+            rating_diff = product['rating'] - benchmarks['median_rating']
+            if rating_diff > 0.5:
+                advantages.append(
+                    f"QUALITY MOAT: {product['rating']:.1f}★ vs "
+                    f"{benchmarks['median_rating']:.1f}★ median → Defensible premium position"
+                )
+            elif rating_diff > 0.3:
                 advantages.append(
                     f"Rating advantage: {product['rating']:.1f}★ vs "
                     f"{benchmarks['median_rating']:.1f}★ median"
                 )
 
-        # Price advantage (lower)
+        # Price advantage (market share opportunity)
         if product.get('buy_box_price') and benchmarks.get('median_price'):
-            if product['buy_box_price'] < benchmarks['median_price'] * 0.9:
+            price_ratio = product['buy_box_price'] / benchmarks['median_price'] if benchmarks['median_price'] > 0 else 1
+            if price_ratio < 0.85:  # 15%+ below median
+                gap_dollars = benchmarks['median_price'] - product['buy_box_price']
                 advantages.append(
-                    f"Price advantage: ${product['buy_box_price']:.2f} "
-                    f"(10%+ below median)"
+                    f"UNDERPRICED: ${product['buy_box_price']:.2f} vs ${benchmarks['median_price']:.2f} median "
+                    f"→ ${gap_dollars:.2f}/unit pricing headroom"
+                )
+            elif price_ratio < 0.95:
+                advantages.append(
+                    f"Value positioning: ${product['buy_box_price']:.2f} "
+                    f"({(1-price_ratio)*100:.0f}% below median)"
+                )
+
+        # Buy Box advantage
+        if product.get('amazon_bb_share') or product.get('buybox_share'):
+            bb_share = product.get('amazon_bb_share') or product.get('buybox_share') or 0
+            if bb_share > 1:  # Normalize percentage
+                bb_share = bb_share / 100
+            if bb_share > 0.80:
+                advantages.append(
+                    f"BUY BOX CONTROL: {bb_share*100:.0f}% ownership → Stable revenue stream"
+                )
+            elif bb_share > 0.60:
+                advantages.append(
+                    f"Buy Box healthy: {bb_share*100:.0f}% ownership"
+                )
+
+        # Low competition advantage
+        if product.get('new_offer_count') or product.get('offerCountNew'):
+            sellers = product.get('new_offer_count') or product.get('offerCountNew') or 0
+            if sellers <= 3:
+                advantages.append(
+                    f"LOW COMPETITION: Only {int(sellers)} sellers → Pricing power"
                 )
 
         return advantages
@@ -326,23 +367,75 @@ class NetworkIntelligence:
         product: Dict[str, Any],
         benchmarks: Dict[str, Any]
     ) -> List[str]:
-        """Identify competitive weaknesses."""
+        """Identify competitive weaknesses with specific remediation."""
         weaknesses = []
 
-        # Review gap
+        # Review gap (vulnerability)
         if product.get('review_count') and benchmarks.get('median_review_count'):
-            if product['review_count'] < benchmarks['median_review_count'] * 0.5:
+            review_ratio = product['review_count'] / benchmarks['median_review_count'] if benchmarks['median_review_count'] > 0 else 1
+            if review_ratio < 0.3:
+                reviews_needed = int(benchmarks['median_review_count'] * 0.5 - product['review_count'])
                 weaknesses.append(
-                    f"Review gap: {product['review_count']} vs "
-                    f"{int(benchmarks['median_review_count'])} median"
+                    f"REVIEW DEFICIT: {int(product['review_count'])} vs "
+                    f"{int(benchmarks['median_review_count'])} median → Need {reviews_needed}+ reviews to compete"
+                )
+            elif review_ratio < 0.5:
+                weaknesses.append(
+                    f"Review gap: {int(product['review_count'])} vs "
+                    f"{int(benchmarks['median_review_count'])} median ({(1-review_ratio)*100:.0f}% below)"
                 )
 
-        # Rating gap
+        # Rating gap (quality concern)
         if product.get('rating') and benchmarks.get('median_rating'):
-            if product['rating'] < benchmarks['median_rating'] - 0.3:
+            rating_diff = benchmarks['median_rating'] - product['rating']
+            if rating_diff > 0.5:
+                weaknesses.append(
+                    f"QUALITY RISK: {product['rating']:.1f}★ vs "
+                    f"{benchmarks['median_rating']:.1f}★ median → Investigate reviews, improve product"
+                )
+            elif rating_diff > 0.3:
                 weaknesses.append(
                     f"Rating gap: {product['rating']:.1f}★ vs "
                     f"{benchmarks['median_rating']:.1f}★ median"
+                )
+
+        # Buy Box weakness
+        if product.get('amazon_bb_share') or product.get('buybox_share'):
+            bb_share = product.get('amazon_bb_share') or product.get('buybox_share') or 0
+            if bb_share > 1:  # Normalize percentage
+                bb_share = bb_share / 100
+            if bb_share < 0.30:
+                weaknesses.append(
+                    f"BUY BOX CRITICAL: Only {bb_share*100:.0f}% ownership → Revenue exposure"
+                )
+            elif bb_share < 0.50:
+                weaknesses.append(
+                    f"Buy Box contested: {bb_share*100:.0f}% ownership → Defend pricing"
+                )
+
+        # High competition pressure
+        if product.get('new_offer_count') or product.get('offerCountNew'):
+            sellers = product.get('new_offer_count') or product.get('offerCountNew') or 0
+            if sellers > 25:
+                weaknesses.append(
+                    f"SATURATED MARKET: {int(sellers)} sellers → Price pressure likely"
+                )
+            elif sellers > 15:
+                weaknesses.append(
+                    f"High competition: {int(sellers)} sellers"
+                )
+
+        # Price disadvantage (overpriced)
+        if product.get('buy_box_price') and benchmarks.get('median_price'):
+            price_ratio = product['buy_box_price'] / benchmarks['median_price'] if benchmarks['median_price'] > 0 else 1
+            if price_ratio > 1.20:  # 20%+ above median
+                weaknesses.append(
+                    f"OVERPRICED: ${product['buy_box_price']:.2f} vs ${benchmarks['median_price']:.2f} median "
+                    f"→ Review positioning or justify premium"
+                )
+            elif price_ratio > 1.10:
+                weaknesses.append(
+                    f"Above median pricing: +{(price_ratio-1)*100:.0f}%"
                 )
 
         return weaknesses

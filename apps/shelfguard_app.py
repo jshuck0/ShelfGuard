@@ -90,7 +90,8 @@ _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 
 def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True, strategic_bias: str = "Balanced Defense",
-                         enable_triggers: bool = False, enable_network: bool = False) -> dict:
+                         enable_triggers: bool = False, enable_network: bool = False,
+                         competitors_df: pd.DataFrame = None) -> dict:
     """
     UNIFIED AI ENGINE - Strategic Classification + Predictive Intelligence
 
@@ -101,6 +102,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
     - Model certainty based on data quality
     - Trigger events (optional - requires historical data)
     - Network intelligence (optional - requires Supabase)
+    - Competitive intelligence (uses competitors_df for market context)
 
     Args:
         row: Product row dictionary with metrics
@@ -109,6 +111,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         enable_triggers: Enable trigger event detection (requires historical_df in row)
         enable_network: Enable network intelligence (requires category_id in row)
+        competitors_df: DataFrame of competitor products in same market (for competitive analysis)
 
     Returns:
         dict with unified strategic + predictive outputs
@@ -126,6 +129,50 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 historical_df = df_weekly[df_weekly['asin'] == asin].copy()
                 if not historical_df.empty:
                     row['historical_df'] = historical_df
+    
+    # Add competitor data for competitive intelligence
+    if competitors_df is not None and not competitors_df.empty:
+        asin = row.get('asin', '')
+        # Filter out the current product from competitors
+        row['competitors_df'] = competitors_df[competitors_df['asin'] != asin].copy()
+        
+        # Enrich row with competitive context metrics
+        competitors = row['competitors_df']
+        if not competitors.empty:
+            # Calculate competitive benchmarks
+            if 'buy_box_price' in competitors.columns or 'filled_price' in competitors.columns:
+                price_col = 'buy_box_price' if 'buy_box_price' in competitors.columns else 'filled_price'
+                median_price = competitors[price_col].median()
+                current_price = row.get('buy_box_price', row.get('filled_price', row.get('price', 0)))
+                if median_price and current_price:
+                    row['price_gap_vs_median'] = (current_price - median_price) / median_price if median_price > 0 else 0
+                    row['median_competitor_price'] = median_price
+            
+            if 'review_count' in competitors.columns:
+                median_reviews = competitors['review_count'].median()
+                row['median_competitor_reviews'] = median_reviews
+                current_reviews = row.get('review_count', 0)
+                if median_reviews and current_reviews:
+                    row['review_advantage_pct'] = (current_reviews - median_reviews) / median_reviews if median_reviews > 0 else 0
+            
+            if 'sales_rank_filled' in competitors.columns or 'sales_rank' in competitors.columns:
+                rank_col = 'sales_rank_filled' if 'sales_rank_filled' in competitors.columns else 'sales_rank'
+                row['competitor_count'] = len(competitors)
+                row['best_competitor_rank'] = competitors[rank_col].min()
+                row['worst_competitor_rank'] = competitors[rank_col].max()
+            
+            # Out of stock percentage (if available)
+            if 'outOfStockPercentage90' in competitors.columns:
+                avg_oos = competitors['outOfStockPercentage90'].mean()
+                if avg_oos > 1:
+                    avg_oos = avg_oos / 100  # Normalize to 0-1
+                row['competitor_oos_pct'] = avg_oos
+    elif 'competitors_df' not in row:
+        # Try to get competitor data from session state (market_snapshot)
+        market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+        if not market_snapshot.empty:
+            asin = row.get('asin', '')
+            row['competitors_df'] = market_snapshot[market_snapshot['asin'] != asin].copy()
 
     # Use unified AI engine
     if use_triangulation and TRIANGULATION_ENABLED:
@@ -628,8 +675,26 @@ with main_tab1:
                     market_snapshot['sales_rank_filled'] = pd.to_numeric(market_snapshot['bsr'], errors='coerce').fillna(0)
                 if 'price' in market_snapshot.columns:
                     market_snapshot['filled_price'] = pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0)
+                    market_snapshot['buy_box_price'] = market_snapshot['filled_price'].copy()
                 if 'monthly_units' in market_snapshot.columns:
                     market_snapshot['estimated_units'] = pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
+                # Ensure AI-critical metrics are numeric (prevents "zero buy box" false positives)
+                if 'amazon_bb_share' in market_snapshot.columns:
+                    market_snapshot['amazon_bb_share'] = pd.to_numeric(market_snapshot['amazon_bb_share'], errors='coerce').fillna(0)
+                if 'review_count' in market_snapshot.columns:
+                    market_snapshot['review_count'] = pd.to_numeric(market_snapshot['review_count'], errors='coerce').fillna(0).astype(int)
+                if 'rating' in market_snapshot.columns:
+                    market_snapshot['rating'] = pd.to_numeric(market_snapshot['rating'], errors='coerce').fillna(0)
+                if 'new_offer_count' in market_snapshot.columns:
+                    market_snapshot['new_offer_count'] = pd.to_numeric(market_snapshot['new_offer_count'], errors='coerce').fillna(1).astype(int)
+                
+                # === DATA HEALER: Apply comprehensive gap-filling ===
+                # Ensures AI receives complete data with no gaps
+                try:
+                    from utils.data_healer import clean_and_interpolate_metrics
+                    market_snapshot = clean_and_interpolate_metrics(market_snapshot, group_by_column="asin", verbose=False)
+                except ImportError:
+                    pass  # Data healer not available
 
         if df_weekly.empty or market_snapshot.empty:
             st.warning("⚠️ No project data found. Please create a project in Market Discovery.")
@@ -1576,9 +1641,22 @@ with main_tab1:
                     title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
                     # === UNIFIED AI ENGINE (Strategic + Predictive in one call) ===
+                    # Enable triggers, network intelligence, AND competitive intelligence
                     bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
                     bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
-                    strategy = get_product_strategy(product.to_dict(), revenue=rev, use_triangulation=TRIANGULATION_ENABLED, strategic_bias=bias_clean)
+                    
+                    # Get market snapshot for competitive intelligence
+                    market_df = st.session_state.get('active_project_market_snapshot', display_df)
+                    
+                    strategy = get_product_strategy(
+                        product.to_dict(), 
+                        revenue=rev, 
+                        use_triangulation=TRIANGULATION_ENABLED, 
+                        strategic_bias=bias_clean,
+                        enable_triggers=True,   # Enable trigger event detection
+                        enable_network=True,    # Enable network intelligence
+                        competitors_df=market_df  # Pass market data for competitive intelligence
+                    )
                     
                     # Strategic outputs
                     problem_category = strategy["problem_category"]

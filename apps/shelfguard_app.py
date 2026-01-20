@@ -2416,7 +2416,8 @@ with main_tab1:
                         signals_preview = ""
                         if signals_detected and len(signals_detected) > 0:
                             top_signals = signals_detected[:3]
-                            escaped_signals = [html.escape(s[:20]) for s in top_signals]
+                            # Increased from 20 to 30 chars to preserve "(estimated)" notes
+                            escaped_signals = [html.escape(s[:30]) for s in top_signals]
                             signals_html = " • ".join([f"<span style='font-size: 9px;'>{sig}</span>" for sig in escaped_signals])
                             signals_preview = f'<div style="font-size: 9px; color: #888; margin-top: 4px;">{signals_html}</div>'
 

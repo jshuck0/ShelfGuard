@@ -336,6 +336,9 @@ def _check_category_cache(category_id: int, max_age_hours: int = 12) -> Optional
                 else:
                     df['revenue_proxy'] = 0
 
+            # Add data_weeks for AI confidence (cached data = assume 4 weeks)
+            df['data_weeks'] = 4
+            
             market_stats = {
                 "total_products": len(df),
                 "total_category_revenue": df["revenue_proxy"].sum() if "revenue_proxy" in df.columns else 0,
@@ -1458,6 +1461,7 @@ def phase2_category_market_mapping(
             df = pd.DataFrame(unique_products)
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
@@ -1487,6 +1491,7 @@ def phase2_category_market_mapping(
             df = pd.DataFrame(unique_products)
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
@@ -1657,6 +1662,7 @@ def phase2_category_market_mapping(
             return df, {}
         df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
         df["revenue_proxy"] = df["monthly_units"] * df["price"]
+        df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
         df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
         
         brand_product_count = len(brand_products) if target_brand else 0

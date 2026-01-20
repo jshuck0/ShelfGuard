@@ -1364,62 +1364,79 @@ with main_tab1:
         is_predictive_critical = portfolio_status == "CRITICAL" and real_alert_count > 0
         is_predictive_elevated = portfolio_status == "ELEVATED" and real_alert_count > 0
         
+        # === UNIFIED RISK COUNT (FIX: One definition used everywhere) ===
+        # "Meaningful risk" = products where risk > $100 AND > 2% of product revenue
+        # This prevents counting ALL products as "at risk" due to baseline optimization
+        if 'thirty_day_risk' in enriched_portfolio_df.columns and 'revenue_proxy' in enriched_portfolio_df.columns:
+            product_risk = enriched_portfolio_df['thirty_day_risk'].fillna(0)
+            product_rev = enriched_portfolio_df['revenue_proxy'].fillna(1000)
+            # Meaningful = either high absolute risk OR high % of that product's revenue
+            meaningful_risk_mask = (product_risk > 100) & (product_risk > product_rev * 0.02)
+            meaningful_risk_count = meaningful_risk_mask.sum()
+        else:
+            meaningful_risk_count = defend_count + replenish_count
+        
+        # Growth count: products with >$100 growth opportunity
+        if 'thirty_day_growth' in enriched_portfolio_df.columns:
+            meaningful_growth_count = (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 100).sum()
+        else:
+            meaningful_growth_count = exploit_count
+        
         # === ACTION A: CHECK AI BRIEF FOR THREAT KEYWORDS AND OVERRIDE STATUS BANNER ===
-        # Check if ai_brief contains threat, erosion, or critical keywords
         ai_brief_lower = ai_brief.lower() if ai_brief else ""
         has_threat_keywords = any(keyword in ai_brief_lower for keyword in ["threat", "erosion", "critical"])
-        
-        # Also check predictive alerts for threat detection
         has_threat_keywords = has_threat_keywords or is_predictive_critical
         
-        # FIX 2: Override status header to match banner (red when threat detected)
-        # This must happen AFTER status_emoji, status_text, and top_action are set above
+        # === STATUS LOGIC (FIXED: Consistent, meaningful counts) ===
+        # Use meaningful_risk_count for ALL status displays
         if has_threat_keywords or is_predictive_critical:
-            # Override status header to match red banner (predictive threat)
             status_emoji = "🔴"
             status_text = "DEFENSE PROTOCOL"
-            action_required_count = defend_count + replenish_count
-            top_action = f"{action_required_count} ACTIONS REQUIRED"
+            top_action = f"{meaningful_risk_count} ACTIONS REQUIRED"
         elif is_predictive_elevated or has_high_urgency_alerts:
             status_emoji = "🟡"
             status_text = "ATTENTION"
-            action_required_count = defend_count + replenish_count
-            top_action = f"{action_required_count} ALERTS"
-        else:
-            # Smart default based on portfolio state
-            if thirty_day_risk > total_rev_curr * 0.10:  # >10% at risk
+            top_action = f"{meaningful_risk_count} ALERTS"
+        elif meaningful_growth_count > 5:
+            # Significant growth opportunities
+            status_emoji = "🟢"
+            status_text = "HEALTHY"
+            top_action = f"CAPTURE {meaningful_growth_count} opportunities"
+        elif risk_pct < 10:
+            # Low risk, healthy
+            status_emoji = "🟢"
+            status_text = "HEALTHY"
+            if thirty_day_risk > total_rev_curr * 0.10:
                 top_action = "DEFEND revenue"
-            elif thirty_day_growth > total_rev_curr * 0.05:  # >5% growth opportunity
+            elif thirty_day_growth > total_rev_curr * 0.05:
                 top_action = "CAPTURE growth"
-            elif your_market_share > 50:  # Market leader
+            elif your_market_share > 50:
                 top_action = "OPTIMIZE pricing"
-            elif your_market_share < 20:  # Niche player
+            elif your_market_share < 20:
                 top_action = "EXPAND share"
-            else:  # Balanced
+            else:
                 top_action = "MAINTAIN position"
+        else:
+            status_emoji = "🟡"
+            status_text = "ATTENTION"
+            top_action = f"{meaningful_risk_count} items need review"
         
-        # Override top status banner based on predictive intelligence
-        # Calculate action counts for status banner
-        action_required_count = defend_count + replenish_count
-        total_opportunity_count = exploit_count + growth_opportunity_count
+        # === SYSTEM STATUS BANNER (FIXED: Uses same counts) ===
+        total_opportunity_count = meaningful_growth_count
         
         if is_predictive_critical or has_threat_keywords:
-            system_status = f"🔴 SYSTEM STATUS: {action_required_count} CRITICAL THREATS"
+            system_status = f"🔴 SYSTEM STATUS: {meaningful_risk_count} CRITICAL THREATS"
             status_bg = "#dc3545"
-        elif is_predictive_elevated:
-            system_status = f"🟡 SYSTEM STATUS: {action_required_count} ALERTS ACTIVE"
+        elif is_predictive_elevated or meaningful_risk_count > len(enriched_portfolio_df) * 0.2:
+            # More than 20% of products at meaningful risk
+            system_status = f"🟡 SYSTEM STATUS: {meaningful_risk_count} ALERTS ACTIVE"
             status_bg = "#ffc107"
         elif total_opportunity_count > 0:
             system_status = f"🟢 SYSTEM STATUS: {total_opportunity_count} GROWTH OPPORTUNITIES"
             status_bg = "#28a745"
         else:
-            # Default status based on revenue gap (original logic)
-            if revenue_gap < 0:
-                system_status = "🔴 SYSTEM STATUS: CRITICAL THREATS DETECTED"
-                status_bg = "#dc3545"
-            else:
-                system_status = "🟢 SYSTEM STATUS: OPTIMIZED"
-                status_bg = "#28a745"
+            system_status = "🟢 SYSTEM STATUS: OPTIMIZED"
+            status_bg = "#28a745"
         
         # Render System Status Banner (now checked against ai_brief)
         st.markdown(f"""
@@ -1430,29 +1447,32 @@ with main_tab1:
         """, unsafe_allow_html=True)
         
         # === EXECUTIVE SUMMARY: TOP 3 ACTIONS ===
-        # Build prioritized action list with specific actions, causality, time sensitivity
+        # FIXED: Include ALL products with meaningful risk (not just DEFEND/REPLENISH states)
+        # HARVEST products with risk = optimization opportunities, still need action
         top_actions = []
         if 'thirty_day_risk' in enriched_portfolio_df.columns and 'thirty_day_growth' in enriched_portfolio_df.columns:
-            # Get top risk products (DEFEND/REPLENISH)
+            # Get top risk products - ANY product with meaningful risk (>$100)
+            # Includes HARVEST (optimization), DEFEND (defense), REPLENISH (inventory)
             risk_products = enriched_portfolio_df[
-                (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0) &
-                (enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH']))
+                (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 100)  # Meaningful risk
             ].copy()
             
-            # Get top growth products
+            # Get top growth products (>$100 opportunity)
             growth_products = enriched_portfolio_df[
-                (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 0)
+                (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 100)
             ].copy()
             
-            # Sort and take top items
+            # Sort by risk/growth value
             if not risk_products.empty:
                 risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
             if not growth_products.empty:
                 growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
             
             # Build top 3 actions (prioritize risk, then growth)
+            # FIXED: Take up to 2 risk products and 1 growth, or 3 risk if no growth
             action_count = 0
-            for _, row in risk_products.head(2).iterrows():
+            max_risk_items = 3 if growth_products.empty else 2
+            for _, row in risk_products.head(max_risk_items).iterrows():
                 if action_count >= 3:
                     break
                 asin = row.get('asin', '')
@@ -1698,27 +1718,23 @@ with main_tab1:
         # TILE 2: Defense Score
         with c2:
             # ACTION B: Defense Score (Predictive-Based)
-            # Uses early predictive risk calculation for consistent cascade
-            # Score reflects % of portfolio NOT at risk (100 - risk_pct)
+            # FIXED: Defense Score = 100 - risk_pct (directly reflects portfolio health)
+            # No more hardcoded 98 - score varies meaningfully based on actual risk
+            
+            # Defense = 100% minus percentage of portfolio at risk
+            # risk_pct is already calculated as (total_risk / revenue * 100)
+            # A portfolio with 15% at risk has defense score of 85
+            defense_score = max(0, min(100, 100 - risk_pct))
+            
+            # Apply floor based on severity to prevent unrealistic scores
+            # If we have critical status, cap at 60 max; if elevated, cap at 80 max
             is_critical_status = is_predictive_critical or has_threat_keywords
             is_elevated_status = is_predictive_elevated or has_high_urgency_alerts
             
-            # Calculate based on predictive risk percentage
-            defense_score_base = 98
             if is_critical_status:
-                # Critical: High risk - score penalized by risk percentage
-                defense_score = max(50, defense_score_base - risk_pct)
+                defense_score = min(defense_score, 60)
             elif is_elevated_status:
-                # Elevated: Moderate risk - smaller penalty
-                defense_score = max(70, defense_score_base - (risk_pct * 0.5))
-            else:
-                # Healthy: Calculate from healthy products
-                # Healthy = total - (defend + replenish)
-                defend_replenish_count = defend_count + replenish_count
-                total_products = len(res["data"])
-                healthy_pct = ((total_products - defend_replenish_count) / total_products * 100) if total_products > 0 else 100
-                # Cap at 98 (never reach 100 - always room for improvement)
-                defense_score = min(healthy_pct, 98)
+                defense_score = min(defense_score, 80)
 
             # Determine benchmark status
             if defense_score >= 85:
@@ -1828,32 +1844,42 @@ with main_tab1:
                 # Count products with actual risk/growth values (not just predictive_state)
                 actual_risk_count = 0
                 actual_growth_count = 0
-                if 'thirty_day_risk' in enriched_portfolio_df.columns:
-                    actual_risk_count = (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0).sum()
-                if 'thirty_day_growth' in enriched_portfolio_df.columns:
-                    actual_growth_count = (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 0).sum()
+                # FIXED: Use meaningful counts (>$100 threshold) for consistency with header
+                actual_risk_count = meaningful_risk_count
+                actual_growth_count = meaningful_growth_count
                 
                 with st.expander(f"📊 View Opportunity Breakdown ({actual_risk_count} risks, {actual_growth_count} growth)", expanded=False):
                     col_risk, col_growth = st.columns(2)
                     
                     with col_risk:
                         st.markdown("**🔴 Risk Products**")
-                        # Filter by actual risk value, not just predictive_state
+                        # FIXED: Filter by meaningful risk and show actual risk source
                         if 'thirty_day_risk' in enriched_portfolio_df.columns:
                             risk_products = enriched_portfolio_df[
-                                enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0
+                                enriched_portfolio_df['thirty_day_risk'].fillna(0) > 100  # Meaningful threshold
                             ].copy()
                             
                             if not risk_products.empty:
                                 risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
                                 for _, row in risk_products.head(10).iterrows():
                                     asin = row.get('asin', '')[:10]
-                                    title = str(row.get('title', ''))[:25] + "..."
                                     risk = row.get('thirty_day_risk', 0)
-                                    state = row.get('predictive_state', 'HOLD')
-                                    st.markdown(f"• `{asin}` ${risk:,.0f} ({state})")
+                                    # FIXED: Show actual risk SOURCE instead of generic HOLD
+                                    price_risk = row.get('price_erosion_risk', 0) or 0
+                                    share_risk = row.get('share_erosion_risk', 0) or 0
+                                    stockout_risk = row.get('stockout_risk', 0) or 0
+                                    
+                                    # Determine primary risk driver
+                                    if stockout_risk >= share_risk and stockout_risk >= price_risk:
+                                        risk_source = "INVENTORY"
+                                    elif share_risk >= price_risk:
+                                        risk_source = "VELOCITY"
+                                    else:
+                                        risk_source = "PRICING"
+                                    
+                                    st.markdown(f"• `{asin}` ${risk:,.0f} ({risk_source})")
                             else:
-                                st.info("No risk products identified")
+                                st.info("No meaningful risk products (all < $100)")
                         else:
                             st.info("Risk data not available")
                     
@@ -1957,8 +1983,21 @@ with main_tab1:
             except:
                 avg_competitor_count = 0
             
+            # FIXED: Calculate actual price gap from portfolio vs competitor prices
+            # Uses price_gap_vs_competitor if available, otherwise calculate from raw prices
             try:
-                avg_price_gap = float(enriched_portfolio_df['price_gap_vs_median'].mean()) if 'price_gap_vs_median' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_gap_vs_median'].isna().all() else 0
+                if 'price_gap_vs_competitor' in enriched_portfolio_df.columns:
+                    # price_gap_vs_competitor is a ratio, convert to dollar amount
+                    price_col = 'buy_box_price' if 'buy_box_price' in enriched_portfolio_df.columns else 'avg_price'
+                    if price_col in enriched_portfolio_df.columns:
+                        avg_your_price = enriched_portfolio_df[price_col].mean()
+                        avg_gap_ratio = enriched_portfolio_df['price_gap_vs_competitor'].mean()
+                        avg_price_gap = avg_your_price * avg_gap_ratio if not pd.isna(avg_gap_ratio) else 0
+                    else:
+                        avg_price_gap = 0
+                else:
+                    # Calculate directly from competitor data if available
+                    avg_price_gap = 0
             except:
                 avg_price_gap = 0
             

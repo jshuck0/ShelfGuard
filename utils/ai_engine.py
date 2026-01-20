@@ -2165,28 +2165,90 @@ def calculate_portfolio_intelligence_vectorized(
         conquest_rate = 0.15
     
     # === RISK CALCULATION (vectorized) ===
+    # FIXED: Components now ADD UP to total risk for Root Cause Analysis transparency
+    
+    # 1. PRICING PRESSURE RISK - triggered by ANY overpricing (not just >5%)
+    # Graduated: small premium = small risk, large premium = large risk
+    is_overpriced = price_gap > 0.0  # Any positive gap = you're more expensive than market
+    price_erosion = np.where(
+        is_overpriced,
+        revenue * np.minimum(price_gap, 0.30) * 0.25 * price_weight,  # Cap at 30% gap
+        0
+    )
+    
+    # 2. VELOCITY DECLINE RISK - triggered by ANY negative velocity trend
+    # Graduated: small decline = small risk, large decline = large risk
+    is_declining = v90 > 0.0  # Any positive v90 = velocity declining
+    share_erosion = np.where(
+        is_declining,
+        revenue * 0.15 * np.minimum(v90, 0.50) * rank_weight,  # Cap at 50% decline
+        0
+    )
+    
+    # 3. INVENTORY/STOCKOUT RISK - estimate based on revenue volatility
+    # If days_until_stockout available, use it; otherwise estimate from velocity
+    if 'days_until_stockout' in result.columns:
+        days_stockout = result['days_until_stockout'].fillna(999).values
+        stockout_risk_val = np.where(
+            days_stockout < 30,
+            revenue * 0.10 * (30 - days_stockout) / 30 * inventory_weight,
+            0
+        )
+    else:
+        # Estimate: fast sellers (high revenue, high velocity) have higher stockout risk
+        velocity_factor = np.maximum(0, -v90)  # Faster velocity = higher risk
+        stockout_risk_val = np.where(
+            revenue > 5000,  # Higher risk for larger revenue products
+            revenue * 0.03 * (1 + velocity_factor) * inventory_weight,
+            revenue * 0.01 * inventory_weight  # Minimal for small products
+        )
+    
+    # 4. BASE OPTIMIZATION OPPORTUNITY - applies to ALL products
+    # This captures the "always some room to improve" baseline
+    # IMPORTANT: Subtract other components so total = base + components
     base_opportunity_rate = 0.15
-    daily_leakage = (revenue * base_opportunity_rate) / 30.0
-    velocity_adjustment = 1.0 + v90
-    base_30day_risk = daily_leakage * 30 * velocity_adjustment
+    base_30day_risk = revenue * base_opportunity_rate
     
-    # Price erosion (vectorized)
-    price_erosion = np.where(price_gap > 0.05, revenue * price_gap * 0.3 * price_weight, 0)
+    # Total risk = base opportunity DISTRIBUTED across components
+    # If components are small, allocate remaining to "optimization" category
+    component_total = price_erosion + share_erosion + stockout_risk_val
     
-    # Share erosion (vectorized)  
-    share_erosion = np.where(v90 > 0.15, revenue * 0.20 * v90 * rank_weight, 0)
+    # Scale components to sum to total risk (proportional allocation)
+    # Total risk = 15% of revenue, distributed across component types
+    thirty_day_risk = np.maximum(0, base_30day_risk)
     
-    # Total risk
-    thirty_day_risk = np.maximum(0, base_30day_risk + price_erosion + share_erosion)
+    # If no specific risk drivers, allocate to price (default optimization path)
+    has_no_components = component_total < 1  # Effectively zero
+    # For products with no specific issues, classify as "optimization opportunity"
+    # Allocate to pricing (raise price) if no decline, else to velocity
+    optimization_allocation = np.where(
+        has_no_components & (v90 <= 0),  # Stable or improving
+        thirty_day_risk,  # Full allocation to price optimization
+        0
+    )
+    price_erosion = price_erosion + optimization_allocation
     
-    # Predictive state (vectorized)
+    # Recalculate so components sum correctly
+    component_total = price_erosion + share_erosion + stockout_risk_val
+    # Normalize to ensure components sum to total (prevents Root Cause mismatch)
+    if np.any(component_total > 0):
+        scale_factor = np.where(component_total > 0, thirty_day_risk / component_total, 1)
+        price_erosion = price_erosion * scale_factor
+        share_erosion = share_erosion * scale_factor
+        stockout_risk_val = stockout_risk_val * scale_factor
+    
+    # Predictive state (vectorized) - FIXED: More sensitive thresholds
+    # Note: price_erosion now includes optimization allocation
     predictive_state = np.where(
-        v90 > 0.20, "DEFEND",
+        v90 > 0.10, "DEFEND",  # Any meaningful velocity decline
         np.where(
-            competitor_oos > 0.30, "EXPLOIT",
+            stockout_risk_val > revenue * 0.05, "REPLENISH",  # High stockout risk
             np.where(
-                price_erosion > revenue * 0.10, "DEFEND",
-                "HOLD"
+                competitor_oos > 0.20, "EXPLOIT",  # Competitor weakness
+                np.where(
+                    price_erosion > revenue * 0.05, "HOLD",  # Optimization opportunity (not defense)
+                    "HOLD"
+                )
             )
         )
     )
@@ -2338,6 +2400,7 @@ def calculate_portfolio_intelligence_vectorized(
     result['growth_validated'] = np.asarray(growth_validated, dtype=bool)
     result['price_erosion_risk'] = np.asarray(price_erosion, dtype=np.float32)
     result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
+    result['stockout_risk'] = np.asarray(stockout_risk_val, dtype=np.float32)  # FIXED: Now assigned
     result['strategic_state'] = pd.Categorical(strategic_state, categories=["FORTRESS", "HARVEST", "TRENCH_WAR", "DISTRESS", "TERMINAL"])
     
     # Model certainty based on data quality

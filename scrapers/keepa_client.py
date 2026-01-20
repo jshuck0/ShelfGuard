@@ -223,15 +223,19 @@ def build_keepa_weekly_table(products, window_start=None):
     df["eff_p"] = eff_p
     df["filled_price"] = df.groupby("asin")["eff_p"].ffill(limit=MAX_PRICE_FFILL_WEEKS)
     
+    # Fill BSR with interpolation if available, otherwise use default
     if "sales_rank" in df.columns:
         df["sales_rank_filled"] = df.groupby("asin")["sales_rank"].transform(lambda x: x.interpolate(limit=MAX_RANK_GAP_WEEKS))
+    else:
+        # No BSR data - use high default (low confidence)
+        df["sales_rank_filled"] = 100000
     
     # CALIBRATED FOR GROCERY VELOCITY
-        monthly_units = (145000.0 * (df["sales_rank_filled"].clip(lower=1) ** -0.9))
+    monthly_units = (145000.0 * (df["sales_rank_filled"].clip(lower=1) ** -0.9))
     
     # SCALE TO WEEKLY BUCKET
-        df["estimated_units"] = monthly_units * (7 / 30)
-        df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
+    df["estimated_units"] = monthly_units * (7 / 30)
+    df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
     
     # === DATA HEALER INTEGRATION ===
     # Apply comprehensive gap-filling for ALL metrics before data reaches AI

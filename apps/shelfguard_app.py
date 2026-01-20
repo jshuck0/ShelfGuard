@@ -939,7 +939,8 @@ with main_tab1:
                 if median_price > 0 and your_avg_price > 0:
                     price_ratio = your_avg_price / median_price
                     if price_ratio > 5 or price_ratio < 0.2:
-                        st.warning(f"⚠️ **Benchmark mismatch detected**: Your portfolio avg (${your_avg_price:.2f}) is {price_ratio:.1f}x the category median (${median_price:.2f}). This may indicate stale data from a broader category. Re-run your search to update benchmarks.")
+                        # NOTE: Escape $ signs to prevent LaTeX interpretation in Streamlit
+                        st.warning(f"⚠️ **Benchmark mismatch detected**: Your portfolio avg (\\${your_avg_price:.2f}) is {price_ratio:.1f}x the category median (\\${median_price:.2f}). This likely means the benchmark data is from a broader parent category (e.g., 'Potato' includes raw potatoes, not just chips). The benchmarks will auto-correct on your next search.")
 
                 col1, col2, col3 = st.columns(3)
 

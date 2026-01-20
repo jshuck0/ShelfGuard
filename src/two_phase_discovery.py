@@ -44,6 +44,32 @@ from src.family_harvester import (
 
 
 # ========================================
+# HELPER: SAFE KEEPA CSV VALUE EXTRACTION
+# ========================================
+
+def _safe_csv_value(arr, default=0):
+    """
+    Safely extract the last numeric value from a Keepa CSV array.
+    Handles edge cases where Keepa returns nested lists instead of flat arrays.
+    """
+    if not arr:
+        return default
+    try:
+        val = arr[-1]
+        # Handle nested lists (rare Keepa edge case)
+        while isinstance(val, (list, tuple)) and len(val) > 0:
+            val = val[-1]
+        # Ensure we have a numeric value
+        if val is None or val == -1:
+            return default
+        if isinstance(val, (int, float)):
+            return val
+        return default
+    except (IndexError, TypeError):
+        return default
+
+
+# ========================================
 # FIX 1.3: DATABASE CACHE FOR API CALLS
 # ========================================
 
@@ -890,30 +916,20 @@ def phase2_category_market_mapping(
                                 if product.get("productType") == 5:
                                     continue
                                 
-                                # Extract product data
+                                # Extract product data (using safe extraction to handle nested lists)
                                 csv = product.get("csv", [])
-                                price = 0
-                                if csv and len(csv) > 18 and csv[18]:
-                                    price_array = csv[18]
-                                    if price_array and len(price_array) > 0:
-                                        price_cents = price_array[-1] if price_array[-1] else 0
-                                        if price_cents and price_cents > 0:
-                                            price = price_cents / 100.0
                                 
-                                if price == 0 and csv and len(csv) > 0 and csv[0]:
-                                    price_array = csv[0]
-                                    if price_array and len(price_array) > 0:
-                                        price_cents = price_array[-1] if price_array[-1] else 0
-                                        if price_cents and price_cents > 0:
-                                            price = price_cents / 100.0
+                                # Price: Try Buy Box (index 18), then Amazon (index 0)
+                                price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
+                                if price_cents > 0:
+                                    price = price_cents / 100.0
+                                else:
+                                    price_cents = _safe_csv_value(csv[0] if csv and len(csv) > 0 else None, 0)
+                                    price = price_cents / 100.0 if price_cents > 0 else 0
                                 
-                                bsr = None
-                                if csv and len(csv) > 3 and csv[3]:
-                                    bsr_array = csv[3]
-                                    if bsr_array and len(bsr_array) > 0:
-                                        bsr_value = bsr_array[-1]
-                                        if bsr_value and bsr_value != -1 and bsr_value > 0:
-                                            bsr = bsr_value
+                                # BSR (index 3)
+                                bsr = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
+                                bsr = bsr if bsr > 0 else None
                                 
                                 monthly_units = 0
                                 if bsr and bsr > 0:
@@ -937,32 +953,16 @@ def phase2_category_market_mapping(
                                     if oos_90 > 1:
                                         oos_90 = oos_90 / 100
                                 
-                                # Seller Count
-                                new_offer_count = 1
-                                if csv and len(csv) > 11 and csv[11]:
-                                    offer_array = csv[11]
-                                    if offer_array and len(offer_array) > 0:
-                                        last_offer = offer_array[-1]
-                                        if last_offer and last_offer > 0:
-                                            new_offer_count = last_offer
+                                # Seller Count (index 11) - using safe extraction
+                                new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 1)
+                                new_offer_count = max(1, new_offer_count)
                                 
-                                # Review Count
-                                review_count = 0
-                                if csv and len(csv) > 17 and csv[17]:
-                                    review_array = csv[17]
-                                    if review_array and len(review_array) > 0:
-                                        last_review = review_array[-1]
-                                        if last_review and last_review > 0:
-                                            review_count = last_review
+                                # Review Count (index 17)
+                                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
                                 
-                                # Rating
-                                rating = 0.0
-                                if csv and len(csv) > 16 and csv[16]:
-                                    rating_array = csv[16]
-                                    if rating_array and len(rating_array) > 0:
-                                        last_rating = rating_array[-1]
-                                        if last_rating and last_rating > 0:
-                                            rating = last_rating / 10.0
+                                # Rating (index 16) - stored as 10x (45 = 4.5 stars)
+                                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+                                rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
                                 
                                 brand_products.append({
                                     "asin": asin,
@@ -1182,44 +1182,20 @@ def phase2_category_market_mapping(
                     products_filtered_by_category += 1
                     continue  # Skip products from different root categories
                 
-                # Calculate revenue proxy
+                # Calculate revenue proxy (using safe extraction to handle nested lists)
                 csv = product.get("csv", [])
                 
-                # Get price: Try Buy Box first, then Amazon price, then New FBA
-                price = 0
-                if csv and len(csv) > 18 and csv[18]:
-                    price_array = csv[18]
-                    if price_array and len(price_array) > 0:
-                        # Get last non-null value (most recent price)
-                        price_cents = price_array[-1] if price_array[-1] else 0
-                        if price_cents and price_cents > 0:
-                            price = price_cents / 100.0
-                
-                # Fallback to Amazon price if Buy Box is 0
-                if price == 0 and csv and len(csv) > 0 and csv[0]:
-                    price_array = csv[0]
-                    if price_array and len(price_array) > 0:
-                        price_cents = price_array[-1] if price_array[-1] else 0
-                        if price_cents and price_cents > 0:
-                            price = price_cents / 100.0
-                
-                # Fallback to New FBA if still 0
-                if price == 0 and csv and len(csv) > 10 and csv[10]:
-                    price_array = csv[10]
-                    if price_array and len(price_array) > 0:
-                        price_cents = price_array[-1] if price_array[-1] else 0
-                        if price_cents and price_cents > 0:
-                            price = price_cents / 100.0
+                # Get price: Try Buy Box (18), then Amazon (0), then New FBA (10)
+                price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
+                if price_cents <= 0:
+                    price_cents = _safe_csv_value(csv[0] if csv and len(csv) > 0 else None, 0)
+                if price_cents <= 0:
+                    price_cents = _safe_csv_value(csv[10] if csv and len(csv) > 10 else None, 0)
+                price = price_cents / 100.0 if price_cents > 0 else 0
 
-                # Get BSR - allow NaN if missing (we'll keep the product anyway)
-                bsr = None
-                if csv and len(csv) > 3 and csv[3]:
-                    bsr_array = csv[3]
-                    if bsr_array and len(bsr_array) > 0:
-                        bsr_value = bsr_array[-1]
-                        # Filter out placeholder/invalid values: -1, but allow 0 (which is invalid but we'll keep it)
-                        if bsr_value and bsr_value != -1 and bsr_value > 0:
-                            bsr = bsr_value
+                # Get BSR (index 3) - allow None if missing
+                bsr_value = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
+                bsr = bsr_value if bsr_value > 0 else None
 
                 # Calculate monthly units from BSR using power law formula
                 # Formula: monthly_units = 145000 * (BSR ^ -0.9)
@@ -1265,44 +1241,28 @@ def phase2_category_market_mapping(
                     if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
                         oos_90 = oos_90 / 100
                 
-                # Seller Count (new offers) - from csv[11] or stats
-                new_offer_count = 1  # Default: at least 1 seller
-                if csv and len(csv) > 11 and csv[11]:
-                    offer_array = csv[11]
-                    if offer_array and len(offer_array) > 0:
-                        last_offer = offer_array[-1]
-                        if last_offer and last_offer > 0:
-                            new_offer_count = last_offer
-                elif stats and "current" in stats:
+                # Seller Count (index 11) - using safe extraction
+                new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 0)
+                if new_offer_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
                         new_offer_count = current_stats.get("COUNT_NEW", 1) or 1
+                new_offer_count = max(1, new_offer_count)  # At least 1 seller
                 
-                # Review Count - from csv[17] or stats
-                review_count = 0
-                if csv and len(csv) > 17 and csv[17]:
-                    review_array = csv[17]
-                    if review_array and len(review_array) > 0:
-                        last_review = review_array[-1]
-                        if last_review and last_review > 0:
-                            review_count = last_review
-                elif stats and "current" in stats:
+                # Review Count (index 17)
+                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
+                if review_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
                         review_count = current_stats.get("COUNT_REVIEWS", 0) or 0
                 
-                # Rating - from csv[16] or stats
-                rating = 0.0
-                if csv and len(csv) > 16 and csv[16]:
-                    rating_array = csv[16]
-                    if rating_array and len(rating_array) > 0:
-                        last_rating = rating_array[-1]
-                        if last_rating and last_rating > 0:
-                            rating = last_rating / 10.0  # Keepa stores as integer * 10
-                elif stats and "current" in stats:
+                # Rating (index 16) - Keepa stores as 10x
+                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+                if rating_raw <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
-                        rating = (current_stats.get("RATING", 0) or 0) / 10.0
+                        rating_raw = current_stats.get("RATING", 0) or 0
+                rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
 
                 product_data = {
                     "asin": product.get("asin"),
@@ -1416,23 +1376,13 @@ def phase2_category_market_mapping(
                 if seed_products and len(seed_products) > 0:
                     seed_product_data = seed_products[0]
 
-                    # Extract data same as above
+                    # Extract data using safe helper (handles nested lists)
                     csv = seed_product_data.get("csv", [])
-                    price = 0
-                    if csv and len(csv) > 18 and csv[18]:
-                        price_array = csv[18]
-                        if price_array and len(price_array) > 0:
-                            price_cents = price_array[-1] if price_array[-1] else 0
-                            if price_cents and price_cents > 0:
-                                price = price_cents / 100.0
+                    price_cents = _safe_csv_value(csv[18] if csv and len(csv) > 18 else None, 0)
+                    price = price_cents / 100.0 if price_cents > 0 else 0
 
-                    bsr = None
-                    if csv and len(csv) > 3 and csv[3]:
-                        bsr_array = csv[3]
-                        if bsr_array and len(bsr_array) > 0:
-                            bsr_value = bsr_array[-1]
-                            if bsr_value and bsr_value != -1 and bsr_value > 0:
-                                bsr = bsr_value
+                    bsr_value = _safe_csv_value(csv[3] if csv and len(csv) > 3 else None, 0)
+                    bsr = bsr_value if bsr_value > 0 else None
 
                     monthly_units = 0
                     if bsr and bsr > 0:

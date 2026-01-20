@@ -422,6 +422,22 @@ def cache_market_snapshot(
     if source_df.empty:
         return 0
 
+    # DEBUG: Log what we're working with
+    source_name = "df_weekly" if (df_weekly is not None and not df_weekly.empty) else "market_snapshot"
+    st.caption(f"🔍 DEBUG: Caching from {source_name} with columns: {list(source_df.columns)[:10]}...")
+    
+    # Check for expected columns
+    price_cols = [c for c in ["buy_box_price", "filled_price", "price", "avg_price"] if c in source_df.columns]
+    rank_cols = [c for c in ["sales_rank_filled", "sales_rank", "bsr"] if c in source_df.columns]
+    rev_cols = [c for c in ["weekly_sales_filled", "revenue_proxy", "estimated_weekly_revenue"] if c in source_df.columns]
+    st.caption(f"🔍 Found: price={price_cols}, rank={rank_cols}, revenue={rev_cols}")
+    
+    # Sample first row
+    if len(source_df) > 0:
+        sample_row = source_df.iloc[0]
+        for col in price_cols + rank_cols + rev_cols:
+            st.caption(f"   {col}: {sample_row.get(col, 'N/A')} (type: {type(sample_row.get(col, None)).__name__})")
+
     try:
         supabase = create_supabase_client()
         snapshot_date = date.today().isoformat()
@@ -476,6 +492,10 @@ def cache_market_snapshot(
             # If we have price and units but no revenue, calculate it
             if revenue_val is None and price_val and units_val:
                 revenue_val = price_val * units_val / 4  # Weekly from monthly
+            
+            # DEBUG: Log first row's extracted values
+            if len(records) == 0:
+                st.caption(f"🔍 First row extracted: price={price_val}, rank={rank_val}, revenue={revenue_val}, units={units_val}")
 
             record = {
                 "asin": str(asin).strip().upper(),
@@ -557,7 +577,7 @@ def _safe_float(val) -> Optional[float]:
         return None
     try:
         f = float(val)
-        return f if np.isfinite(f) and f != 0 else None  # Treat 0 as missing for fallback logic
+        return f if np.isfinite(f) else None
     except (ValueError, TypeError):
         return None
 
@@ -571,18 +591,19 @@ def _safe_int(val) -> Optional[int]:
     if pd.isna(val):  # Handles np.nan, pd.NA, None, etc.
         return None
     try:
-        i = int(val)
-        return i if i != 0 else None  # Treat 0 as missing for fallback logic
+        return int(val)
     except (ValueError, TypeError):
         return None
 
 
 def _get_first_valid(row: dict, columns: list, converter) -> Optional:
     """
-    Get the first valid (non-null, non-zero) value from a list of column names.
+    Get the first valid (non-null, non-NaN) value from a list of column names.
     
     This fixes the issue where Python's `or` operator treats NaN as truthy,
     preventing fallback to subsequent columns.
+    
+    Returns 0 if all columns have 0 (0 is a valid value, not "missing").
     """
     for col in columns:
         val = converter(row.get(col))

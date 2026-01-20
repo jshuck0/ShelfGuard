@@ -2380,8 +2380,8 @@ with main_tab1:
                         else:
                             pred_state_badge = ""
                         
-                        # Escape cost of inaction for HTML
-                        escaped_cost = html.escape(cost_of_inaction[:50]) + "..." if len(cost_of_inaction) > 50 else html.escape(cost_of_inaction)
+                        # Escape cost of inaction for HTML - use 120 chars to show full reason
+                        escaped_cost = html.escape(cost_of_inaction[:120]) + "..." if len(cost_of_inaction) > 120 else html.escape(cost_of_inaction)
                         
                         # Determine time sensitivity/urgency
                         urgency_badge = ""

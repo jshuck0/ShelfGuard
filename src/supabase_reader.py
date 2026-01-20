@@ -442,32 +442,35 @@ def cache_market_snapshot(
             if not asin:
                 continue
 
-            # Extract price with fallback chain
-            price_val = _safe_float(
-                row.get("buy_box_price") or 
-                row.get("filled_price") or 
-                row.get("price") or 
-                row.get("avg_price")
+            # Convert row to dict for easier access
+            row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+
+            # Extract price with proper fallback (handles NaN correctly)
+            price_val = _get_first_valid(
+                row_dict,
+                ["buy_box_price", "filled_price", "price", "avg_price"],
+                _safe_float
             )
             
-            # Extract sales rank with fallback chain
-            rank_val = _safe_int(
-                row.get("sales_rank_filled") or 
-                row.get("sales_rank") or 
-                row.get("bsr")
+            # Extract sales rank with proper fallback
+            rank_val = _get_first_valid(
+                row_dict,
+                ["sales_rank_filled", "sales_rank", "bsr"],
+                _safe_int
             )
             
-            # Extract revenue with fallback chain
-            revenue_val = _safe_float(
-                row.get("weekly_sales_filled") or 
-                row.get("revenue_proxy") or 
-                row.get("estimated_weekly_revenue")
+            # Extract revenue with proper fallback
+            revenue_val = _get_first_valid(
+                row_dict,
+                ["weekly_sales_filled", "revenue_proxy", "estimated_weekly_revenue"],
+                _safe_float
             )
             
-            # Extract units with fallback chain
-            units_val = _safe_int(
-                row.get("estimated_units") or 
-                row.get("monthly_units")
+            # Extract units with proper fallback
+            units_val = _get_first_valid(
+                row_dict,
+                ["estimated_units", "monthly_units"],
+                _safe_int
             )
             
             # If we have price and units but no revenue, calculate it
@@ -547,11 +550,14 @@ def cache_market_snapshot(
 def _safe_float(val) -> Optional[float]:
     """Safely convert to float, handling NaN and None."""
     import numpy as np
-    if val is None or (isinstance(val, float) and np.isnan(val)):
+    import pandas as pd
+    if val is None:
+        return None
+    if pd.isna(val):  # Handles np.nan, pd.NA, None, etc.
         return None
     try:
         f = float(val)
-        return f if np.isfinite(f) else None
+        return f if np.isfinite(f) and f != 0 else None  # Treat 0 as missing for fallback logic
     except (ValueError, TypeError):
         return None
 
@@ -559,14 +565,30 @@ def _safe_float(val) -> Optional[float]:
 def _safe_int(val) -> Optional[int]:
     """Safely convert to int, handling NaN and None."""
     import numpy as np
+    import pandas as pd
     if val is None:
         return None
+    if pd.isna(val):  # Handles np.nan, pd.NA, None, etc.
+        return None
     try:
-        if isinstance(val, float) and np.isnan(val):
-            return None
-        return int(val)
+        i = int(val)
+        return i if i != 0 else None  # Treat 0 as missing for fallback logic
     except (ValueError, TypeError):
         return None
+
+
+def _get_first_valid(row: dict, columns: list, converter) -> Optional:
+    """
+    Get the first valid (non-null, non-zero) value from a list of column names.
+    
+    This fixes the issue where Python's `or` operator treats NaN as truthy,
+    preventing fallback to subsequent columns.
+    """
+    for col in columns:
+        val = converter(row.get(col))
+        if val is not None:
+            return val
+    return None
 
 
 # ========================================

@@ -618,6 +618,18 @@ with main_tab1:
             market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
             if not market_snapshot.empty:
                 data_source = "session"
+                # CRITICAL: Normalize session state data to ensure consistent column names and dtypes
+                # Discovery phase uses: price, bsr, revenue_proxy, monthly_units
+                # Dashboard expects: weekly_sales_filled (numeric), revenue_proxy (numeric)
+                if 'revenue_proxy' in market_snapshot.columns:
+                    market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
+                    market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
+                if 'bsr' in market_snapshot.columns:
+                    market_snapshot['sales_rank_filled'] = pd.to_numeric(market_snapshot['bsr'], errors='coerce').fillna(0)
+                if 'price' in market_snapshot.columns:
+                    market_snapshot['filled_price'] = pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0)
+                if 'monthly_units' in market_snapshot.columns:
+                    market_snapshot['estimated_units'] = pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
 
         if df_weekly.empty or market_snapshot.empty:
             st.warning("⚠️ No project data found. Please create a project in Market Discovery.")
@@ -896,8 +908,11 @@ with main_tab1:
         # NOTE: revenue_proxy is MONTHLY revenue (calculated from avg_weekly_revenue * 4.33)
         # We use 'weekly_sales_filled' as column name for backward compatibility with dashboard
         # but the value represents MONTHLY revenue (90-day average monthly estimate)
-        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['revenue_proxy']
-        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df['revenue_proxy']  # Explicit monthly column
+        # CRITICAL: Ensure numeric dtype to prevent 'nlargest' errors
+        if 'revenue_proxy' in portfolio_snapshot_df.columns:
+            portfolio_snapshot_df['revenue_proxy'] = pd.to_numeric(portfolio_snapshot_df['revenue_proxy'], errors='coerce').fillna(0)
+        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df.get('revenue_proxy', 0)
+        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df.get('revenue_proxy', 0)
         portfolio_snapshot_df['asin'] = portfolio_snapshot_df.get('asin', '')
 
         # All products in portfolio_df are "Your Brand - Healthy" (predictive state: HOLD)

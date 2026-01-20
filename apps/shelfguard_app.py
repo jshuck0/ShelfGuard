@@ -1651,43 +1651,59 @@ with main_tab1:
             
             # === OPPORTUNITY ALPHA BREAKDOWN ===
             if thirty_day_risk > 0 or thirty_day_growth > 0:
-                with st.expander(f"📊 View Opportunity Breakdown ({defend_count + replenish_count} risks, {growth_opportunity_count} growth)", expanded=False):
+                # Count products with actual risk/growth values (not just predictive_state)
+                actual_risk_count = 0
+                actual_growth_count = 0
+                if 'thirty_day_risk' in enriched_portfolio_df.columns:
+                    actual_risk_count = (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0).sum()
+                if 'thirty_day_growth' in enriched_portfolio_df.columns:
+                    actual_growth_count = (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 0).sum()
+                
+                with st.expander(f"📊 View Opportunity Breakdown ({actual_risk_count} risks, {actual_growth_count} growth)", expanded=False):
                     col_risk, col_growth = st.columns(2)
                     
                     with col_risk:
-                        st.markdown("**🔴 Risk Products (DEFEND/REPLENISH)**")
-                        risk_products = enriched_portfolio_df[
-                            enriched_portfolio_df['predictive_state'].isin(['DEFEND', 'REPLENISH'])
-                        ].copy() if 'predictive_state' in enriched_portfolio_df.columns else pd.DataFrame()
-                        
-                        if not risk_products.empty and 'thirty_day_risk' in risk_products.columns:
-                            risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
-                            for _, row in risk_products.head(10).iterrows():
-                                asin = row.get('asin', '')[:10]
-                                title = str(row.get('title', ''))[:25] + "..."
-                                risk = row.get('thirty_day_risk', 0)
-                                state = row.get('predictive_state', '')
-                                st.markdown(f"• `{asin}` ${risk:,.0f} ({state})")
+                        st.markdown("**🔴 Risk Products**")
+                        # Filter by actual risk value, not just predictive_state
+                        if 'thirty_day_risk' in enriched_portfolio_df.columns:
+                            risk_products = enriched_portfolio_df[
+                                enriched_portfolio_df['thirty_day_risk'].fillna(0) > 0
+                            ].copy()
+                            
+                            if not risk_products.empty:
+                                risk_products = risk_products.sort_values('thirty_day_risk', ascending=False)
+                                for _, row in risk_products.head(10).iterrows():
+                                    asin = row.get('asin', '')[:10]
+                                    title = str(row.get('title', ''))[:25] + "..."
+                                    risk = row.get('thirty_day_risk', 0)
+                                    state = row.get('predictive_state', 'HOLD')
+                                    st.markdown(f"• `{asin}` ${risk:,.0f} ({state})")
+                            else:
+                                st.info("No risk products identified")
                         else:
-                            st.info("No risk products identified")
+                            st.info("Risk data not available")
                     
                     with col_growth:
-                        st.markdown("**🟢 Growth Products (EXPLOIT/PRICE_LIFT)**")
-                        growth_products = enriched_portfolio_df[
-                            enriched_portfolio_df['predictive_state'].isin(['EXPLOIT']) | 
-                            (enriched_portfolio_df['opportunity_type'].isin(['PRICE_LIFT', 'PRICE_POWER', 'CONQUEST', 'REVIEW_MOAT']) if 'opportunity_type' in enriched_portfolio_df.columns else False)
-                        ].copy() if 'predictive_state' in enriched_portfolio_df.columns else pd.DataFrame()
-                        
-                        if not growth_products.empty and 'thirty_day_growth' in growth_products.columns:
-                            growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
-                            for _, row in growth_products.head(10).iterrows():
-                                asin = row.get('asin', '')[:10]
-                                title = str(row.get('title', ''))[:25] + "..."
-                                growth = row.get('thirty_day_growth', 0)
-                                opp_type = row.get('opportunity_type', 'EXPLOIT')
-                                st.markdown(f"• `{asin}` ${growth:,.0f} ({opp_type})")
+                        st.markdown("**🟢 Growth Products**")
+                        # Filter by actual growth value, not just predictive_state
+                        if 'thirty_day_growth' in enriched_portfolio_df.columns:
+                            growth_products = enriched_portfolio_df[
+                                enriched_portfolio_df['thirty_day_growth'].fillna(0) > 0
+                            ].copy()
+                            
+                            if not growth_products.empty:
+                                growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
+                                for _, row in growth_products.head(10).iterrows():
+                                    asin = row.get('asin', '')[:10]
+                                    title = str(row.get('title', ''))[:25] + "..."
+                                    growth = row.get('thirty_day_growth', 0)
+                                    opp_type = row.get('opportunity_type', 'GROWTH')
+                                    state = row.get('predictive_state', 'HOLD')
+                                    st.markdown(f"• `{asin}` ${growth:,.0f} ({opp_type if opp_type != 'GROWTH' else state})")
+                            else:
+                                st.info("No growth opportunities identified")
                         else:
-                            st.info("No growth opportunities identified")
+                            st.info("Growth data not available")
     
         # TILE 4: Risk Averted (Banked from Resolved Actions)
         with c4:

@@ -709,21 +709,40 @@ def load_historical_metrics_from_db(project_id: str) -> pd.DataFrame:
         df = pd.DataFrame(result.data)
 
         # Normalize column names to match expected format for velocity extraction
+        # NOTE: backfill.py writes: datetime, sales_rank, buy_box_price, amazon_price, new_fba_price
+        # We map these to the dashboard expected names
         column_map = {
             "datetime": "week_start",
+            # Map actual columns written by backfill.py
+            "buy_box_price": "filled_price",
+            "sales_rank": "sales_rank_filled",
+            # Also support alternate names if they exist (from other sources)
             "price": "filled_price",
             "bsr": "sales_rank_filled",
             "revenue": "weekly_sales_filled",
-            "units": "estimated_units"
+            "units": "estimated_units",
+            # Support the new columns added to schema
+            "filled_price": "filled_price",
+            "sales_rank_filled": "sales_rank_filled"
         }
 
-        # Rename columns that exist
-        rename_map = {k: v for k, v in column_map.items() if k in df.columns}
+        # Rename columns that exist (avoid overwriting if target already exists)
+        rename_map = {}
+        for src, dst in column_map.items():
+            if src in df.columns and dst not in df.columns:
+                rename_map[src] = dst
         df = df.rename(columns=rename_map)
 
         # Ensure required columns exist
         if "week_start" in df.columns:
             df["week_start"] = pd.to_datetime(df["week_start"])
+
+        # If filled_price still doesn't exist, try to derive it
+        if "filled_price" not in df.columns:
+            for col in ["buy_box_price", "amazon_price", "new_fba_price"]:
+                if col in df.columns:
+                    df["filled_price"] = df[col]
+                    break
 
         return df
 
@@ -769,20 +788,38 @@ def load_historical_metrics_by_asins(asins: Tuple[str, ...], days: int = 90) -> 
 
         df = pd.DataFrame(result.data)
 
-        # Normalize column names
+        # Normalize column names to match expected format for velocity extraction
+        # NOTE: backfill.py writes: datetime, sales_rank, buy_box_price, amazon_price, new_fba_price
         column_map = {
             "datetime": "week_start",
+            # Map actual columns written by backfill.py
+            "buy_box_price": "filled_price",
+            "sales_rank": "sales_rank_filled",
+            # Also support alternate names if they exist
             "price": "filled_price",
             "bsr": "sales_rank_filled",
             "revenue": "weekly_sales_filled",
-            "units": "estimated_units"
+            "units": "estimated_units",
+            "filled_price": "filled_price",
+            "sales_rank_filled": "sales_rank_filled"
         }
 
-        rename_map = {k: v for k, v in column_map.items() if k in df.columns}
+        # Rename columns that exist (avoid overwriting if target already exists)
+        rename_map = {}
+        for src, dst in column_map.items():
+            if src in df.columns and dst not in df.columns:
+                rename_map[src] = dst
         df = df.rename(columns=rename_map)
 
         if "week_start" in df.columns:
             df["week_start"] = pd.to_datetime(df["week_start"])
+
+        # If filled_price still doesn't exist, try to derive it
+        if "filled_price" not in df.columns:
+            for col in ["buy_box_price", "amazon_price", "new_fba_price"]:
+                if col in df.columns:
+                    df["filled_price"] = df[col]
+                    break
 
         return df
 

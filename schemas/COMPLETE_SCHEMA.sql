@@ -388,6 +388,135 @@ CREATE POLICY "Anyone can insert market_patterns"
 
 
 -- ========================================
+-- PART 2B: MISSING TABLES (Added 2026-01-20)
+-- ========================================
+
+-- 9. LLM_CACHE TABLE
+-- Caches LLM responses to reduce API costs
+CREATE TABLE IF NOT EXISTS llm_cache (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cache_key TEXT NOT NULL UNIQUE,
+    prompt_hash TEXT,
+    response JSONB NOT NULL,
+    model TEXT DEFAULT 'gpt-4o-mini',
+    tokens_used INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours')
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_cache_key ON llm_cache(cache_key);
+CREATE INDEX IF NOT EXISTS idx_llm_cache_expires ON llm_cache(expires_at);
+
+ALTER TABLE llm_cache ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view llm_cache" ON llm_cache;
+DROP POLICY IF EXISTS "Anyone can insert llm_cache" ON llm_cache;
+
+CREATE POLICY "Anyone can view llm_cache"
+    ON llm_cache FOR SELECT
+    USING (true);
+
+CREATE POLICY "Anyone can insert llm_cache"
+    ON llm_cache FOR INSERT
+    WITH CHECK (true);
+
+
+-- 10. STRATEGIC_INSIGHTS TABLE
+-- Stores AI-generated strategic insights
+CREATE TABLE IF NOT EXISTS strategic_insights (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asin TEXT NOT NULL,
+    user_id UUID,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    product_status TEXT NOT NULL,
+    strategic_state TEXT NOT NULL,
+    confidence NUMERIC(3, 2),
+    reasoning TEXT,
+    recommendation TEXT,
+    action_type TEXT,
+    projected_upside_monthly NUMERIC(12, 2),
+    downside_risk_monthly NUMERIC(12, 2),
+    net_expected_value NUMERIC(12, 2),
+    thirty_day_risk NUMERIC(5, 2),
+    thirty_day_growth NUMERIC(5, 2),
+    time_horizon_days INTEGER,
+    primary_trigger_type TEXT,
+    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'dismissed', 'resolved', 'expired')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_insights_asin ON strategic_insights(asin);
+CREATE INDEX IF NOT EXISTS idx_insights_status ON strategic_insights(status);
+CREATE INDEX IF NOT EXISTS idx_insights_user ON strategic_insights(user_id);
+CREATE INDEX IF NOT EXISTS idx_insights_generated ON strategic_insights(generated_at DESC);
+
+ALTER TABLE strategic_insights ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view strategic_insights" ON strategic_insights;
+DROP POLICY IF EXISTS "Anyone can insert strategic_insights" ON strategic_insights;
+
+CREATE POLICY "Anyone can view strategic_insights"
+    ON strategic_insights FOR SELECT
+    USING (true);
+
+CREATE POLICY "Anyone can insert strategic_insights"
+    ON strategic_insights FOR INSERT
+    WITH CHECK (true);
+
+
+-- 11. TRIGGER_EVENTS TABLE
+-- Stores market trigger events linked to insights
+CREATE TABLE IF NOT EXISTS trigger_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    insight_id UUID REFERENCES strategic_insights(id) ON DELETE CASCADE,
+    asin TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    severity TEXT CHECK (severity IN ('critical', 'high', 'medium', 'low')),
+    detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metric_name TEXT,
+    baseline_value NUMERIC,
+    current_value NUMERIC,
+    delta_pct NUMERIC(5, 2),
+    affected_asin TEXT,
+    related_asin TEXT,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_triggers_insight ON trigger_events(insight_id);
+CREATE INDEX IF NOT EXISTS idx_triggers_asin ON trigger_events(asin);
+CREATE INDEX IF NOT EXISTS idx_triggers_type ON trigger_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_triggers_detected ON trigger_events(detected_at DESC);
+
+ALTER TABLE trigger_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Anyone can view trigger_events" ON trigger_events;
+DROP POLICY IF EXISTS "Anyone can insert trigger_events" ON trigger_events;
+
+CREATE POLICY "Anyone can view trigger_events"
+    ON trigger_events FOR SELECT
+    USING (true);
+
+CREATE POLICY "Anyone can insert trigger_events"
+    ON trigger_events FOR INSERT
+    WITH CHECK (true);
+
+
+-- ========================================
+-- PART 2C: ADD MISSING COLUMNS
+-- ========================================
+
+-- Add missing columns to product_snapshots
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS seller_count INTEGER;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS competitor_oos_pct NUMERIC(5, 4);
+
+-- Add additional columns to historical_metrics for velocity extraction
+-- These match what supabase_reader expects
+ALTER TABLE historical_metrics ADD COLUMN IF NOT EXISTS filled_price NUMERIC(10, 2);
+ALTER TABLE historical_metrics ADD COLUMN IF NOT EXISTS sales_rank_filled INTEGER;
+
+
+-- ========================================
 -- PART 3: HELPER FUNCTIONS & VIEWS
 -- ========================================
 
@@ -476,12 +605,15 @@ ORDER BY confidence_score DESC, observed_count DESC;
 -- Tables created:
 --   1. projects
 --   2. tracked_asins
---   3. product_snapshots (with category columns)
---   4. historical_metrics
+--   3. product_snapshots (with category columns + seller_count, competitor_oos_pct)
+--   4. historical_metrics (with filled_price, sales_rank_filled)
 --   5. resolution_cards
 --   6. category_intelligence
 --   7. brand_intelligence
 --   8. market_patterns
+--   9. llm_cache (NEW - 2026-01-20)
+--  10. strategic_insights (NEW - 2026-01-20)
+--  11. trigger_events (NEW - 2026-01-20)
 --
 -- Views created:
 --   - latest_snapshots
@@ -489,4 +621,6 @@ ORDER BY confidence_score DESC, observed_count DESC;
 --   - latest_category_intelligence
 --   - top_brands
 --   - reliable_patterns
+--
+-- Updated: 2026-01-20 - Added missing tables and columns from tree shake audit
 -- ========================================

@@ -1992,70 +1992,70 @@ with main_tab1:
                 st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above median. Test price increases on top SKUs.")
             elif avg_price_gap < -1:
                 st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below median. Competitors may be undercutting.")
-        
-        with comp_col2:
-            st.markdown("### 🔍 Root Cause Analysis")
             
-            # Break down risk by component (with safe fallbacks)
-            try:
-                total_price_risk = float(enriched_portfolio_df['price_erosion_risk'].sum()) if 'price_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_erosion_risk'].isna().all() else 0
-            except:
-                total_price_risk = 0
-            
-            try:
-                total_share_risk = float(enriched_portfolio_df['share_erosion_risk'].sum()) if 'share_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['share_erosion_risk'].isna().all() else 0
-            except:
-                total_share_risk = 0
-            
-            try:
-                total_stockout_risk = float(enriched_portfolio_df['stockout_risk'].sum()) if 'stockout_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['stockout_risk'].isna().all() else 0
-            except:
-                total_stockout_risk = 0
-            
-            # Calculate percentages
-            total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
-            if total_risk_components > 0:
-                price_pct = (total_price_risk / total_risk_components) * 100
-                share_pct = (total_share_risk / total_risk_components) * 100
-                stockout_pct = (total_stockout_risk / total_risk_components) * 100
-            else:
-                price_pct = share_pct = stockout_pct = 0
-            
-            st.markdown(f"""
-            <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
-                <div style="font-size: 14px; font-weight: 600; color: #1a1a1a; margin-bottom: 12px;">
-                    Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
+            with comp_col2:
+                st.markdown("### 🔍 Root Cause Analysis")
+                
+                # Break down risk by component (with safe fallbacks)
+                try:
+                    total_price_risk = float(enriched_portfolio_df['price_erosion_risk'].sum()) if 'price_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_erosion_risk'].isna().all() else 0
+                except:
+                    total_price_risk = 0
+                
+                try:
+                    total_share_risk = float(enriched_portfolio_df['share_erosion_risk'].sum()) if 'share_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['share_erosion_risk'].isna().all() else 0
+                except:
+                    total_share_risk = 0
+                
+                try:
+                    total_stockout_risk = float(enriched_portfolio_df['stockout_risk'].sum()) if 'stockout_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['stockout_risk'].isna().all() else 0
+                except:
+                    total_stockout_risk = 0
+                
+                # Calculate percentages
+                total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
+                if total_risk_components > 0:
+                    price_pct = (total_price_risk / total_risk_components) * 100
+                    share_pct = (total_share_risk / total_risk_components) * 100
+                    stockout_pct = (total_stockout_risk / total_risk_components) * 100
+                else:
+                    price_pct = share_pct = stockout_pct = 0
+                
+                st.markdown(f"""
+                <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="font-size: 14px; font-weight: 600; color: #1a1a1a; margin-bottom: 12px;">
+                        Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
+                    </div>
+                    <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                        <div style="margin-bottom: 8px;">
+                            <strong>Pricing Pressure:</strong> ${total_price_risk:,.0f} ({price_pct:.0f}%)
+                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                <div style="background: #dc3545; height: 100%; width: {price_pct}%; border-radius: 2px;"></div>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <strong>Velocity Decline:</strong> ${total_share_risk:,.0f} ({share_pct:.0f}%)
+                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                <div style="background: #ffc107; height: 100%; width: {share_pct}%; border-radius: 2px;"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <strong>Inventory Risk:</strong> ${total_stockout_risk:,.0f} ({stockout_pct:.0f}%)
+                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                <div style="background: #17a2b8; height: 100%; width: {stockout_pct}%; border-radius: 2px;"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div style="font-size: 12px; color: #666; line-height: 1.6;">
-                    <div style="margin-bottom: 8px;">
-                        <strong>Pricing Pressure:</strong> ${total_price_risk:,.0f} ({price_pct:.0f}%)
-                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                            <div style="background: #dc3545; height: 100%; width: {price_pct}%; border-radius: 2px;"></div>
-                        </div>
-                    </div>
-                    <div style="margin-bottom: 8px;">
-                        <strong>Velocity Decline:</strong> ${total_share_risk:,.0f} ({share_pct:.0f}%)
-                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                            <div style="background: #ffc107; height: 100%; width: {share_pct}%; border-radius: 2px;"></div>
-                        </div>
-                    </div>
-                    <div>
-                        <strong>Inventory Risk:</strong> ${total_stockout_risk:,.0f} ({stockout_pct:.0f}%)
-                        <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                            <div style="background: #17a2b8; height: 100%; width: {stockout_pct}%; border-radius: 2px;"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Add context
-            if price_pct > 40:
-                st.info(f"💡 **Primary Driver:** Pricing pressure from {competitor_product_count} competitors. Consider matching or testing premium positioning.")
-            if share_pct > 40:
-                st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
-            if stockout_pct > 40:
-                st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
+                """, unsafe_allow_html=True)
+                
+                # Add context
+                if price_pct > 40:
+                    st.info(f"💡 **Primary Driver:** Pricing pressure from {competitor_product_count} competitors. Consider matching or testing premium positioning.")
+                if share_pct > 40:
+                    st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
+                if stockout_pct > 40:
+                    st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
         else:
             # Fallback if no enriched data available
             st.info("📊 Competitive intelligence and root cause analysis will appear here once portfolio data is loaded.")

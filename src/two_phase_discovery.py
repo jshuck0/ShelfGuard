@@ -35,6 +35,13 @@ import hashlib
 from scrapers.keepa_client import build_keepa_weekly_table
 from src.backfill import fetch_90day_history
 
+# Import family harvester for variation-aware discovery
+from src.family_harvester import (
+    harvest_product_families,
+    harvest_to_seed_dataframe,
+    HarvestResult
+)
+
 
 # ========================================
 # FIX 1.3: DATABASE CACHE FOR API CALLS
@@ -332,19 +339,37 @@ def get_openai_client() -> Optional[OpenAI]:
         return None
 
 
+# ========================================
+# FAMILY HARVESTER TOGGLE
+# ========================================
+
+# Set this to True to enable variation-aware discovery
+# This will fetch complete product families instead of naive keyword matches
+ENABLE_FAMILY_HARVESTER = True
+
+
 @st.cache_data(ttl=3600)
 def phase1_seed_discovery(
     keyword: str,
     limit: int = 50,
     domain: str = "US",
     category_filter: Optional[int] = None,
-    check_cache: bool = True
+    check_cache: bool = True,
+    use_family_harvester: bool = None  # None = use global toggle
 ) -> pd.DataFrame:
     """
     Phase 1: Lightweight search to find seed products.
 
     FIX 1.3: Now checks database cache before making Keepa API calls.
     This reduces API costs by 50-80% for repeated searches.
+    
+    NEW: When use_family_harvester=True, uses intelligent variation-aware
+    discovery that fetches complete product families instead of naive keyword matches.
+    
+    Example: Searching "RXBAR" with family harvester will return:
+    - 1 Parent RXBAR listing + all 50 flavors/sizes
+    - Then the next competitor's complete family
+    Instead of: 1 RXBAR + 99 random competitor bars
 
     Args:
         keyword: User's search term
@@ -352,10 +377,28 @@ def phase1_seed_discovery(
         domain: Amazon marketplace ('US', 'GB', 'DE', etc.)
         category_filter: Optional category ID to restrict search (e.g., 16310101 for Grocery)
         check_cache: Whether to check database cache first (default True)
+        use_family_harvester: Use variation-aware discovery (None = use global toggle)
 
     Returns:
         DataFrame with [asin, title, brand, category_id, category_path, price, bsr]
     """
+    # Determine if we should use family harvester
+    use_families = use_family_harvester if use_family_harvester is not None else ENABLE_FAMILY_HARVESTER
+    
+    # NEW: If family harvester is enabled, use that instead
+    if use_families:
+        try:
+            st.info("🧬 Using Family Harvester (variation-aware discovery)")
+            return harvest_to_seed_dataframe(
+                keyword=keyword,
+                limit=limit,
+                domain=domain,
+                category_filter=category_filter
+            )
+        except Exception as e:
+            st.warning(f"⚠️ Family Harvester failed, falling back to naive search: {e}")
+            # Fall through to legacy logic
+    
     # FIX 1.3: Check database cache first to avoid unnecessary API calls
     if check_cache:
         cached_df = _check_search_cache(keyword, domain, category_filter, max_age_hours=6)
@@ -506,6 +549,65 @@ def phase1_seed_discovery(
 
     except Exception as e:
         st.error(f"Phase 1 Discovery Error: {str(e)}")
+        return pd.DataFrame()
+
+
+def phase1_brand_focused_discovery(
+    brand_name: str,
+    limit: int = 100,
+    domain: str = "US",
+    category_filter: Optional[int] = None
+) -> pd.DataFrame:
+    """
+    Brand-Focused Discovery: Get ALL products from a specific brand.
+    
+    This is optimized for scenarios like "I want all RXBAR products"
+    where the user knows the exact brand they want to analyze.
+    
+    Uses Keepa's brand filter for precise matching, then fetches
+    complete product families for each result.
+    
+    Args:
+        brand_name: Exact brand name (e.g., "RXBAR", "Poppi", "Olipop")
+        limit: Maximum ASINs to return
+        domain: Amazon marketplace
+        category_filter: Optional category to restrict search
+        
+    Returns:
+        DataFrame with all products from the brand, prioritized by BSR
+    """
+    from src.family_harvester import harvest_product_families
+    
+    st.info(f"🎯 Brand-focused discovery for '{brand_name}'")
+    
+    try:
+        result = harvest_product_families(
+            keyword=brand_name,
+            max_asins=limit,
+            domain=domain,
+            category_filter=category_filter,
+            brand_filter=brand_name,  # KEY: Use brand filter for exact matching
+            seed_limit=20,  # More seeds since we're filtering to one brand
+            expand_variations=True,
+            filter_children=True
+        )
+        
+        if not result.families:
+            st.warning(f"No products found for brand '{brand_name}'")
+            return pd.DataFrame()
+        
+        df = result.to_dataframe()
+        
+        # Add stats
+        st.success(
+            f"✅ Found {len(df)} products across {len(result.families)} product lines "
+            f"for brand '{brand_name}'"
+        )
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Brand discovery failed: {e}")
         return pd.DataFrame()
 
 

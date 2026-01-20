@@ -100,8 +100,30 @@ def render_discovery_ui() -> None:
                 return
 
     else:  # Two-Phase Discovery
-        # ========== CATEGORY SELECTION (OPTIONAL) ==========
+        # ========== DISCOVERY MODE SELECTION ==========
         st.markdown("#### 🎯 Step 1: Define Your Market")
+        
+        # NEW: Discovery strategy selector
+        discovery_strategy = st.radio(
+            "Discovery Strategy",
+            [
+                "🧬 Family Harvester (Recommended)", 
+                "🔍 Classic Keyword Search",
+                "🎯 Brand-Focused (All products from one brand)"
+            ],
+            horizontal=False,
+            help="""
+            **Family Harvester**: Gets complete product families (parent + all variations).
+            When you search "RXBAR", you get all 50 flavors, not 1 RXBAR + 99 competitors.
+            
+            **Classic**: Simple keyword matching (legacy behavior).
+            
+            **Brand-Focused**: Get ALL products from a specific brand name.
+            """
+        )
+        
+        is_brand_mode = "Brand-Focused" in discovery_strategy
+        use_family_harvester = "Family Harvester" in discovery_strategy
 
         search_mode = st.radio(
             "How would you like to search?",
@@ -147,7 +169,15 @@ def render_discovery_ui() -> None:
         col1, col2 = st.columns([3, 1])
 
         with col1:
-            if category_filter:
+            if is_brand_mode:
+                # Brand-focused mode: simpler input
+                search_keyword = st.text_input(
+                    "Brand Name (exact)",
+                    placeholder="e.g., RXBAR, Poppi, Olipop, Celsius",
+                    help="Enter the exact brand name to get ALL their products",
+                    key="search_keyword_brand"
+                )
+            elif category_filter:
                 search_keyword = st.text_input(
                     f"Search within {selected_category}",
                     placeholder="e.g., Starbucks, organic, premium brand",
@@ -163,56 +193,111 @@ def render_discovery_ui() -> None:
                 )
 
         with col2:
-            seed_limit = st.selectbox(
-                "Seed Results",
-                [5, 10, 25],
-                index=0,
-                help="Number of seed candidates to show"
-            )
+            if is_brand_mode:
+                # Brand mode: higher limit since we want all products
+                seed_limit = st.selectbox(
+                    "Max Products",
+                    [50, 100, 200],
+                    index=1,
+                    help="Maximum products to fetch from this brand"
+                )
+            else:
+                seed_limit = st.selectbox(
+                    "Seed Results",
+                    [5, 10, 25],
+                    index=0,
+                    help="Number of seed candidates to show"
+                )
 
         if not search_keyword:
-            st.info("💡 Enter a search term to find seed products (e.g., 'Windex', 'Starbucks', 'Dunkin')")
+            if is_brand_mode:
+                st.info("💡 Enter a brand name to get ALL their products (e.g., 'RXBAR', 'Poppi', 'Celsius')")
+            else:
+                st.info("💡 Enter a search term to find seed products (e.g., 'Windex', 'Starbucks', 'Dunkin')")
             return
 
         # Phase 1 Search Button
-        search_key = f"{search_keyword}_{category_filter}"  # Unique key per category
+        search_key = f"{search_keyword}_{category_filter}_{discovery_strategy}"  # Include strategy in key
         if "seed_products_df" not in st.session_state or st.session_state.get("last_search") != search_key:
-            if st.button("🔍 Find Seed Products", type="primary"):
+            button_label = "🎯 Harvest Brand Products" if is_brand_mode else "🔍 Find Seed Products"
+            if st.button(button_label, type="primary"):
                 # Clear previous Phase 2 data when starting a new search
                 if "discovery_market_snapshot" in st.session_state:
                     del st.session_state["discovery_market_snapshot"]
                 if "discovery_stats" in st.session_state:
                     del st.session_state["discovery_stats"]
+                
+                spinner_msg = (
+                    f"🧬 Harvesting all '{search_keyword}' products with variations..." 
+                    if is_brand_mode else 
+                    f"🌱 Searching for '{search_keyword}' seed products..."
+                )
                     
-                with st.spinner(f"🌱 Searching for '{search_keyword}' seed products..."):
+                with st.spinner(spinner_msg):
                     try:
-                        from src.two_phase_discovery import phase1_seed_discovery
+                        if is_brand_mode:
+                            # Use brand-focused discovery
+                            from src.two_phase_discovery import phase1_brand_focused_discovery
+                            
+                            seed_df = phase1_brand_focused_discovery(
+                                brand_name=search_keyword,
+                                limit=seed_limit,
+                                domain="US",
+                                category_filter=category_filter
+                            )
+                        else:
+                            # Use standard phase 1 with optional family harvester
+                            from src.two_phase_discovery import phase1_seed_discovery
 
-                        seed_df = phase1_seed_discovery(
-                            keyword=search_keyword,
-                            limit=seed_limit,
-                            domain="US",
-                            category_filter=category_filter  # Pass category filter
-                        )
+                            seed_df = phase1_seed_discovery(
+                                keyword=search_keyword,
+                                limit=seed_limit,
+                                domain="US",
+                                category_filter=category_filter,
+                                use_family_harvester=use_family_harvester
+                            )
 
                         if seed_df.empty:
-                            st.error(f"❌ No seed products found for '{search_keyword}'")
+                            st.error(f"❌ No products found for '{search_keyword}'")
                             return
 
                         st.session_state["seed_products_df"] = seed_df
                         st.session_state["last_search"] = search_key
+                        st.session_state["discovery_mode"] = discovery_strategy
                         st.rerun()
 
                     except Exception as e:
-                        st.error(f"❌ Phase 1 failed: {str(e)}")
+                        st.error(f"❌ Discovery failed: {str(e)}")
                         st.exception(e)
                         return
 
         # Display seed products if available
         if "seed_products_df" in st.session_state:
             seed_df = st.session_state["seed_products_df"]
-
-            st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
+            
+            # Check if we used family harvester (has family_size column)
+            used_families = "family_size" in seed_df.columns and "parent_asin" in seed_df.columns
+            
+            if used_families:
+                unique_families = seed_df["parent_asin"].nunique() if "parent_asin" in seed_df.columns else 1
+                st.success(
+                    f"✅ Found {len(seed_df)} products across {unique_families} product families "
+                    f"for '{search_keyword}'"
+                )
+                
+                # Show family breakdown
+                with st.expander("🧬 Product Family Breakdown", expanded=False):
+                    if "parent_asin" in seed_df.columns:
+                        family_summary = seed_df.groupby("parent_asin").agg({
+                            "asin": "count",
+                            "brand": "first",
+                            "family_title": "first" if "family_title" in seed_df.columns else "brand"
+                        }).reset_index()
+                        family_summary.columns = ["Parent ASIN", "Variations", "Brand", "Title"]
+                        family_summary = family_summary.sort_values("Variations", ascending=False)
+                        st.dataframe(family_summary.head(10), use_container_width=True)
+            else:
+                st.success(f"✅ Found {len(seed_df)} seed candidates for '{search_keyword}'")
 
             # Check for category ambiguity (keyword-only mode)
             if not category_filter and not seed_df.empty and "category_id" in seed_df.columns:

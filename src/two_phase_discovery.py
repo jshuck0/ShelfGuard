@@ -736,12 +736,12 @@ def phase2_category_market_mapping(
             st.warning(f"⚠️ No leaf category - using rootCategory=[{category_id}] only")
 
     # Fetch products from the category in batches
-    # Target: 100 products with valid price/BSR
+    # Target: 200 products with valid price/BSR (100 brand + 100 competitors)
     # Fetch extra ASINs to account for ones without price/BSR data (~40-50% may be filtered)
     all_products = []
     page = 0
     cumulative_revenue = 0
-    target_valid_products = 100
+    target_valid_products = 200
 
     # Convert domain string to domain ID
     domain_map = {"US": 1, "GB": 2, "DE": 3, "FR": 4, "JP": 5, "CA": 6, "IT": 8, "ES": 9, "IN": 10, "MX": 11, "BR": 12}

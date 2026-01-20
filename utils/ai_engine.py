@@ -2843,16 +2843,25 @@ async def generate_portfolio_brief(
 
 FORMAT YOUR RESPONSE AS:
 1. **Status Line**: One sentence portfolio health summary with $ amounts
-2. **Priority Action**: The single most important action with specific $ impact
-3. **Secondary Focus**: What to do after the priority action
-4. **Opportunity Alpha**: Total addressable value (Risk avoided + Growth captured)
+2. **Priority Action**: The single most important action with specific $ impact and ASINs (if provided)
+3. **Secondary Focus**: A DIFFERENT strategic insight - NOT just repeating the priority action. Examples:
+   - Market structure analysis (e.g., "72 competitors = fragmented market, focus on top 3 SKUs")
+   - Competitive dynamics (e.g., "Competitor pricing pressure on mid-tier products suggests defensive pricing needed")
+   - Portfolio composition (e.g., "70% of revenue from top 5 SKUs = concentration risk, diversify")
+   - Data quality insights (e.g., "Limited historical data on new launches = prioritize data collection")
+   - Strategic positioning (e.g., "Market leader position enables premium tier testing")
+4. **Opportunity Alpha**: Strategic interpretation of the total addressable value - NOT just repeating the number. Examples:
+   - "Total addressable value of $520.9K represents 15% of portfolio revenue at stake — defensive actions can preserve $445.3K while growth initiatives capture $75.7K"
+   - "Combined opportunity of $520.9K: $445.3K defensive (velocity decline across 15 products) + $75.7K offensive (price power on top-30 rank SKUs)"
 
 RULES:
 - ONLY reference ASINs that appear in "Top Risk Products" or "Top Growth Products" sections
 - If no specific products are listed, give portfolio-wide recommendations (not fake ASINs)
 - Do NOT invent or fabricate ASINs - if you don't have specific ASIN data, say "review portfolio" instead
 - QUANTIFY: Always include $ impact of recommended actions
-- MAX 120 WORDS
+- Secondary Focus MUST be different from Priority Action - provide strategic context, not tactical repetition
+- Opportunity Alpha MUST interpret the number strategically, not just restate it
+- MAX 150 WORDS (increased to allow for more sophisticated insights)
 
 ## GROWTH OPPORTUNITY TYPES (Use these in recommendations)
 - PRICE_POWER: Top-100 rank products can test 3-5% price increases

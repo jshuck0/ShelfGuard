@@ -1385,6 +1385,18 @@ with main_tab1:
             status_text = "ATTENTION"
             action_required_count = defend_count + replenish_count
             top_action = f"{action_required_count} ALERTS"
+        else:
+            # Smart default based on portfolio state
+            if thirty_day_risk > total_rev_curr * 0.10:  # >10% at risk
+                top_action = "DEFEND revenue"
+            elif thirty_day_growth > total_rev_curr * 0.05:  # >5% growth opportunity
+                top_action = "CAPTURE growth"
+            elif your_market_share > 50:  # Market leader
+                top_action = "OPTIMIZE pricing"
+            elif your_market_share < 20:  # Niche player
+                top_action = "EXPAND share"
+            else:  # Balanced
+                top_action = "MAINTAIN position"
         
         # Override top status banner based on predictive intelligence
         # Calculate action counts for status banner

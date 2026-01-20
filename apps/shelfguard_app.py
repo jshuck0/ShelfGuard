@@ -2514,6 +2514,9 @@ with main_tab1:
                     elif risk > 1000 and strategic_state == "TRENCH_WAR":
                         # Trench War + risk = need to defend
                         competitor_count = row.get('competitor_count', 0) or 0
+                        # FIX: Use market-level competitor count if product-level is missing
+                        if competitor_count == 0:
+                            competitor_count = competitor_product_count  # Use portfolio-level count
                         action_display = f"{action_emoji} Defend share - ${risk:.0f}/mo at risk from {competitor_count} competitors, match pricing"
                     elif risk > 1000 and strategic_state == "DISTRESS":
                         # Check risk source for distress

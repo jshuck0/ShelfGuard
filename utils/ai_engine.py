@@ -2195,13 +2195,11 @@ def calculate_portfolio_intelligence_vectorized(
             0
         )
     else:
-        # Estimate: fast sellers (high revenue, high velocity) have higher stockout risk
-        velocity_factor = np.maximum(0, -v90)  # Faster velocity = higher risk
-        stockout_risk_val = np.where(
-            revenue > 5000,  # Higher risk for larger revenue products
-            revenue * 0.03 * (1 + velocity_factor) * inventory_weight,
-            revenue * 0.01 * inventory_weight  # Minimal for small products
-        )
+        # FIX: Do NOT fabricate stockout risk when we don't have actual data
+        # Fabricated risk creates false "INVENTORY" alerts for top products
+        # Only calculate stockout risk if we have actual inventory/stockout data
+        # Without data, stockout_risk = 0, and risk should be allocated to pricing/velocity
+        stockout_risk_val = np.zeros_like(revenue)  # Zero when no actual stockout data
     
     # 4. BASE OPTIMIZATION OPPORTUNITY - applies to ALL products
     # This captures the "always some room to improve" baseline

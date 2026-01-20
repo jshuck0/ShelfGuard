@@ -671,19 +671,19 @@ with main_tab1:
             st.stop()
         
         # === DATA HEALER: Apply comprehensive gap-filling (ALL code paths) ===
-        # This ensures revenue_proxy and all critical metrics exist with valid values
+        # This ensures ALL critical metrics exist with valid values for dashboard compatibility
         # MUST run BEFORE brand filtering to ensure portfolio_df inherits healed data
         try:
-            from utils.data_healer import clean_and_interpolate_metrics, ensure_revenue_proxy
-            # First ensure revenue_proxy exists (critical for Command Center)
-            market_snapshot = ensure_revenue_proxy(market_snapshot, verbose=False)
-            # Then apply full healing for all metrics
+            from utils.data_healer import heal_market_snapshot, clean_and_interpolate_metrics
+            # Use comprehensive market snapshot healer (ensures all dashboard columns exist)
+            market_snapshot = heal_market_snapshot(market_snapshot, verbose=False)
+            # Then apply time-series healing for gap interpolation
             market_snapshot = clean_and_interpolate_metrics(market_snapshot, group_by_column="asin", verbose=False)
             # Also heal df_weekly if it's different from market_snapshot
             if not df_weekly.equals(market_snapshot):
-                df_weekly = ensure_revenue_proxy(df_weekly, verbose=False)
+                df_weekly = heal_market_snapshot(df_weekly, verbose=False)
         except ImportError:
-            # Fallback: Manual revenue_proxy creation if healer not available
+            # Fallback: Manual column creation if healer not available
             if 'revenue_proxy' not in market_snapshot.columns or market_snapshot['revenue_proxy'].isna().all():
                 if 'avg_weekly_revenue' in market_snapshot.columns:
                     market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
@@ -696,6 +696,13 @@ with main_tab1:
                     market_snapshot['revenue_proxy'] = 0.0
             if 'weekly_sales_filled' not in market_snapshot.columns:
                 market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
+            # Ensure other critical columns exist
+            for col, default in [('velocity_trend_30d', 0.0), ('velocity_trend_90d', 0.0), 
+                                  ('data_quality', 'VERY_LOW'), ('data_weeks', 0),
+                                  ('bsr', 1000000), ('review_count', 0), ('rating', 0.0),
+                                  ('amazon_bb_share', 0.5), ('competitor_oos_pct', 0.0)]:
+                if col not in market_snapshot.columns:
+                    market_snapshot[col] = default
         
         # 3. VELOCITY EXTRACTION FROM DATABASE (FIX 1.1 - Critical Pipeline Fix)
         # Extract velocity trends from historical_metrics table instead of session state

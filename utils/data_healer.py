@@ -67,6 +67,7 @@ PERFORMANCE_METRICS = MetricGroup(
     columns=[
         "sales_rank",
         "sales_rank_filled",
+        "bsr",                  # ADDED: Discovery uses 'bsr' for Best Seller Rank
         "current_SALES",
         "avg30_SALES",
         "avg90_SALES",
@@ -123,6 +124,31 @@ SPECIAL_DEFAULTS = {
     "velocity_decay": 1.0,
     "velocity_trend_30d": 0.0,
     "velocity_trend_90d": 0.0,
+    # BSR/Rank: Assume worst case if missing (high rank = low sales)
+    "bsr": 1_000_000,
+    "sales_rank": 1_000_000,
+    "sales_rank_filled": 1_000_000,
+    # Revenue: 0 if unknown (will be calculated by ensure_revenue_proxy)
+    "revenue_proxy": 0.0,
+    "weekly_sales_filled": 0.0,
+    "monthly_units": 0.0,
+    "estimated_units": 0.0,
+    # Competitive: Neutral defaults
+    "competitor_count": 0,
+    "competitor_oos_pct": 0.0,
+    "price_gap_vs_competitor": 0.0,
+    # AI Risk: No risk if unknown
+    "thirty_day_risk": 0.0,
+    "thirty_day_growth": 0.0,
+    "price_erosion_risk": 0.0,
+    "share_erosion_risk": 0.0,
+    "stockout_risk": 0.0,
+    "daily_burn_rate": 0.0,
+    "cost_of_inaction": 0.0,
+    # OOS: Assume in stock if unknown
+    "outOfStockPercentage30": 0.0,
+    "outOfStockPercentage90": 0.0,
+    "days_until_stockout": 999,  # 999 = no stockout predicted
 }
 
 # Group D: Buy Box & Ownership Metrics
@@ -147,6 +173,8 @@ VELOCITY_METRICS = MetricGroup(
     name="Velocity & Decay",
     columns=[
         "velocity_decay",
+        "velocity_trend_30d",   # ADDED: 30-day velocity trend (critical for AI)
+        "velocity_trend_90d",   # ADDED: 90-day velocity trend (critical for AI)
         "forecast_change",
         "deltaPercent30_SALES",
         "deltaPercent90_SALES",
@@ -154,9 +182,63 @@ VELOCITY_METRICS = MetricGroup(
         "deltaPercent90_COUNT_NEW",
     ],
     fill_strategy="interpolate",
-    default_value=1.0,  # Neutral decay factor
+    default_value=0.0,  # Neutral velocity (no change) - changed from 1.0 for trend metrics
     max_gap_limit=2,
     description="Velocity metrics interpolate smoothly"
+)
+
+# Group F: Competitive Intelligence Metrics (calculated by dashboard/AI)
+COMPETITIVE_METRICS = MetricGroup(
+    name="Competitive Intelligence",
+    columns=[
+        "competitor_count",
+        "competitor_oos_pct",
+        "price_gap_vs_competitor",
+        "price_gap_vs_median",
+        "median_competitor_price",
+        "median_competitor_reviews",
+        "review_advantage_pct",
+        "best_competitor_rank",
+        "worst_competitor_rank",
+    ],
+    fill_strategy="ffill",
+    default_value=0.0,  # Neutral competitive position
+    max_gap_limit=4,
+    description="Competitive metrics use forward fill"
+)
+
+# Group G: AI/Risk Metrics (calculated by AI engine)
+AI_RISK_METRICS = MetricGroup(
+    name="AI Risk & Growth",
+    columns=[
+        "thirty_day_risk",
+        "thirty_day_growth",
+        "price_erosion_risk",
+        "share_erosion_risk",
+        "stockout_risk",
+        "price_lift_opportunity",
+        "conquest_opportunity",
+        "daily_burn_rate",
+        "cost_of_inaction",
+    ],
+    fill_strategy="ffill",
+    default_value=0.0,  # No risk/growth if unknown
+    max_gap_limit=4,
+    description="AI-calculated risk metrics"
+)
+
+# Group H: Out of Stock Metrics (from Keepa)
+OOS_METRICS = MetricGroup(
+    name="Out of Stock",
+    columns=[
+        "outOfStockPercentage30",
+        "outOfStockPercentage90",
+        "days_until_stockout",
+    ],
+    fill_strategy="ffill",
+    default_value=0.0,  # Assume in stock if unknown
+    max_gap_limit=4,
+    description="OOS metrics use forward fill"
 )
 
 # All metric groups
@@ -166,6 +248,9 @@ ALL_METRIC_GROUPS = [
     SOCIAL_COMPETITIVE_METRICS,
     BUYBOX_METRICS,
     VELOCITY_METRICS,
+    COMPETITIVE_METRICS,
+    AI_RISK_METRICS,
+    OOS_METRICS,
 ]
 
 
@@ -410,6 +495,151 @@ def ensure_revenue_proxy(
         total_products = len(df)
         pct = products_with_revenue / total_products * 100 if total_products > 0 else 0
         print(f"  Revenue data quality: {products_with_revenue}/{total_products} ({pct:.0f}%) products have revenue")
+    
+    return df
+
+
+def heal_market_snapshot(
+    df: pd.DataFrame,
+    verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Comprehensive healer specifically for market snapshot DataFrames.
+    
+    Ensures ALL columns required by the Command Center dashboard exist with valid values.
+    This is the single entry point for healing discovery/market data before dashboard processing.
+    
+    Critical columns ensured:
+    - Financial: revenue_proxy, weekly_sales_filled, price, filled_price, buy_box_price
+    - Performance: bsr, sales_rank, sales_rank_filled
+    - Velocity: velocity_trend_30d, velocity_trend_90d, data_quality, data_weeks
+    - Social: review_count, rating, new_offer_count
+    - Competitive: competitor_oos_pct, price_gap_vs_competitor
+    - AI: thirty_day_risk, thirty_day_growth, predictive_state
+    """
+    df = df.copy()
+    
+    if verbose:
+        print("\n" + "="*60)
+        print("MARKET SNAPSHOT HEALER - Ensuring Dashboard Compatibility")
+        print("="*60)
+    
+    # 1. REVENUE (most critical - prevents KeyError)
+    df = ensure_revenue_proxy(df, verbose=verbose)
+    
+    # 2. PRICE COLUMNS (dashboard expects multiple price columns)
+    price_sources = ['price', 'buy_box_price', 'filled_price', 'amazon_price', 'new_price']
+    price_value = None
+    for col in price_sources:
+        if col in df.columns and df[col].notna().any():
+            price_value = pd.to_numeric(df[col], errors='coerce')
+            break
+    
+    # Ensure all price columns exist
+    for col in ['price', 'buy_box_price', 'filled_price']:
+        if col not in df.columns:
+            df[col] = price_value if price_value is not None else 0.0
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # 3. BSR/RANK COLUMNS
+    bsr_sources = ['bsr', 'sales_rank', 'sales_rank_filled']
+    bsr_value = None
+    for col in bsr_sources:
+        if col in df.columns and df[col].notna().any():
+            bsr_value = pd.to_numeric(df[col], errors='coerce')
+            break
+    
+    for col in ['bsr', 'sales_rank_filled']:
+        if col not in df.columns:
+            df[col] = bsr_value if bsr_value is not None else 1_000_000
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(1_000_000)
+    
+    # 4. VELOCITY COLUMNS (critical for AI engine)
+    velocity_cols = {
+        'velocity_trend_30d': 0.0,
+        'velocity_trend_90d': 0.0,
+        'data_quality': 'VERY_LOW',
+        'data_weeks': 0,
+    }
+    for col, default in velocity_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        elif col in ['velocity_trend_30d', 'velocity_trend_90d']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+        elif col == 'data_weeks':
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default).astype(int)
+    
+    # 5. SOCIAL METRICS
+    social_cols = {
+        'review_count': 0,
+        'rating': 0.0,
+        'new_offer_count': 1,
+    }
+    for col, default in social_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    # 6. COMPETITIVE METRICS (calculated by dashboard, but ensure they exist)
+    competitive_cols = {
+        'competitor_oos_pct': 0.0,
+        'price_gap_vs_competitor': 0.0,
+        'competitor_count': 0,
+    }
+    for col, default in competitive_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    # 7. OOS METRICS (from Keepa)
+    oos_cols = {
+        'outOfStockPercentage90': 0.0,
+        'outOfStockPercentage30': 0.0,
+    }
+    for col, default in oos_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    # 8. BUY BOX (critical for AI - prevents "zero buy box" false positives)
+    if 'amazon_bb_share' not in df.columns:
+        df['amazon_bb_share'] = 0.5  # Neutral default
+    else:
+        df['amazon_bb_share'] = pd.to_numeric(df['amazon_bb_share'], errors='coerce').fillna(0.5)
+    
+    # 9. UNITS COLUMNS
+    units_cols = {
+        'monthly_units': 0.0,
+        'estimated_units': 0.0,
+    }
+    for col, default in units_cols.items():
+        if col not in df.columns:
+            # Try to calculate from revenue/price
+            if 'revenue_proxy' in df.columns and 'price' in df.columns:
+                price_safe = df['price'].replace(0, np.nan)
+                df[col] = (df['revenue_proxy'] / price_safe).fillna(default)
+            else:
+                df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    if verbose:
+        cols_created = []
+        critical_cols = ['revenue_proxy', 'weekly_sales_filled', 'price', 'bsr', 
+                        'velocity_trend_30d', 'review_count', 'amazon_bb_share']
+        for col in critical_cols:
+            if col in df.columns:
+                non_null = df[col].notna().sum()
+                cols_created.append(f"  ✓ {col}: {non_null}/{len(df)} valid")
+        print("\nColumn Status:")
+        for status in cols_created:
+            print(status)
+        print("="*60)
     
     return df
 

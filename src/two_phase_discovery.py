@@ -835,12 +835,45 @@ def phase2_category_market_mapping(
                     st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
                     
                     # Fetch full product data for brand ASINs
+                    # Rate limiting: Add delays between batches to avoid hitting Keepa limits
                     for i in range(0, len(brand_asins), 20):
                         batch_asins = brand_asins[i:i + 20]
-                        try:
-                            batch_products = api.query(batch_asins, stats=90, rating=True)
-                            
-                            for product in batch_products:
+                        max_retries = 3
+                        retry_delay = 3
+                        batch_products = []
+                        
+                        for attempt in range(max_retries):
+                            try:
+                                batch_products = api.query(batch_asins, stats=90, rating=True)
+                                break  # Success
+                            except Exception as e:
+                                error_msg = str(e).lower()
+                                if "rate" in error_msg or "429" in error_msg or "limit" in error_msg:
+                                    if attempt < max_retries - 1:
+                                        wait_time = retry_delay * (2 ** attempt)  # Exponential: 3s, 6s, 12s
+                                        st.warning(f"⚠️ Rate limited on brand batch {i//20 + 1}. Waiting {wait_time}s...")
+                                        time.sleep(wait_time)
+                                        continue
+                                    else:
+                                        st.error(f"❌ Rate limited after {max_retries} attempts. Saving {len(brand_products)} products collected so far.")
+                                        break  # Save what we have
+                                elif "timeout" in error_msg:
+                                    if attempt < max_retries - 1:
+                                        wait_time = retry_delay * (attempt + 1)
+                                        st.caption(f"⚠️ Timeout on brand batch {i//20 + 1}, retrying in {wait_time}s...")
+                                        time.sleep(wait_time)
+                                        continue
+                                    else:
+                                        st.warning(f"⚠️ Timeout after {max_retries} attempts. Skipping batch.")
+                                        break
+                                else:
+                                    st.warning(f"⚠️ Error fetching brand batch {i//20 + 1}: {str(e)[:50]}")
+                                    break
+                        
+                        if not batch_products:
+                            continue  # Skip this batch if we couldn't fetch it
+                        
+                        for product in batch_products:
                                 asin = product.get("asin")
                                 if not asin:
                                     continue
@@ -898,10 +931,11 @@ def phase2_category_market_mapping(
                                     "_is_target_brand": True
                                 })
                                 brand_asins_fetched.add(asin)
-                            
-                            time.sleep(0.5)
-                        except Exception as e:
-                            st.warning(f"⚠️ Error fetching brand batch: {str(e)[:50]}")
+                        
+                        # Rate limiting: Longer delay between batches to avoid hitting Keepa limits
+                        # Keepa allows ~100 requests/minute, so we space out batches
+                        if i + 20 < len(brand_asins):
+                            time.sleep(1.5)  # Increased from 0.5s to 1.5s
                     
                     st.caption(f"📊 Fetched {len(brand_products)} {target_brand} products with valid data")
                 else:
@@ -973,8 +1007,9 @@ def phase2_category_market_mapping(
                         time.sleep(wait_time)
                         continue
                     else:
-                        st.error(f"❌ Rate limited after {max_retries} attempts. Stopping to avoid further throttling.")
-                        break  # Give up after max retries
+                        st.error(f"❌ Rate limited after {max_retries} attempts. Saving {len(all_products)} products collected so far.")
+                        st.info("💡 **Tip:** Keepa API allows ~100 requests/minute. Your data has been saved - you can continue later.")
+                        break  # Give up after max retries, but data collected so far will be saved
                 else:
                     # Other error codes - don't retry
                     st.warning(f"Keepa API error on page {page}: {response.status_code} - {response.text[:200]}")
@@ -1003,16 +1038,30 @@ def phase2_category_market_mapping(
             for i in range(0, len(asins), keepa_batch_size):
                 batch_asins = asins[i:i + keepa_batch_size]
                 max_retries = 3
-                retry_delay = 2
+                retry_delay = 3
+                batch_success = False
+                last_error = None
                 
                 for attempt in range(max_retries):
                     try:
                         batch_products = api.query(batch_asins, stats=90, rating=True)
                         products.extend(batch_products)
+                        batch_success = True
                         break  # Success, exit retry loop
                     except Exception as e:
+                        last_error = e
                         error_msg = str(e).lower()
-                        if "timeout" in error_msg or "read timeout" in error_msg:
+                        if "rate" in error_msg or "429" in error_msg or "limit" in error_msg:
+                            if attempt < max_retries - 1:
+                                wait_time = retry_delay * (2 ** attempt)  # Exponential: 3s, 6s, 12s
+                                st.warning(f"⚠️ Rate limited on batch {i//keepa_batch_size + 1}. Waiting {wait_time}s...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                st.error(f"❌ Rate limited after {max_retries} attempts. Saving {len(products)} products collected so far.")
+                                # Break out of both loops - we've hit the rate limit
+                                break
+                        elif "timeout" in error_msg or "read timeout" in error_msg:
                             if attempt < max_retries - 1:
                                 wait_time = retry_delay * (attempt + 1)  # Exponential backoff
                                 st.caption(f"⚠️ Timeout on batch {i//keepa_batch_size + 1}, retrying in {wait_time}s...")
@@ -1023,12 +1072,18 @@ def phase2_category_market_mapping(
                                 break  # Give up on this batch
                         else:
                             # Non-timeout error, break immediately
-                            st.warning(f"⚠️ Error fetching batch {i//keepa_batch_size + 1}: {str(e)}")
+                            st.warning(f"⚠️ Error fetching batch {i//keepa_batch_size + 1}: {str(e)[:50]}")
                             break
                 
-                # Small delay between batches to be polite to API
+                # If we hit a rate limit, stop fetching more batches
+                if not batch_success and last_error and "rate" in str(last_error).lower():
+                    st.warning(f"⚠️ Stopping competitor fetch due to rate limit. Collected {len(all_products)} total products.")
+                    break
+                
+                # Rate limiting: Longer delay between batches to avoid hitting Keepa limits
+                # Keepa allows ~100 requests/minute, so we space out batches
                 if i + keepa_batch_size < len(asins):
-                    time.sleep(0.5)
+                    time.sleep(1.5)  # Increased from 0.5s to 1.5s
 
             # Track stats for debugging (we keep all products now, just track data quality)
             missing_price_bsr_count = 0
@@ -1223,7 +1278,9 @@ def phase2_category_market_mapping(
             )
             
             # Rate limit protection between pages
-            time.sleep(1)
+            # Keepa allows ~100 requests/minute, so we add a longer delay between pages
+            # to avoid hitting rate limits when fetching large batches
+            time.sleep(2)  # Increased from 1s to 2s for better rate limit protection
 
         except Exception as e:
             st.warning(f"Error fetching page {page}: {str(e)}")

@@ -114,6 +114,9 @@ class NetworkIntelligenceAccumulator:
                 'rating': float(row.get('rating', 0)) if pd.notna(row.get('rating')) else None,
                 'estimated_weekly_revenue': float(row['revenue_proxy']) if pd.notna(row.get('revenue_proxy')) else None,
                 'estimated_units': int(row.get('monthly_units', 0) / 4) if pd.notna(row.get('monthly_units')) else None,
+                # Competitive metrics (new - fuels AI predictions)
+                'seller_count': int(row.get('new_offer_count', 0)) if pd.notna(row.get('new_offer_count')) else None,
+                'competitor_oos_pct': float(row.get('outOfStockPercentage90', 0)) / 100 if pd.notna(row.get('outOfStockPercentage90')) else None,
                 'title': row.get('title'),
                 'brand': row.get('brand'),
                 'main_image': row.get('main_image'),

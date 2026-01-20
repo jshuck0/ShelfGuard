@@ -1948,20 +1948,28 @@ with main_tab1:
                     elif risk > 1000 and strategic_state == "DISTRESS":
                         action_display = f"{action_emoji} Urgent: ${risk:.0f}/mo at risk - investigate root cause"
                     elif risk > 1000:
-                        # Generic risk action
+                        # High risk action
                         action_display = f"{action_emoji} Action needed - ${risk:.0f}/mo at risk, review pricing/inventory"
+                    elif risk > 100:
+                        # Medium risk - still needs attention
+                        action_display = f"⚠️ Monitor closely - ${risk:.0f}/mo at risk"
+                    elif risk > 0:
+                        # Low risk - flag for awareness
+                        action_display = f"📊 Low risk flagged - ${risk:.0f}/mo exposure"
                     elif pred_state == "DEFEND":
-                        action_display = f"{action_emoji} Defend position - ${risk:.0f} at risk from velocity decline"
+                        action_display = f"{action_emoji} Defend position - velocity declining"
                     elif pred_state == "REPLENISH":
-                        action_display = f"{action_emoji} Inventory alert - restock to prevent ${risk:.0f} stockout"
+                        action_display = f"{action_emoji} Inventory alert - restock needed"
                     elif pred_state == "EXPLOIT":
                         action_display = f"{action_emoji} Exploit momentum - accelerate spend while rank improving"
                     elif growth > 500:
                         action_display = f"{action_emoji} Growth opportunity - ${growth:.0f} potential upside"
-                    elif rev > 30000 and risk < 500:  # High revenue, low risk
-                        action_display = f"✅ Strong performer - maintain current strategy"
+                    elif growth > 0:
+                        action_display = f"🎯 Minor growth - ${growth:.0f} potential"
+                    elif rev > 10000:  # High revenue, no risk, no growth
+                        action_display = f"✅ Strong performer - maintain strategy"
                     else:
-                        action_display = f"✅ Monitor - position stable"
+                        action_display = f"✅ Stable - no action needed"
                     
                     # FIX #2: Show strategic_state (from AI) which is more meaningful than pred_state
                     # Format: "TRENCH_WAR" → "Trench War"

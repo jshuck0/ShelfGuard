@@ -2325,7 +2325,9 @@ with main_tab1:
                     signals_detected = strategy.get("signals_detected", [])
                     
                     # Predictive outputs (now included in unified response)
-                    thirty_day_risk = strategy.get("thirty_day_risk", strategy.get("opportunity_value", 0))
+                    # IMPORTANT: Keep risk and optimization_value separate for correct display
+                    actual_risk = strategy.get("thirty_day_risk", 0)  # Only real threats
+                    optimization_value = strategy.get("optimization_value", 0)  # Upside for stable products
                     predictive_state = strategy.get("predictive_state", "HOLD")
                     predictive_emoji = strategy.get("predictive_emoji", "✅")
                     cost_of_inaction = strategy.get("cost_of_inaction", "")
@@ -2334,6 +2336,11 @@ with main_tab1:
                     alert_type = strategy.get("alert_type", "")
                     alert_urgency = strategy.get("alert_urgency", "")
                     data_quality = strategy.get("data_quality", "MEDIUM")
+                    
+                    # Determine if this is an optimization opportunity vs actual risk
+                    is_actual_risk = predictive_state in ["DEFEND", "REPLENISH"] or actual_risk > 100
+                    # For display: use actual_risk for risky products, optimization_value for stable ones
+                    thirty_day_risk = actual_risk if is_actual_risk else optimization_value
                     
                     # Growth Intelligence outputs (offensive layer)
                     thirty_day_growth = strategy.get("thirty_day_growth", 0)
@@ -2464,7 +2471,7 @@ with main_tab1:
                         
                         # Build outcome metrics - different framing for urgent vs stable products
                         outcome_metrics = ""
-                        is_optimization = "optimization" in cost_of_inaction.lower() or predictive_state == "HOLD"
+                        is_optimization = not is_actual_risk  # Use the calculated flag for consistency
                         
                         if rank > 0:
                             if predictive_state == "REPLENISH":
@@ -2500,11 +2507,11 @@ with main_tab1:
 {('<div style="background: ' + urgency_color + '; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-bottom: 8px; display: inline-block;">' + urgency_badge + '</div>') if urgency_badge else ''}
 <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
 <div style="display: flex; align-items: baseline; gap: 10px; margin: 4px 0;">
-<span style="font-size: 22px; color: #dc3545; font-weight: 700;">{f_money(thirty_day_risk)}</span>
+<span style="font-size: 22px; color: {'#dc3545' if is_actual_risk else '#b8860b'}; font-weight: 700;">{f_money(thirty_day_risk)}</span>
 <span style="font-size: 14px; color: #666;">+</span>
 <span style="font-size: 22px; color: #28a745; font-weight: 700;">{f_money(thirty_day_growth)}</span>
 </div>
-<div style="font-size: 11px; color: #666; margin-top: 2px;">30-Day Risk + Growth = {f_money(total_opportunity)}</div>
+<div style="font-size: 11px; color: #666; margin-top: 2px;">{'30-Day Risk + Growth' if is_actual_risk else '30-Day Opportunity + Growth'} = {f_money(total_opportunity)}</div>
 {reasoning_preview}
 {signals_preview}
 <div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">
@@ -2533,9 +2540,11 @@ with main_tab1:
                                 
                                 # Show appropriate message based on what was captured
                                 if thirty_day_growth > 0:
-                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} risk averted + {f_money(thirty_day_growth)} growth captured")
+                                    risk_or_opp = "risk averted" if is_actual_risk else "opportunity captured"
+                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} {risk_or_opp} + {f_money(thirty_day_growth)} growth captured")
                                 else:
-                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} risk averted")
+                                    risk_or_opp = "risk averted" if is_actual_risk else "opportunity captured"
+                                    st.success(f"✅ Resolved - {f_money(thirty_day_risk)} {risk_or_opp}")
                                 st.rerun()
             else:
                 st.info("No products found in portfolio.")

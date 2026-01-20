@@ -624,7 +624,8 @@ def phase2_category_market_mapping(
     category_path: Optional[str] = None,
     category_tree_ids: Optional[tuple] = None,  # Tuple for caching (lists aren't hashable)
     min_products: int = 10,
-    check_cache: bool = False  # FIX 1.3: Optional cache check (disabled by default for Phase 2)
+    check_cache: bool = False,  # FIX 1.3: Optional cache check (disabled by default for Phase 2)
+    brand_filter: Optional[str] = None  # NEW: Filter API results to specific brand
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Phase 2: Dynamically fetch products from category until 80% revenue captured.
@@ -700,83 +701,99 @@ def phase2_category_market_mapping(
     api = keepa.Keepa(api_key)
 
     # ========== PROGRESSIVE CATEGORY FALLBACK ==========
-    # Per Keepa docs:
-    #   - categories_include: filters by products DIRECTLY in those subcategories (precise)
-    #   - rootCategory: filters by root category (broad)
-    # Strategy: Start with leaf, walk up tree until we find a level with >= min_products
+    # Start with the most specific (leaf) category
+    # If it has < min_products, walk back up the category tree
+    # This ensures we get relevant products without going too broad
     
     effective_category_id = leaf_category_id if leaf_category_id else category_id
+    use_categories_include = leaf_category_id is not None
     effective_category_path = category_path or ""
-    use_categories_include = leaf_category_id is not None  # True if we have a subcategory
     
-    # Build category hierarchy (leaf to root) for progressive fallback
-    if category_tree_ids and len(category_tree_ids) > 1:
-        category_hierarchy = list(reversed(category_tree_ids)) if isinstance(category_tree_ids, tuple) else list(reversed(list(category_tree_ids)))
-        path_segments = category_path.split(" > ") if category_path else []
-        path_segments_reversed = list(reversed(path_segments))
-        
-        st.caption(f"🔍 Testing category levels for sufficient products (need >= {min_products})...")
-        
-        for idx, test_category_id in enumerate(category_hierarchy):
-            # Test this category level with a quick query
-            test_query = {
-                "perPage": 50,
-                "page": 0,
-                "current_SALES_gte": 1,
-                "current_SALES_lte": 100000,
-            }
-            
-            # Use categories_include for non-root categories, rootCategory for root
-            if test_category_id != category_id:
-                test_query["categories_include"] = [int(test_category_id)]
-                test_query["rootCategory"] = [int(category_id)]
-            else:
-                test_query["rootCategory"] = [int(category_id)]
-            
-            try:
-                test_url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
-                test_response = requests.post(test_url, json=test_query, timeout=15)
-                
-                if test_response.status_code == 200:
-                    test_result = test_response.json()
-                    test_count = len(test_result.get("asinList", []))
-                    total_results = test_result.get("totalResults", test_count)
-                    
-                    # Build the path name for this level
-                    if idx < len(path_segments_reversed):
-                        level_path = " > ".join(path_segments[:len(path_segments) - idx])
-                    else:
-                        level_path = path_segments[0] if path_segments else f"Category {test_category_id}"
-                    
-                    if total_results >= min_products:
-                        effective_category_id = test_category_id
-                        effective_category_path = level_path
-                        use_categories_include = test_category_id != category_id
-                        
-                        if test_category_id != leaf_category_id:
-                            st.info(f"✅ Using category '{level_path}' ({total_results} products found)")
-                        else:
-                            st.caption(f"✅ Leaf category has {total_results} products - using directly")
-                        break
-                    else:
-                        st.caption(f"⚠️ '{level_path}' has only {total_results} products - walking up...")
-                        
-                elif test_response.status_code == 429:
-                    st.warning("Rate limited during category testing - using leaf category directly")
-                    time.sleep(2)
-                    break
-            except Exception as e:
-                st.caption(f"⚠️ Error testing category {test_category_id}: {str(e)[:50]}")
-                continue
+    # Build ordered list of category IDs from leaf → root
+    # category_tree_ids is (leaf, ..., mid, ..., root) but we need to test from leaf first
+    category_levels = []
+    if category_tree_ids:
+        # category_tree_ids comes from Keepa in root→leaf order, so reverse it
+        category_levels = list(reversed(category_tree_ids))
+    elif leaf_category_id:
+        category_levels = [leaf_category_id, category_id]
     else:
-        # No category tree - use what we have
-        st.caption(f"ℹ️ Using category {effective_category_id} (no hierarchy available)")
+        category_levels = [category_id]
     
-    # Update debug info with final decision
-    with st.expander("🔍 Debug: Final Category Selection", expanded=False):
-        st.write(f"**Effective Category ID:** {effective_category_id}")
-        st.write(f"**Effective Category Path:** {effective_category_path}")
-        st.write(f"**Using categories_include:** {use_categories_include}")
+    # Also get category names for display (parallel to IDs)
+    category_level_names = []
+    if category_path:
+        # category_path is "Root > Mid > Leaf", split and reverse
+        names = [n.strip() for n in category_path.split(">")]
+        category_level_names = list(reversed(names))  # Now leaf → root
+    
+    # ========== TEST EACH CATEGORY LEVEL ==========
+    # Quick count query to find the first level with enough products
+    st.caption("🔍 Finding optimal category depth...")
+    
+    for level_idx, test_cat_id in enumerate(category_levels):
+        # Skip testing if we're at the root category (always has enough products)
+        if test_cat_id == category_id and level_idx > 0:
+            st.caption(f"  → Falling back to root category")
+            effective_category_id = category_id
+            use_categories_include = False
+            effective_category_path = category_level_names[-1] if category_level_names else "Root Category"
+            break
+        
+        # Build a quick count query for this category level
+        count_query = {
+            "perPage": min_products,  # Just need to know if >= min_products exist
+            "page": 0,
+            "current_SALES_gte": 1,
+            "current_SALES_lte": 100000,
+        }
+        
+        # Add category filter
+        if test_cat_id != category_id:
+            count_query["categories_include"] = [int(test_cat_id)]
+            count_query["rootCategory"] = [int(category_id)]
+        else:
+            count_query["rootCategory"] = [int(category_id)]
+        
+        # Add brand filter if provided
+        if brand_filter:
+            count_query["brand"] = [brand_filter]
+        
+        try:
+            url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
+            response = requests.post(url, json=count_query, timeout=15)
+            
+            if response.status_code == 200:
+                result = response.json()
+                product_count = len(result.get("asinList", []))
+                
+                level_name = category_level_names[level_idx] if level_idx < len(category_level_names) else f"Level {level_idx}"
+                
+                if product_count >= min_products:
+                    st.caption(f"  ✅ '{level_name}' has {product_count}+ products → using this category")
+                    effective_category_id = test_cat_id
+                    use_categories_include = test_cat_id != category_id
+                    effective_category_path = " > ".join(list(reversed(category_level_names[:level_idx+1]))) if category_level_names else category_path
+                    break
+                else:
+                    st.caption(f"  ⚠️ '{level_name}' has only {product_count} products → trying broader category...")
+                    # Continue to next (broader) category level
+            else:
+                # API error, just use this level and continue
+                st.caption(f"  ⚠️ Could not count products in category {test_cat_id}, using it anyway")
+                effective_category_id = test_cat_id
+                use_categories_include = test_cat_id != category_id
+                break
+                
+        except Exception as e:
+            # Timeout or other error, just use current level
+            st.caption(f"  ⚠️ Category test failed: {str(e)[:50]}, using current level")
+            effective_category_id = test_cat_id
+            use_categories_include = test_cat_id != category_id
+            break
+    
+    # Show final category being used
+    st.info(f"📂 Fetching from: **{effective_category_path}** (ID: {effective_category_id})")
     
     # ========== MAIN FETCH LOOP ==========
     max_pages = 10  # Safety limit (10 pages x 100 = 1000 products max)
@@ -798,6 +815,13 @@ def phase2_category_market_mapping(
         else:
             # Using root category only
             query_json["rootCategory"] = [int(category_id)]
+        
+        # NEW: Add brand filter to API query when in brand-focused mode
+        # This filters at the API level, not post-fetch, preventing wrong products
+        if brand_filter:
+            query_json["brand"] = [brand_filter]
+            if page == 0:
+                st.info(f"🎯 Brand filter active: Only fetching '{brand_filter}' products")
         
         if page == 0:
             # Debug: Show exact query being sent

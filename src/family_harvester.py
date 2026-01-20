@@ -70,9 +70,11 @@ class ProductFamily:
     child_asins: List[str] = field(default_factory=list)
     child_count: int = 0
     is_variation_parent: bool = False
-    category_id: int = 0
-    category_path: str = ""
+    category_id: int = 0  # Root category ID
+    category_path: str = ""  # Full breadcrumb path
     has_parent_data: bool = False  # True if parent has real price/BSR data
+    leaf_category_id: int = 0  # Most specific (leaf) category ID
+    category_tree_ids: List[int] = field(default_factory=list)  # All category IDs from root to leaf
     
     @property
     def all_asins(self) -> List[str]:
@@ -561,10 +563,16 @@ def discover_seed_families(
             skipped_parents += 1
             continue  # Skip products with no usable data
         
-        # Extract category
+        # Extract category (full tree for progressive fallback)
         root_category = product.get("rootCategory", 0)
         category_tree = product.get("categoryTree", [])
         category_path = " > ".join([cat.get("name", "") for cat in category_tree]) if category_tree else "Unknown"
+        
+        # Extract all category IDs (root → leaf order)
+        category_tree_ids = [cat.get("catId", 0) for cat in category_tree] if category_tree else [root_category]
+        
+        # Leaf is the last (most specific) category
+        leaf_category_id = category_tree_ids[-1] if category_tree_ids else root_category
         
         # Get BSR
         csv = product.get("csv", [])
@@ -592,7 +600,9 @@ def discover_seed_families(
                 is_variation_parent=False,
                 category_id=root_category,
                 category_path=category_path,
-                has_parent_data=False  # Parent has no data - only children do
+                has_parent_data=False,  # Parent has no data - only children do
+                leaf_category_id=leaf_category_id,
+                category_tree_ids=category_tree_ids
             )
         else:
             # This is a standalone product or the "hero" ASIN
@@ -606,7 +616,9 @@ def discover_seed_families(
                 is_variation_parent=False,
                 category_id=root_category,
                 category_path=category_path,
-                has_parent_data=True  # This product has data
+                has_parent_data=True,  # This product has data
+                leaf_category_id=leaf_category_id,
+                category_tree_ids=category_tree_ids
             )
         
         families.append(family)
@@ -869,14 +881,15 @@ def harvest_to_seed_dataframe(
                 "title": family.parent_title,
                 "brand": family.parent_brand,
                 "category_id": family.category_id,
-                "leaf_category_id": family.category_id,  # Will be refined later
-                "category_tree_ids": [family.category_id],
+                "leaf_category_id": family.leaf_category_id or family.category_id,
+                "category_tree_ids": family.category_tree_ids if family.category_tree_ids else [family.category_id],
                 "category_tree_names": family.category_path.split(" > ") if family.category_path else [],
                 "category_path": family.category_path,
                 "price": 0,  # Will be filled in Phase 2
                 "bsr": family.parent_bsr,
                 "parent_asin": family.parent_asin,
-                "family_size": family.family_size
+                "family_size": family.family_size,
+                "family_title": family.parent_title  # For UI display
             })
     
     df = pd.DataFrame(records)

@@ -149,6 +149,18 @@ class NetworkIntelligenceAccumulator:
         snapshot_date: date
     ) -> None:
         """Calculate and store category-level benchmarks."""
+        
+        # VALIDATION: Filter to valid price data for accurate benchmarks
+        # This prevents outliers and zero prices from skewing category benchmarks
+        valid_price_df = df.copy()
+        if 'price' in valid_price_df.columns:
+            # Remove rows with invalid prices (NaN, 0, or unreasonable values)
+            valid_price_df = valid_price_df[
+                (valid_price_df['price'].notna()) & 
+                (valid_price_df['price'] > 0.99) &  # Filter out cent items
+                (valid_price_df['price'] < 10000)   # Filter out data errors
+            ]
+            print(f"  📊 Benchmark calculation: {len(valid_price_df)} ASINs with valid prices (of {len(df)} total)")
 
         # Calculate aggregate metrics
         intelligence = {
@@ -157,12 +169,12 @@ class NetworkIntelligenceAccumulator:
             'category_root': category_root,
             'snapshot_date': str(snapshot_date),
 
-            # Price benchmarks
-            'median_price': float(df['price'].median()) if 'price' in df else None,
-            'p75_price': float(df['price'].quantile(0.75)) if 'price' in df else None,
-            'p25_price': float(df['price'].quantile(0.25)) if 'price' in df else None,
-            'avg_price': float(df['price'].mean()) if 'price' in df else None,
-            'price_volatility_score': float(df['price'].std()) if 'price' in df else None,
+            # Price benchmarks (from filtered data)
+            'median_price': float(valid_price_df['price'].median()) if 'price' in valid_price_df and not valid_price_df['price'].empty else None,
+            'p75_price': float(valid_price_df['price'].quantile(0.75)) if 'price' in valid_price_df and not valid_price_df['price'].empty else None,
+            'p25_price': float(valid_price_df['price'].quantile(0.25)) if 'price' in valid_price_df and not valid_price_df['price'].empty else None,
+            'avg_price': float(valid_price_df['price'].mean()) if 'price' in valid_price_df and not valid_price_df['price'].empty else None,
+            'price_volatility_score': float(valid_price_df['price'].std()) if 'price' in valid_price_df and not valid_price_df['price'].empty else None,
 
             # Quality benchmarks
             'median_rating': float(df['rating'].median()) if 'rating' in df and pd.notna(df['rating'].median()) else None,
@@ -187,12 +199,14 @@ class NetworkIntelligenceAccumulator:
         }
 
         # Upsert category intelligence
+        # FIX: Use only category_id as conflict key to REPLACE old benchmarks entirely
+        # This ensures stale data doesn't persist - each search updates the category
         try:
             self.supabase.table('category_intelligence').upsert(
                 intelligence,
-                on_conflict='category_id,snapshot_date'
+                on_conflict='category_id'
             ).execute()
-            print(f"  ✓ Updated category intelligence: {intelligence['data_quality']} quality, {len(df)} ASINs")
+            print(f"  ✓ Updated category intelligence: {intelligence['data_quality']} quality, {len(df)} ASINs, median ${intelligence.get('median_price', 0):.2f}")
         except Exception as e:
             print(f"  ⚠️  Error updating category intelligence: {str(e)}")
 

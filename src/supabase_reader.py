@@ -876,6 +876,22 @@ def get_market_snapshot_with_network_intelligence(
 
             if result.data and len(result.data) > 0:
                 benchmarks = result.data[0]
+                
+                # VALIDATION: Check if benchmarks look reasonable against actual portfolio data
+                # If median price is >10x different from portfolio avg, the benchmark is stale/incorrect
+                benchmark_median_price = benchmarks.get('median_price', 0)
+                benchmark_valid = True
+                
+                if benchmark_median_price and benchmark_median_price > 0:
+                    price_col = 'buy_box_price' if 'buy_box_price' in df.columns else 'filled_price' if 'filled_price' in df.columns else 'price' if 'price' in df.columns else None
+                    if price_col and not df[price_col].dropna().empty:
+                        portfolio_avg_price = df[price_col].dropna().mean()
+                        if portfolio_avg_price > 0:
+                            price_ratio = max(portfolio_avg_price / benchmark_median_price, benchmark_median_price / portfolio_avg_price)
+                            if price_ratio > 10:
+                                # Benchmark is wildly off - mark as stale
+                                benchmark_valid = False
+                                print(f"⚠️ Stale benchmark detected for category {category_id}: median ${benchmark_median_price:.2f} vs portfolio avg ${portfolio_avg_price:.2f}")
 
                 # Add benchmarks to stats
                 stats['network_intelligence'] = {
@@ -885,8 +901,9 @@ def get_market_snapshot_with_network_intelligence(
                     'median_review_count': benchmarks.get('median_review_count'),
                     'median_rating': benchmarks.get('median_rating'),
                     'total_asins_tracked': benchmarks.get('total_asins_tracked', 0),
-                    'data_quality': benchmarks.get('data_quality', 'LOW'),
-                    'snapshot_date': benchmarks.get('snapshot_date')
+                    'data_quality': 'STALE' if not benchmark_valid else benchmarks.get('data_quality', 'LOW'),
+                    'snapshot_date': benchmarks.get('snapshot_date'),
+                    'benchmark_valid': benchmark_valid
                 }
 
                 # Calculate competitive position for each product

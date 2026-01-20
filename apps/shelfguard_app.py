@@ -921,6 +921,9 @@ with main_tab1:
 
         # === ENHANCEMENT 2.1: NETWORK INTELLIGENCE DISPLAY ===
         # Show category benchmarks if available (from network intelligence tables)
+        benchmark_valid = network_stats.get('benchmark_valid', True) if network_stats else True
+        data_quality = network_stats.get('data_quality', 'UNKNOWN') if network_stats else 'UNKNOWN'
+        
         if network_stats and network_stats.get('median_price'):
             with st.expander("🌐 Category Intelligence (Network Data)", expanded=False):
                 # Show category context so user knows what benchmarks are from
@@ -929,18 +932,28 @@ with main_tab1:
                 st.markdown(f"**Category Benchmarks: {cat_name}**")
                 st.caption(f"Category ID: {cat_id} | Data from ShelfGuard network searches")
                 
-                # Warn if benchmarks look wildly off (indicates wrong category level)
-                median_price = network_stats.get('median_price', 0)
-                your_avg_price = 0
-                if 'buy_box_price' in portfolio_df.columns or 'filled_price' in portfolio_df.columns or 'price' in portfolio_df.columns:
-                    price_col = 'buy_box_price' if 'buy_box_price' in portfolio_df.columns else 'filled_price' if 'filled_price' in portfolio_df.columns else 'price'
-                    your_avg_price = portfolio_df[price_col].mean() if price_col in portfolio_df.columns else 0
-                
-                if median_price > 0 and your_avg_price > 0:
-                    price_ratio = your_avg_price / median_price
-                    if price_ratio > 5 or price_ratio < 0.2:
-                        # NOTE: Escape $ signs to prevent LaTeX interpretation in Streamlit
-                        st.warning(f"⚠️ **Benchmark mismatch detected**: Your portfolio avg (\\${your_avg_price:.2f}) is {price_ratio:.1f}x the category median (\\${median_price:.2f}). This likely means the benchmark data is from a broader parent category (e.g., 'Potato' includes raw potatoes, not just chips). The benchmarks will auto-correct on your next search.")
+                # Check if benchmark is stale (detected during fetch)
+                if data_quality == 'STALE' or not benchmark_valid:
+                    st.warning("""
+⚠️ **Stale benchmark data detected** - the stored benchmarks don't match your category.
+
+**Why this happens**: Previous searches may have stored benchmarks from a broader parent category.
+
+**Fix**: Run a fresh search in the "Search" tab. The new search will update the benchmarks with accurate data from your specific category.
+""")
+                else:
+                    # Additional validation for display
+                    median_price = network_stats.get('median_price', 0)
+                    your_avg_price = 0
+                    if 'buy_box_price' in portfolio_df.columns or 'filled_price' in portfolio_df.columns or 'price' in portfolio_df.columns:
+                        price_col = 'buy_box_price' if 'buy_box_price' in portfolio_df.columns else 'filled_price' if 'filled_price' in portfolio_df.columns else 'price'
+                        your_avg_price = portfolio_df[price_col].mean() if price_col in portfolio_df.columns else 0
+                    
+                    if median_price > 0 and your_avg_price > 0:
+                        price_ratio = your_avg_price / median_price
+                        if price_ratio > 5 or price_ratio < 0.2:
+                            # NOTE: Escape $ signs to prevent LaTeX interpretation in Streamlit
+                            st.warning(f"⚠️ **Benchmark mismatch detected**: Your portfolio avg (\\${your_avg_price:.2f}) is {price_ratio:.1f}x the category median (\\${median_price:.2f}). Run a fresh search to update benchmarks.")
 
                 col1, col2, col3 = st.columns(3)
 

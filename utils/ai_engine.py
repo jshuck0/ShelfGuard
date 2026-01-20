@@ -2164,29 +2164,38 @@ def calculate_portfolio_intelligence_vectorized(
         min_price_lift = 0.05
         conquest_rate = 0.15
     
-    # === RISK CALCULATION (vectorized) ===
-    # FIXED: Components now ADD UP to total risk for Root Cause Analysis transparency
+    # === RISK vs OPPORTUNITY CALCULATION (vectorized) ===
+    # SEMANTIC FIX: Separate ACTUAL RISK (will lose) from OPTIMIZATION (could gain)
+    # 
+    # ACTUAL RISK = Things that will hurt you if you don't act:
+    #   - Stockout (inventory runs out)
+    #   - Price war (competitors undercutting, losing Buy Box)
+    #   - Velocity crash (rank dropping fast)
+    #
+    # OPTIMIZATION = Things you could improve (not urgent):
+    #   - Pricing power (you're underpriced, could raise)
+    #   - Ad efficiency (reduce wasteful spend)
+    #   - Position stable (no action needed)
     
-    # 1. PRICING PRESSURE RISK - triggered by ANY overpricing (not just >5%)
-    # Graduated: small premium = small risk, large premium = large risk
-    is_overpriced = price_gap > 0.0  # Any positive gap = you're more expensive than market
+    # 1. ACTUAL PRICING RISK - only if competitors are UNDERCUTTING you
+    # price_gap > 0 means YOU are more expensive (risk of losing Buy Box)
+    is_being_undercut = price_gap > 0.05  # Competitors 5%+ cheaper = real risk
     price_erosion = np.where(
-        is_overpriced,
-        revenue * np.minimum(price_gap, 0.30) * 0.25 * price_weight,  # Cap at 30% gap
+        is_being_undercut,
+        revenue * np.minimum(price_gap, 0.30) * 0.20 * price_weight,  # 20% of gap as risk
         0
     )
     
-    # 2. VELOCITY DECLINE RISK - triggered by ANY negative velocity trend
-    # Graduated: small decline = small risk, large decline = large risk
-    is_declining = v90 > 0.0  # Any positive v90 = velocity declining
+    # 2. ACTUAL VELOCITY RISK - only if rank is DECLINING meaningfully  
+    # v90 > 0.10 means rank dropped 10%+ over 90 days = real concern
+    is_declining_fast = v90 > 0.10  # More than 10% velocity decline
     share_erosion = np.where(
-        is_declining,
-        revenue * 0.15 * np.minimum(v90, 0.50) * rank_weight,  # Cap at 50% decline
+        is_declining_fast,
+        revenue * 0.15 * np.minimum(v90, 0.50) * rank_weight,
         0
     )
     
-    # 3. INVENTORY/STOCKOUT RISK - estimate based on revenue volatility
-    # If days_until_stockout available, use it; otherwise estimate from velocity
+    # 3. ACTUAL STOCKOUT RISK - only with real inventory data
     if 'days_until_stockout' in result.columns:
         days_stockout = result['days_until_stockout'].fillna(999).values
         stockout_risk_val = np.where(
@@ -2195,73 +2204,70 @@ def calculate_portfolio_intelligence_vectorized(
             0
         )
     else:
-        # FIX: Do NOT fabricate stockout risk when we don't have actual data
-        # Fabricated risk creates false "INVENTORY" alerts for top products
-        # Only calculate stockout risk if we have actual inventory/stockout data
-        # Without data, stockout_risk = 0, and risk should be allocated to pricing/velocity
-        stockout_risk_val = np.zeros_like(revenue)  # Zero when no actual stockout data
+        stockout_risk_val = np.zeros_like(revenue)  # Zero when no actual data
     
-    # 4. BASE OPTIMIZATION OPPORTUNITY - applies to ALL products
-    # This captures the "always some room to improve" baseline
-    # IMPORTANT: Subtract other components so total = base + components
-    base_opportunity_rate = 0.15
-    base_30day_risk = revenue * base_opportunity_rate
+    # ACTUAL 30-DAY RISK = Sum of real threats (NOT fabricated baseline)
+    thirty_day_risk = np.maximum(0, price_erosion + share_erosion + stockout_risk_val)
     
-    # Total risk = base opportunity DISTRIBUTED across components
-    # If components are small, allocate remaining to "optimization" category
+    # For Root Cause Analysis display (components should sum to total)
     component_total = price_erosion + share_erosion + stockout_risk_val
-    
-    # Scale components to sum to total risk (proportional allocation)
-    # Total risk = 15% of revenue, distributed across component types
-    thirty_day_risk = np.maximum(0, base_30day_risk)
-    
-    # If no specific risk drivers, allocate to price (default optimization path)
-    has_no_components = component_total < 1  # Effectively zero
-    # For products with no specific issues, classify as "optimization opportunity"
-    # Allocate to pricing (raise price) if no decline, else to velocity
-    optimization_allocation = np.where(
-        has_no_components & (v90 <= 0),  # Stable or improving
-        thirty_day_risk,  # Full allocation to price optimization
-        0
-    )
-    price_erosion = price_erosion + optimization_allocation
-    
-    # Recalculate so components sum correctly
-    component_total = price_erosion + share_erosion + stockout_risk_val
-    # Normalize to ensure components sum to total (prevents Root Cause mismatch)
+    # Only normalize if we have actual risk components
     if np.any(component_total > 0):
-        scale_factor = np.where(component_total > 0, thirty_day_risk / component_total, 1)
+        scale_factor = np.where(component_total > 0, np.where(thirty_day_risk > 0, thirty_day_risk / component_total, 1), 1)
         price_erosion = price_erosion * scale_factor
         share_erosion = share_erosion * scale_factor
         stockout_risk_val = stockout_risk_val * scale_factor
     
-    # Predictive state (vectorized) - FIXED: Only use REPLENISH when we have ACTUAL stockout data
-    # FIX: Fabricated stockout risk should NOT trigger REPLENISH - that creates phantom urgency
-    has_actual_stockout_data = 'days_until_stockout' in result.columns
-    
-    predictive_state = np.where(
-        v90 > 0.10, "DEFEND",  # Any meaningful velocity decline
-        np.where(
-            # REPLENISH only if: (1) we have actual stockout data AND (2) stockout_risk is material
-            has_actual_stockout_data & (stockout_risk_val > revenue * 0.05), "REPLENISH",
-            np.where(
-                competitor_oos > 0.20, "EXPLOIT",  # Competitor weakness
-                "HOLD"  # Default: optimization opportunity, not urgent action
-            )
-        )
-    )
-    
-    # === GROWTH CALCULATION (vectorized) ===
-    # Velocity gate: block growth for declining ASINs
-    growth_validated = (v90 <= 0.15)
-    
-    # Extract additional metrics for growth calculation
+    # === EXTRACT RANK (needed for predictive state) ===
     if 'sales_rank_filled' in result.columns:
         rank = result['sales_rank_filled'].fillna(5000).values
     elif 'sales_rank' in result.columns:
         rank = result['sales_rank'].fillna(5000).values
     else:
         rank = np.full(n_rows, 1000, dtype=np.float32)
+    
+    # === PREDICTIVE STATE (SEMANTIC FIX) ===
+    # States now have clear meanings:
+    # - DEFEND: Real threat - you'll LOSE revenue without action
+    # - REPLENISH: Stockout imminent - act now or lose sales
+    # - EXPLOIT: Competitor weakness - opportunity to gain
+    # - GROW: Position strong - pricing power opportunity
+    # - STABLE: No action needed - healthy
+    has_actual_stockout_data = 'days_until_stockout' in result.columns
+    
+    # Determine if there's ACTUAL risk (not just optimization headroom)
+    has_actual_risk = thirty_day_risk > revenue * 0.02  # More than 2% of revenue at actual risk
+    
+    predictive_state = np.where(
+        has_actual_stockout_data & (stockout_risk_val > revenue * 0.05), "REPLENISH",  # Stockout imminent
+        np.where(
+            is_declining_fast & has_actual_risk, "DEFEND",  # Velocity crash with real impact
+            np.where(
+                is_being_undercut & has_actual_risk, "DEFEND",  # Price war with real impact
+                np.where(
+                    competitor_oos > 0.20, "EXPLOIT",  # Competitor OOS - conquest opportunity
+                    np.where(
+                        (rank <= 100) & (v90 <= 0.05), "GROW",  # Market leader, stable - pricing power
+                        "STABLE"  # Healthy position, no urgent action
+                    )
+                )
+            )
+        )
+    )
+    
+    # === OPTIMIZATION VALUE (for STABLE/GROW products) ===
+    # This is UPSIDE POTENTIAL, not risk - different semantic meaning
+    # Only calculate for products without actual threats
+    optimization_rate = 0.15  # 15% potential improvement for healthy products
+    optimization_value = np.where(
+        thirty_day_risk < revenue * 0.02,  # No significant actual risk
+        revenue * optimization_rate,       # Show optimization potential
+        0                                  # Don't double-count with actual risk
+    )
+    
+    # === GROWTH CALCULATION (vectorized) ===
+    # Velocity gate: block growth for declining ASINs
+    growth_validated = (v90 <= 0.15)
     
     # Price headroom (negative gap = you're cheaper = headroom)
     price_headroom = np.maximum(0, -price_gap)
@@ -2392,13 +2398,14 @@ def calculate_portfolio_intelligence_vectorized(
     # Assign computed values with efficient dtypes
     result['thirty_day_risk'] = np.asarray(thirty_day_risk, dtype=np.float32)
     result['thirty_day_growth'] = np.asarray(thirty_day_growth, dtype=np.float32)
+    result['optimization_value'] = np.asarray(optimization_value, dtype=np.float32)  # NEW: Upside potential (not risk)
     result['opportunity_alpha'] = np.asarray(opportunity_alpha, dtype=np.float32)
-    result['predictive_state'] = pd.Categorical(predictive_state, categories=["HOLD", "DEFEND", "EXPLOIT", "REPLENISH"])
+    result['predictive_state'] = pd.Categorical(predictive_state, categories=["STABLE", "GROW", "DEFEND", "EXPLOIT", "REPLENISH"])  # UPDATED categories
     result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND", "PRICE_POWER", "REVIEW_MOAT"])
     result['growth_validated'] = np.asarray(growth_validated, dtype=bool)
     result['price_erosion_risk'] = np.asarray(price_erosion, dtype=np.float32)
     result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
-    result['stockout_risk'] = np.asarray(stockout_risk_val, dtype=np.float32)  # FIXED: Now assigned
+    result['stockout_risk'] = np.asarray(stockout_risk_val, dtype=np.float32)
     result['strategic_state'] = pd.Categorical(strategic_state, categories=["FORTRESS", "HARVEST", "TRENCH_WAR", "DISTRESS", "TERMINAL"])
     
     # Model certainty based on data quality

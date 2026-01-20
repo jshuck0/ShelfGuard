@@ -266,7 +266,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 
                 # === PREDICTIVE STATE (replaces capital_zone) ===
                 "predictive_zone": f"{brief.predictive_emoji} {brief.predictive_state}",
-                "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT"]
+                "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT", "STABLE", "GROW"]
             }
         except Exception as e:
             # Unified fallback using deterministic AI engine
@@ -290,7 +290,7 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
                 "predictive_state": brief.predictive_state if hasattr(brief, 'predictive_state') else "HOLD",
                 "predictive_emoji": brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else "✅",
                 "predictive_zone": f"{brief.predictive_emoji if hasattr(brief, 'predictive_emoji') else '✅'} {brief.predictive_state if hasattr(brief, 'predictive_state') else 'HOLD'}",
-                "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT"] if hasattr(brief, 'predictive_state') else True,
+                "is_healthy": brief.predictive_state in ["HOLD", "EXPLOIT", "STABLE", "GROW"] if hasattr(brief, 'predictive_state') else True,
                 # Growth Intelligence
                 "thirty_day_risk": brief.thirty_day_risk if hasattr(brief, 'thirty_day_risk') else 0,
                 "thirty_day_growth": brief.thirty_day_growth if hasattr(brief, 'thirty_day_growth') else 0,
@@ -314,9 +314,9 @@ def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool 
         "confidence_score": 0.3,
         "strategic_state": "HARVEST",  # Neutral state
         "recommended_plan": "Awaiting analysis",
-        "predictive_state": "HOLD",
+        "predictive_state": "STABLE",
         "predictive_emoji": "✅",
-        "predictive_zone": "✅ HOLD",
+        "predictive_zone": "✅ STABLE",
         "is_healthy": True,
         # Growth defaults
         "thirty_day_risk": 0,
@@ -1782,9 +1782,10 @@ with main_tab1:
                         
                         shown_count += 1
                         
-                        # Different display based on urgency
-                        # DEFEND/REPLENISH = actual risk (you'll lose this if you don't act)
-                        # HOLD = optimization potential (you could gain this by optimizing)
+                        # Different display based on state
+                        # DEFEND/REPLENISH = actual risk (you'll LOSE if you don't act)
+                        # EXPLOIT = competitor weakness (opportunity to GAIN)
+                        # GROW/STABLE = optimization potential (not urgent)
                         if state == "DEFEND":
                             state_emoji = "🛡️"
                             state_label = "DEFEND"
@@ -1795,9 +1796,19 @@ with main_tab1:
                             state_label = "RESTOCK"
                             value_label = "⚠️ At Risk"
                             value_color = "#dc3545"
-                        else:
-                            state_emoji = "📊"
-                            state_label = "OPTIMIZE"
+                        elif state == "EXPLOIT":
+                            state_emoji = "🎯"
+                            state_label = "EXPLOIT"
+                            value_label = "🎯 Conquest"
+                            value_color = "#28a745"
+                        elif state == "GROW":
+                            state_emoji = "📈"
+                            state_label = "PRICING POWER"
+                            value_label = "💰 Opportunity"
+                            value_color = "#28a745"
+                        else:  # STABLE or HOLD
+                            state_emoji = "✅"
+                            state_label = "STABLE"
                             value_label = "💰 Potential"
                             value_color = "#ffc107"
                         

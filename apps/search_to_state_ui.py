@@ -288,12 +288,30 @@ def render_discovery_ui() -> None:
                 # Show family breakdown
                 with st.expander("🧬 Product Family Breakdown", expanded=False):
                     if "parent_asin" in seed_df.columns:
-                        family_summary = seed_df.groupby("parent_asin").agg({
+                        # Build agg dict dynamically based on available columns
+                        agg_dict = {
                             "asin": "count",
                             "brand": "first",
-                            "family_title": "first" if "family_title" in seed_df.columns else "brand"
-                        }).reset_index()
-                        family_summary.columns = ["Parent ASIN", "Variations", "Brand", "Title"]
+                        }
+                        # Add title column if available
+                        if "family_title" in seed_df.columns:
+                            agg_dict["family_title"] = "first"
+                            title_col = "family_title"
+                        elif "title" in seed_df.columns:
+                            agg_dict["title"] = "first"
+                            title_col = "title"
+                        else:
+                            title_col = None
+                        
+                        family_summary = seed_df.groupby("parent_asin").agg(agg_dict).reset_index()
+                        
+                        # Rename columns
+                        if title_col:
+                            family_summary.columns = ["Parent ASIN", "Variations", "Brand", "Title"]
+                        else:
+                            family_summary.columns = ["Parent ASIN", "Variations", "Brand"]
+                            family_summary["Title"] = family_summary["Brand"]  # Fallback
+                        
                         family_summary = family_summary.sort_values("Variations", ascending=False)
                         st.dataframe(family_summary.head(10), use_container_width=True)
             else:

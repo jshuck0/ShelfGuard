@@ -2086,31 +2086,44 @@ with main_tab1:
                 st.markdown("### 🥊 Competitive Landscape")
             
             # Calculate competitive metrics (with safe fallbacks)
+            # FIXED: Use new_offer_count for "sellers per SKU", not competitor products
             try:
-                avg_competitor_count = float(enriched_portfolio_df['competitor_count'].mean()) if 'competitor_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['competitor_count'].isna().all() else 0
-            except:
-                avg_competitor_count = 0
-            
-            # FIXED: Calculate actual price gap from portfolio vs competitor prices
-            # Uses price_gap_vs_competitor if available, otherwise calculate from raw prices
-            try:
-                if 'price_gap_vs_competitor' in enriched_portfolio_df.columns:
-                    # price_gap_vs_competitor is a ratio, convert to dollar amount
-                    price_col = 'buy_box_price' if 'buy_box_price' in enriched_portfolio_df.columns else 'avg_price'
-                    if price_col in enriched_portfolio_df.columns:
-                        avg_your_price = enriched_portfolio_df[price_col].mean()
-                        avg_gap_ratio = enriched_portfolio_df['price_gap_vs_competitor'].mean()
-                        avg_price_gap = avg_your_price * avg_gap_ratio if not pd.isna(avg_gap_ratio) else 0
-                    else:
-                        avg_price_gap = 0
+                # Sellers per SKU = average new_offer_count across your products
+                if 'new_offer_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['new_offer_count'].isna().all():
+                    avg_sellers_per_sku = float(enriched_portfolio_df['new_offer_count'].mean())
                 else:
-                    # Calculate directly from competitor data if available
+                    avg_sellers_per_sku = 1  # Default: at least 1 seller (you)
+            except:
+                avg_sellers_per_sku = 1
+            
+            # FIXED: Calculate actual price gap from your avg price vs competitor avg price
+            try:
+                price_col = 'buy_box_price' if 'buy_box_price' in enriched_portfolio_df.columns else 'price' if 'price' in enriched_portfolio_df.columns else None
+                if price_col and price_col in market_snapshot.columns:
+                    # Your average price
+                    your_avg_price = enriched_portfolio_df[price_col].mean() if price_col in enriched_portfolio_df.columns else 0
+                    # Competitor average price (non-your-brand products)
+                    competitor_prices = market_snapshot.loc[~market_snapshot['is_your_brand'], price_col] if 'is_your_brand' in market_snapshot.columns else market_snapshot[price_col]
+                    competitor_avg_price = competitor_prices.mean() if len(competitor_prices) > 0 else 0
+                    # Gap = your price - competitor price
+                    avg_price_gap = your_avg_price - competitor_avg_price if competitor_avg_price > 0 else 0
+                else:
                     avg_price_gap = 0
             except:
                 avg_price_gap = 0
             
+            # FIXED: Use actual OOS data from Keepa (outOfStockPercentage90)
             try:
-                competitor_oos_pct = float(enriched_portfolio_df['competitor_oos_pct'].mean()) if 'competitor_oos_pct' in enriched_portfolio_df.columns and not enriched_portfolio_df['competitor_oos_pct'].isna().all() else 0
+                if 'outOfStockPercentage90' in market_snapshot.columns and 'is_your_brand' in market_snapshot.columns:
+                    # Competitor OOS = average OOS of non-your-brand products
+                    competitor_oos_data = market_snapshot.loc[~market_snapshot['is_your_brand'], 'outOfStockPercentage90']
+                    competitor_oos_pct = float(competitor_oos_data.mean()) if len(competitor_oos_data) > 0 else 0
+                    if competitor_oos_pct > 1:  # Normalize if percentage
+                        competitor_oos_pct = competitor_oos_pct / 100
+                elif 'competitor_oos_pct' in enriched_portfolio_df.columns:
+                    competitor_oos_pct = float(enriched_portfolio_df['competitor_oos_pct'].mean())
+                else:
+                    competitor_oos_pct = 0
             except:
                 competitor_oos_pct = 0
             
@@ -2124,21 +2137,22 @@ with main_tab1:
                     Market Position: {position_text} ({your_market_share:.1f}% share)
                 </div>
                 <div style="font-size: 12px; color: #666; line-height: 1.6;">
-                    <div><strong>Competitor Count:</strong> {competitor_product_count} products (avg {avg_competitor_count:.0f} per SKU)</div>
-                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs market median</div>
-                    <div><strong>Competitor OOS:</strong> {competitor_oos_pct*100:.0f}% (opportunity)</div>
+                    <div><strong>Competitor Products:</strong> {competitor_product_count} in market</div>
+                    <div><strong>Avg Sellers/SKU:</strong> {avg_sellers_per_sku:.0f} (your products)</div>
+                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs competitor avg</div>
+                    <div><strong>Competitor OOS:</strong> {competitor_oos_pct*100:.1f}% (opportunity)</div>
                     <div><strong>Market Size:</strong> ${total_market_revenue:,.0f}/mo total</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
             # Competitive threats
-            if avg_competitor_count > 5:
-                st.warning(f"⚠️ **High Competition:** Average {avg_competitor_count:.0f} competitors per SKU. Monitor pricing pressure.")
+            if avg_sellers_per_sku > 5:
+                st.warning(f"⚠️ **High Competition:** Average {avg_sellers_per_sku:.0f} sellers per SKU. Monitor Buy Box.")
             if avg_price_gap > 2:
-                st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above median. Test price increases on top SKUs.")
+                st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above competitors. Test price increases on top SKUs.")
             elif avg_price_gap < -1:
-                st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below median. Competitors may be undercutting.")
+                st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below competitors. Consider raising prices.")
             
             with comp_col2:
                 st.markdown("### 🔍 Root Cause Analysis")

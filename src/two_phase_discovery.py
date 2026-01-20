@@ -927,6 +927,43 @@ def phase2_category_market_mapping(
                                 image_urls = product.get("imagesCSV", "").split(",") if product.get("imagesCSV") else []
                                 main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
                                 
+                                # === EXTRACT COMPETITIVE METRICS FROM KEEPA (brand products) ===
+                                stats = product.get("stats", {})
+                                
+                                # Out of Stock Percentage (90 days)
+                                oos_90 = 0.0
+                                if stats and "outOfStockPercentage90" in stats:
+                                    oos_90 = stats.get("outOfStockPercentage90", 0) or 0
+                                    if oos_90 > 1:
+                                        oos_90 = oos_90 / 100
+                                
+                                # Seller Count
+                                new_offer_count = 1
+                                if csv and len(csv) > 11 and csv[11]:
+                                    offer_array = csv[11]
+                                    if offer_array and len(offer_array) > 0:
+                                        last_offer = offer_array[-1]
+                                        if last_offer and last_offer > 0:
+                                            new_offer_count = last_offer
+                                
+                                # Review Count
+                                review_count = 0
+                                if csv and len(csv) > 17 and csv[17]:
+                                    review_array = csv[17]
+                                    if review_array and len(review_array) > 0:
+                                        last_review = review_array[-1]
+                                        if last_review and last_review > 0:
+                                            review_count = last_review
+                                
+                                # Rating
+                                rating = 0.0
+                                if csv and len(csv) > 16 and csv[16]:
+                                    rating_array = csv[16]
+                                    if rating_array and len(rating_array) > 0:
+                                        last_rating = rating_array[-1]
+                                        if last_rating and last_rating > 0:
+                                            rating = last_rating / 10.0
+                                
                                 brand_products.append({
                                     "asin": asin,
                                     "title": title,
@@ -936,7 +973,12 @@ def phase2_category_market_mapping(
                                     "revenue_proxy": revenue,
                                     "bsr": bsr,
                                     "main_image": main_image,
-                                    "_is_target_brand": True
+                                    "_is_target_brand": True,
+                                    # Competitive metrics (NEW)
+                                    "outOfStockPercentage90": oos_90,
+                                    "new_offer_count": new_offer_count,
+                                    "review_count": review_count,
+                                    "rating": rating,
                                 })
                                 brand_asins_fetched.add(asin)
                         
@@ -1211,6 +1253,56 @@ def phase2_category_market_mapping(
                 # Get product image
                 image_urls = product.get("imagesCSV", "").split(",") if product.get("imagesCSV") else []
                 main_image = f"https://images-na.ssl-images-amazon.com/images/I/{image_urls[0]}" if image_urls else ""
+                
+                # === EXTRACT COMPETITIVE METRICS FROM KEEPA ===
+                # These power the Competitive Intelligence panel in the dashboard
+                stats = product.get("stats", {})
+                
+                # Out of Stock Percentage (90 days) - from stats
+                oos_90 = 0.0
+                if stats and "outOfStockPercentage90" in stats:
+                    oos_90 = stats.get("outOfStockPercentage90", 0) or 0
+                    if oos_90 > 1:  # Normalize if > 1 (Keepa sometimes returns as percentage)
+                        oos_90 = oos_90 / 100
+                
+                # Seller Count (new offers) - from csv[11] or stats
+                new_offer_count = 1  # Default: at least 1 seller
+                if csv and len(csv) > 11 and csv[11]:
+                    offer_array = csv[11]
+                    if offer_array and len(offer_array) > 0:
+                        last_offer = offer_array[-1]
+                        if last_offer and last_offer > 0:
+                            new_offer_count = last_offer
+                elif stats and "current" in stats:
+                    current_stats = stats.get("current", {})
+                    if isinstance(current_stats, dict):
+                        new_offer_count = current_stats.get("COUNT_NEW", 1) or 1
+                
+                # Review Count - from csv[17] or stats
+                review_count = 0
+                if csv and len(csv) > 17 and csv[17]:
+                    review_array = csv[17]
+                    if review_array and len(review_array) > 0:
+                        last_review = review_array[-1]
+                        if last_review and last_review > 0:
+                            review_count = last_review
+                elif stats and "current" in stats:
+                    current_stats = stats.get("current", {})
+                    if isinstance(current_stats, dict):
+                        review_count = current_stats.get("COUNT_REVIEWS", 0) or 0
+                
+                # Rating - from csv[16] or stats
+                rating = 0.0
+                if csv and len(csv) > 16 and csv[16]:
+                    rating_array = csv[16]
+                    if rating_array and len(rating_array) > 0:
+                        last_rating = rating_array[-1]
+                        if last_rating and last_rating > 0:
+                            rating = last_rating / 10.0  # Keepa stores as integer * 10
+                elif stats and "current" in stats:
+                    current_stats = stats.get("current", {})
+                    if isinstance(current_stats, dict):
+                        rating = (current_stats.get("RATING", 0) or 0) / 10.0
 
                 product_data = {
                     "asin": product.get("asin"),
@@ -1220,7 +1312,12 @@ def phase2_category_market_mapping(
                     "monthly_units": monthly_units,
                     "revenue_proxy": revenue,
                     "bsr": bsr,
-                    "main_image": main_image  # Add image for Visual Audit
+                    "main_image": main_image,  # Add image for Visual Audit
+                    # Competitive metrics (NEW)
+                    "outOfStockPercentage90": oos_90,
+                    "new_offer_count": new_offer_count,
+                    "review_count": review_count,
+                    "rating": rating,
                 }
 
                 # Track all valid products

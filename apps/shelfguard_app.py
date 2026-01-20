@@ -668,9 +668,19 @@ with main_tab1:
                 # CRITICAL: Normalize session state data to ensure consistent column names and dtypes
                 # Discovery phase uses: price, bsr, revenue_proxy, monthly_units
                 # Dashboard expects: weekly_sales_filled (numeric), revenue_proxy (numeric)
+                # FIX: ALWAYS create revenue_proxy even if missing (prevents KeyError downstream)
                 if 'revenue_proxy' in market_snapshot.columns:
                     market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
-                    market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
+                else:
+                    # Create revenue_proxy from price * monthly_units if available, else 0
+                    if 'price' in market_snapshot.columns and 'monthly_units' in market_snapshot.columns:
+                        market_snapshot['revenue_proxy'] = (
+                            pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0) *
+                            pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
+                        )
+                    else:
+                        market_snapshot['revenue_proxy'] = 0.0
+                market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
                 if 'bsr' in market_snapshot.columns:
                     market_snapshot['sales_rank_filled'] = pd.to_numeric(market_snapshot['bsr'], errors='coerce').fillna(0)
                 if 'price' in market_snapshot.columns:
@@ -974,10 +984,13 @@ with main_tab1:
         # We use 'weekly_sales_filled' as column name for backward compatibility with dashboard
         # but the value represents MONTHLY revenue (90-day average monthly estimate)
         # CRITICAL: Ensure numeric dtype to prevent 'nlargest' errors
+        # FIX: Always ensure revenue_proxy exists as a column (not scalar)
         if 'revenue_proxy' in portfolio_snapshot_df.columns:
             portfolio_snapshot_df['revenue_proxy'] = pd.to_numeric(portfolio_snapshot_df['revenue_proxy'], errors='coerce').fillna(0)
-        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df.get('revenue_proxy', 0)
-        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df.get('revenue_proxy', 0)
+        else:
+            portfolio_snapshot_df['revenue_proxy'] = 0.0  # Create as column of zeros
+        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['revenue_proxy'].copy()
+        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df['revenue_proxy'].copy()
         portfolio_snapshot_df['asin'] = portfolio_snapshot_df.get('asin', '')
 
         # All products in portfolio_df are "Your Brand - Healthy" (predictive state: HOLD)
@@ -1367,9 +1380,15 @@ with main_tab1:
         # === UNIFIED RISK COUNT (FIX: One definition used everywhere) ===
         # "Meaningful risk" = products where risk > $100 AND > 2% of product revenue
         # This prevents counting ALL products as "at risk" due to baseline optimization
-        if 'thirty_day_risk' in enriched_portfolio_df.columns and 'revenue_proxy' in enriched_portfolio_df.columns:
+        if 'thirty_day_risk' in enriched_portfolio_df.columns:
             product_risk = enriched_portfolio_df['thirty_day_risk'].fillna(0)
-            product_rev = enriched_portfolio_df['revenue_proxy'].fillna(1000)
+            # Use revenue_proxy if available, else weekly_sales_filled, else default to 1000
+            if 'revenue_proxy' in enriched_portfolio_df.columns:
+                product_rev = enriched_portfolio_df['revenue_proxy'].fillna(1000)
+            elif 'weekly_sales_filled' in enriched_portfolio_df.columns:
+                product_rev = enriched_portfolio_df['weekly_sales_filled'].fillna(1000)
+            else:
+                product_rev = pd.Series([1000] * len(enriched_portfolio_df))
             # Meaningful = either high absolute risk OR high % of that product's revenue
             meaningful_risk_mask = (product_risk > 100) & (product_risk > product_rev * 0.02)
             meaningful_risk_count = meaningful_risk_mask.sum()

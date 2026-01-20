@@ -422,21 +422,15 @@ def cache_market_snapshot(
     if source_df.empty:
         return 0
 
-    # DEBUG: Log what we're working with
-    source_name = "df_weekly" if (df_weekly is not None and not df_weekly.empty) else "market_snapshot"
-    st.caption(f"🔍 DEBUG: Caching from {source_name} with columns: {list(source_df.columns)[:10]}...")
-    
-    # Check for expected columns
-    price_cols = [c for c in ["buy_box_price", "filled_price", "price", "avg_price"] if c in source_df.columns]
-    rank_cols = [c for c in ["sales_rank_filled", "sales_rank", "bsr"] if c in source_df.columns]
-    rev_cols = [c for c in ["weekly_sales_filled", "revenue_proxy", "estimated_weekly_revenue"] if c in source_df.columns]
-    st.caption(f"🔍 Found: price={price_cols}, rank={rank_cols}, revenue={rev_cols}")
-    
-    # Sample first row
-    if len(source_df) > 0:
-        sample_row = source_df.iloc[0]
-        for col in price_cols + rank_cols + rev_cols:
-            st.caption(f"   {col}: {sample_row.get(col, 'N/A')} (type: {type(sample_row.get(col, None)).__name__})")
+    # CRITICAL FIX: df_weekly has multiple rows per ASIN (one per week).
+    # We need to aggregate to get the MOST RECENT week's data per ASIN.
+    # Otherwise, we might pick up old rows with missing values.
+    if df_weekly is not None and not df_weekly.empty and "week_start" in df_weekly.columns:
+        # Sort by week descending and take first (most recent) per ASIN
+        source_df = df_weekly.sort_values("week_start", ascending=False).drop_duplicates(
+            subset=["asin"], keep="first"
+        ).copy()
+        st.caption(f"📊 Using most recent week's data: {len(source_df)} unique ASINs from {len(df_weekly)} total rows")
 
     try:
         supabase = create_supabase_client()
@@ -492,10 +486,6 @@ def cache_market_snapshot(
             # If we have price and units but no revenue, calculate it
             if revenue_val is None and price_val and units_val:
                 revenue_val = price_val * units_val / 4  # Weekly from monthly
-            
-            # DEBUG: Log first row's extracted values
-            if len(records) == 0:
-                st.caption(f"🔍 First row extracted: price={price_val}, rank={rank_val}, revenue={revenue_val}, units={units_val}")
 
             record = {
                 "asin": str(asin).strip().upper(),

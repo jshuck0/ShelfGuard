@@ -1408,6 +1408,9 @@ with main_tab1:
         
         # === STATUS LOGIC (FIXED: Consistent, meaningful counts) ===
         # Use meaningful_risk_count for ALL status displays
+        # Also set action_required_count for backward compatibility with alert details section
+        action_required_count = meaningful_risk_count
+        
         if has_threat_keywords or is_predictive_critical:
             status_emoji = "🔴"
             status_text = "DEFENSE PROTOCOL"

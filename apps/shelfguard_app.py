@@ -2221,50 +2221,120 @@ with main_tab1:
                 except:
                     total_stockout_risk = 0
                 
-                # Calculate percentages
+                # Calculate risk percentages
                 total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
-                if total_risk_components > 0:
+                
+                # Break down growth by opportunity type
+                try:
+                    price_power_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'PRICE_POWER']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+                except:
+                    price_power_growth = 0
+                try:
+                    conquest_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'CONQUEST']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+                except:
+                    conquest_growth = 0
+                try:
+                    review_moat_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'REVIEW_MOAT']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+                except:
+                    review_moat_growth = 0
+                
+                total_growth_components = price_power_growth + conquest_growth + review_moat_growth
+                
+                # Decide whether to show RISK breakdown or GROWTH breakdown
+                if total_risk_components > 100:  # Show risk breakdown if meaningful risk exists
                     price_pct = (total_price_risk / total_risk_components) * 100
                     share_pct = (total_share_risk / total_risk_components) * 100
                     stockout_pct = (total_stockout_risk / total_risk_components) * 100
-                else:
-                    price_pct = share_pct = stockout_pct = 0
-                
-                st.markdown(f"""
-                <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
-                    <div style="font-size: 14px; font-weight: 600; color: #1a1a1a; margin-bottom: 12px;">
-                        Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
+                    
+                    st.markdown(f"""
+                    <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #dc3545; margin-bottom: 12px;">
+                            ⚠️ Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
+                        </div>
+                        <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                            <div style="margin-bottom: 8px;">
+                                <strong>Pricing Pressure:</strong> ${total_price_risk:,.0f} ({price_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #dc3545; height: 100%; width: {price_pct}%; border-radius: 2px;"></div>
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <strong>Velocity Decline:</strong> ${total_share_risk:,.0f} ({share_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #ffc107; height: 100%; width: {share_pct}%; border-radius: 2px;"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <strong>Inventory Risk:</strong> ${total_stockout_risk:,.0f} ({stockout_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #17a2b8; height: 100%; width: {stockout_pct}%; border-radius: 2px;"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div style="font-size: 12px; color: #666; line-height: 1.6;">
-                        <div style="margin-bottom: 8px;">
-                            <strong>Pricing Pressure:</strong> ${total_price_risk:,.0f} ({price_pct:.0f}%)
-                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                                <div style="background: #dc3545; height: 100%; width: {price_pct}%; border-radius: 2px;"></div>
-                            </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Add context
+                    if price_pct > 40:
+                        st.info(f"💡 **Primary Driver:** Pricing pressure from {competitor_product_count} competitors. Consider matching or testing premium positioning.")
+                    if share_pct > 40:
+                        st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
+                    if stockout_pct > 40:
+                        st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
+                
+                elif total_growth_components > 100:  # Show growth breakdown if meaningful growth exists
+                    pp_pct = (price_power_growth / total_growth_components) * 100 if total_growth_components > 0 else 0
+                    cq_pct = (conquest_growth / total_growth_components) * 100 if total_growth_components > 0 else 0
+                    rm_pct = (review_moat_growth / total_growth_components) * 100 if total_growth_components > 0 else 0
+                    
+                    st.markdown(f"""
+                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #155724; margin-bottom: 12px;">
+                            💰 Growth Opportunity: ${thirty_day_growth:,.0f} ({growth_pct:.1f}% potential)
                         </div>
-                        <div style="margin-bottom: 8px;">
-                            <strong>Velocity Decline:</strong> ${total_share_risk:,.0f} ({share_pct:.0f}%)
-                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                                <div style="background: #ffc107; height: 100%; width: {share_pct}%; border-radius: 2px;"></div>
+                        <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                            <div style="margin-bottom: 8px;">
+                                <strong>Pricing Power:</strong> ${price_power_growth:,.0f} ({pp_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #28a745; height: 100%; width: {pp_pct}%; border-radius: 2px;"></div>
+                                </div>
                             </div>
-                        </div>
-                        <div>
-                            <strong>Inventory Risk:</strong> ${total_stockout_risk:,.0f} ({stockout_pct:.0f}%)
-                            <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
-                                <div style="background: #17a2b8; height: 100%; width: {stockout_pct}%; border-radius: 2px;"></div>
+                            <div style="margin-bottom: 8px;">
+                                <strong>Conquest (Competitor OOS):</strong> ${conquest_growth:,.0f} ({cq_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #17a2b8; height: 100%; width: {cq_pct}%; border-radius: 2px;"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <strong>Review Moat:</strong> ${review_moat_growth:,.0f} ({rm_pct:.0f}%)
+                                <div style="background: #f0f0f0; height: 4px; border-radius: 2px; margin-top: 2px;">
+                                    <div style="background: #6f42c1; height: 100%; width: {rm_pct}%; border-radius: 2px;"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+                    
+                    # Add growth context
+                    if pp_pct > 40:
+                        st.success(f"💡 **Primary Opportunity:** Pricing power. Your strong rank supports 4-5% price tests on top SKUs.")
+                    if cq_pct > 40:
+                        st.info(f"🎯 **Primary Opportunity:** Competitor weakness. {int(conquest_count)} competitors out of stock - capture their customers.")
+                    if rm_pct > 40:
+                        st.info(f"⭐ **Primary Opportunity:** Review moat. Strong reviews support premium positioning.")
                 
-                # Add context
-                if price_pct > 40:
-                    st.info(f"💡 **Primary Driver:** Pricing pressure from {competitor_product_count} competitors. Consider matching or testing premium positioning.")
-                if share_pct > 40:
-                    st.warning(f"⚠️ **Primary Driver:** Velocity decline. Review ad spend allocation and keyword strategy.")
-                if stockout_pct > 40:
-                    st.error(f"🚨 **Primary Driver:** Inventory risk. Expedite restocking on {replenish_count} SKUs.")
+                else:  # Portfolio is healthy with no significant risk or growth
+                    st.markdown(f"""
+                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                        <div style="font-size: 14px; font-weight: 600; color: #155724; margin-bottom: 8px;">
+                            ✅ Portfolio Health: Optimized
+                        </div>
+                        <div style="font-size: 12px; color: #666;">
+                            No significant risks or growth opportunities detected. Position is stable.
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.success("🏆 **Elite Status:** Portfolio is well-optimized. Focus on maintaining current position.")
         else:
             # Fallback if no enriched data available
             st.info("📊 Competitive intelligence and root cause analysis will appear here once portfolio data is loaded.")

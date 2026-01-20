@@ -1833,7 +1833,8 @@ with main_tab1:
                 risk_icon = "✅"
 
             # Build action count badge
-            action_count = defend_count + replenish_count
+            # FIX: Use meaningful_risk_count for consistency (same as breakdown)
+            action_count = meaningful_risk_count
             
             # Build action summary line with both risk and growth actions
             action_parts = []
@@ -2527,7 +2528,8 @@ with main_tab1:
                         action_display = f"📊 Low risk flagged - ${risk:.0f}/mo exposure"
                     elif pred_state == "DEFEND":
                         action_display = f"{action_emoji} Defend position - velocity declining"
-                    elif pred_state == "REPLENISH":
+                    elif pred_state == "REPLENISH" and rev > 100:
+                        # Only show restock alert if product has meaningful revenue
                         action_display = f"{action_emoji} Inventory alert - restock needed"
                     elif pred_state == "EXPLOIT":
                         action_display = f"{action_emoji} Exploit momentum - accelerate spend while rank improving"

@@ -2237,18 +2237,18 @@ def calculate_portfolio_intelligence_vectorized(
         share_erosion = share_erosion * scale_factor
         stockout_risk_val = stockout_risk_val * scale_factor
     
-    # Predictive state (vectorized) - FIXED: More sensitive thresholds
-    # Note: price_erosion now includes optimization allocation
+    # Predictive state (vectorized) - FIXED: Only use REPLENISH when we have ACTUAL stockout data
+    # FIX: Fabricated stockout risk should NOT trigger REPLENISH - that creates phantom urgency
+    has_actual_stockout_data = 'days_until_stockout' in result.columns
+    
     predictive_state = np.where(
         v90 > 0.10, "DEFEND",  # Any meaningful velocity decline
         np.where(
-            stockout_risk_val > revenue * 0.05, "REPLENISH",  # High stockout risk
+            # REPLENISH only if: (1) we have actual stockout data AND (2) stockout_risk is material
+            has_actual_stockout_data & (stockout_risk_val > revenue * 0.05), "REPLENISH",
             np.where(
                 competitor_oos > 0.20, "EXPLOIT",  # Competitor weakness
-                np.where(
-                    price_erosion > revenue * 0.05, "HOLD",  # Optimization opportunity (not defense)
-                    "HOLD"
-                )
+                "HOLD"  # Default: optimization opportunity, not urgent action
             )
         )
     )

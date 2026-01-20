@@ -550,6 +550,14 @@ def cache_market_snapshot(
                 _safe_int
             )
 
+            # Apply data healer defaults for missing metrics
+            # This prevents AI from seeing NULL as "zero buy box ownership"
+            # and making incorrect TERMINAL recommendations
+            DEFAULT_BB_SHARE = 0.5  # Neutral assumption when unknown
+            DEFAULT_REVIEW_COUNT = None  # Keep as None - AI should see "no data"
+            DEFAULT_RATING = None  # Keep as None
+            DEFAULT_OFFER_COUNT = 1  # At least 1 seller
+            
             record = {
                 "asin": str(asin).strip().upper(),
                 "snapshot_date": snapshot_date,
@@ -557,11 +565,12 @@ def cache_market_snapshot(
                 "amazon_price": _safe_float(row_dict.get("amazon_price")),
                 "new_fba_price": _safe_float(row_dict.get("new_fba_price")),
                 "sales_rank": rank_val,
-                "amazon_bb_share": bb_share_val,
-                "buy_box_switches": _safe_int(row_dict.get("buy_box_switches")),
-                "new_offer_count": offer_count_val,
-                "review_count": review_count_val,
-                "rating": rating_val,
+                # CRITICAL: Apply defaults to prevent AI misclassification
+                "amazon_bb_share": bb_share_val if bb_share_val is not None else DEFAULT_BB_SHARE,
+                "buy_box_switches": _safe_int(row_dict.get("buy_box_switches")) or 0,
+                "new_offer_count": offer_count_val if offer_count_val is not None else DEFAULT_OFFER_COUNT,
+                "review_count": review_count_val,  # Keep None - handled by AI
+                "rating": rating_val,  # Keep None - handled by AI
                 "estimated_units": units_val,
                 "estimated_weekly_revenue": revenue_val,
                 "filled_price": price_val,  # Use same as buy_box_price

@@ -253,12 +253,16 @@ Analyze the following product metrics and classify it into ONE of 5 Strategic St
    - Action: Fix root cause, investigate, restructure
 
 5. **TERMINAL** - Exit required, cut losses
-   - Severely negative or zero margins
+   - Severely negative or zero margins (CONFIRMED, not missing data)
    - Sustained rank decline (>50% worse over 90 days)
    - Zero path to profitability
-   - No Buy Box ownership (<10%) with no recovery path
-   - <50 reviews with 3.5 or lower rating
+   - CONFIRMED zero Buy Box ownership (<10%) with no recovery path
+   - CONFIRMED <50 reviews with 3.5 or lower rating
    - Action: Liquidate, exit, stop all spend
+   
+   ⚠️ TERMINAL REQUIREMENTS: Use ONLY when metrics CONFIRM failure.
+   Products with $5K+/week revenue and top-50 rank are NOT TERMINAL.
+   Missing data is NOT confirmation of failure.
 
 ## Decision Framework
 
@@ -279,7 +283,7 @@ Analyze the following product metrics and classify it into ONE of 5 Strategic St
 - 500-1000 = Strong social proof
 - 100-500 = Competitive
 - <100 = Vulnerable, needs growth
-- 0 = Critical problem (consider DISTRESS)
+- 0 or missing = Could be data gap, NOT automatic TERMINAL (check revenue/rank)
 
 ### Rank Change Interpretation
 - IMPROVING rank (negative % change) = Growth signal
@@ -287,11 +291,19 @@ Analyze the following product metrics and classify it into ONE of 5 Strategic St
 - DECLINING rank (+10-30%) = Warning
 - COLLAPSING rank (+30%+) = DISTRESS or TERMINAL
 
-### Data Quality Rules
-- If key metrics are missing, do NOT assume the worst
-- Missing Buy Box ≠ 0% ownership (assume 50%)
-- Missing reviews ≠ 0 reviews (check if it's a data gap)
-- Missing price data = Confidence should be lower
+### Data Quality Rules (CRITICAL - READ FIRST)
+⚠️ MISSING DATA IS NOT THE SAME AS ZERO DATA ⚠️
+
+- If a metric shows "DATA_UNAVAILABLE" or is missing, do NOT assume the worst
+- Missing Buy Box ≠ 0% ownership → Assume 50% (neutral)
+- Missing reviews ≠ 0 reviews → Do NOT classify as TERMINAL based on missing review data
+- Missing price data = Lower confidence, not automatic DISTRESS
+- "buybox_health": "DATA_UNAVAILABLE" means we don't know, NOT that it's zero
+- "review_tier": "DATA_UNAVAILABLE" means Keepa didn't return this data
+
+IMPORTANT: Products with strong revenue ($5K+/week) and good rank (#30 or better) 
+should NEVER be classified as TERMINAL just because review/BB data is missing.
+TERMINAL requires CONFIRMED negative signals, not missing data.
 
 ## Nuanced Pattern Recognition
 
@@ -756,11 +768,15 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
     # =============================================
     # BUY BOX (Critical ownership signal)
     # =============================================
+    # IMPORTANT: Missing BB data (None) should default to "assumed 50%" not "0%"
+    # Zero BB is a CRITICAL signal, but missing data is NOT zero.
     bb_fields = ["amazon_bb_share", "buybox_share", "buyBoxPercentage"]
+    bb_found = False
     for field in bb_fields:
         if field in row_data and row_data[field] is not None:
             bb = _safe_float(row_data[field])
             if bb is not None:
+                bb_found = True
                 # Normalize to 0-1 if percentage
                 if bb > 1:
                     bb = bb / 100
@@ -772,9 +788,18 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
                     clean["buybox_health"] = "HEALTHY"
                 elif bb >= 0.30:
                     clean["buybox_health"] = "CONTESTED"
+                elif bb > 0:
+                    clean["buybox_health"] = "AT_RISK"
                 else:
+                    # Only flag CRITICAL if we have confirmed 0% BB ownership
                     clean["buybox_health"] = "CRITICAL"
                 break
+    
+    # If no BB data found, assume neutral (50%) - don't assume zero!
+    if not bb_found:
+        clean["buybox_ownership"] = "50% (estimated)"
+        clean["buybox_health"] = "DATA_UNAVAILABLE"
+        clean["buybox_data_note"] = "Buy Box data not available - assuming 50% (neutral)"
     
     # Buy Box 30d stats
     if "buyBoxStatsAmazon30" in row_data:
@@ -847,12 +872,17 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
     # =============================================
     # REVIEWS & SOCIAL PROOF
     # =============================================
+    # IMPORTANT: Missing review data (None/0) does NOT mean "zero reviews"
+    # It often means Keepa didn't return this data for the product.
+    # AI should NOT assume TERMINAL state based on missing review data alone.
     review_fields = ["review_count", "current_COUNT_REVIEWS", "reviewCount"]
+    review_found = False
     for field in review_fields:
         if field in row_data and row_data[field] is not None:
             count = _safe_float(row_data[field])
-            if count is not None:
+            if count is not None and count > 0:
                 clean["review_count"] = int(count)
+                review_found = True
                 # Add review tier
                 if count >= 1000:
                     clean["review_tier"] = "ESTABLISHED (1K+)"
@@ -865,6 +895,11 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
                 else:
                     clean["review_tier"] = "NEW (<25)"
                 break
+    
+    # If no review data found, mark as UNKNOWN (not zero!)
+    if not review_found:
+        clean["review_tier"] = "DATA_UNAVAILABLE"
+        clean["review_data_note"] = "Review count not available from Keepa - do not assume zero reviews"
     
     # Review velocity (growth signal)
     if "delta30_COUNT_REVIEWS" in row_data:

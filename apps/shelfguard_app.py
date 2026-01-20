@@ -901,8 +901,23 @@ with main_tab1:
         # Show category benchmarks if available (from network intelligence tables)
         if network_stats and network_stats.get('median_price'):
             with st.expander("🌐 Category Intelligence (Network Data)", expanded=False):
-                st.markdown("**Category Benchmarks from Network Intelligence**")
-                st.caption("Data accumulated from searches across ShelfGuard users")
+                # Show category context so user knows what benchmarks are from
+                cat_id = network_stats.get('category_id')
+                cat_name = st.session_state.get('active_project_category_name', 'Unknown Category')
+                st.markdown(f"**Category Benchmarks: {cat_name}**")
+                st.caption(f"Category ID: {cat_id} | Data from ShelfGuard network searches")
+                
+                # Warn if benchmarks look wildly off (indicates wrong category level)
+                median_price = network_stats.get('median_price', 0)
+                your_avg_price = 0
+                if 'buy_box_price' in portfolio_df.columns or 'filled_price' in portfolio_df.columns or 'price' in portfolio_df.columns:
+                    price_col = 'buy_box_price' if 'buy_box_price' in portfolio_df.columns else 'filled_price' if 'filled_price' in portfolio_df.columns else 'price'
+                    your_avg_price = portfolio_df[price_col].mean() if price_col in portfolio_df.columns else 0
+                
+                if median_price > 0 and your_avg_price > 0:
+                    price_ratio = your_avg_price / median_price
+                    if price_ratio > 5 or price_ratio < 0.2:
+                        st.warning(f"⚠️ **Benchmark mismatch detected**: Your portfolio avg (${your_avg_price:.2f}) is {price_ratio:.1f}x the category median (${median_price:.2f}). This may indicate stale data from a broader category. Re-run your search to update benchmarks.")
 
                 col1, col2, col3 = st.columns(3)
 

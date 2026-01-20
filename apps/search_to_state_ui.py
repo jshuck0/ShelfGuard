@@ -688,7 +688,15 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
                 try:
                     # Get category context from last Phase 2 params
                     seed_params = st.session_state.get("last_phase2_params", {})
-                    category_id = seed_params.get("category_id", 0)
+                    
+                    # FIX: Use LEAF category for accurate benchmarks (not root category)
+                    # Root category (e.g. "Health & Household") is too broad and mixes unrelated products
+                    # Leaf category (e.g. "Women's Disposable Razors") gives accurate price/BSR benchmarks
+                    leaf_category_id = seed_params.get("leaf_category_id")
+                    root_category_id = seed_params.get("category_id", 0)
+                    # Prefer leaf, fallback to root if leaf not available
+                    category_id = leaf_category_id if leaf_category_id else root_category_id
+                    
                     category_path = seed_params.get("category_path", "")
                     category_name = category_path.split(' > ')[-1] if category_path else 'Unknown'
                     category_tree = category_path.split(' > ') if category_path else []
@@ -697,6 +705,8 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
                     # Build category context for consolidated write
                     category_context = {
                         "category_id": int(category_id) if category_id else None,
+                        "leaf_category_id": int(leaf_category_id) if leaf_category_id else None,  # Store both
+                        "root_category_id": int(root_category_id) if root_category_id else None,
                         "category_name": category_name,
                         "category_tree": category_tree,
                         "category_root": category_root
@@ -721,13 +731,18 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
                             accumulator = NetworkIntelligenceAccumulator(supabase)
 
                             # Accumulate network intelligence (skip snapshot write - already done)
+                            # FIX: Use LEAF category for accurate benchmarks
                             accumulator.accumulate_search_data(
                                 market_snapshot=market_snapshot.copy(),
-                                category_id=int(category_id) if category_id else 0,
+                                category_id=int(leaf_category_id) if leaf_category_id else int(root_category_id) if root_category_id else 0,
                                 category_name=category_name,
                                 category_tree=category_tree,
                                 skip_snapshot_write=True  # ENHANCEMENT 2.3: Avoid duplicate write
                             )
+                            
+                            # Store leaf category in session state for dashboard benchmark fetch
+                            st.session_state["active_project_category_id"] = int(leaf_category_id) if leaf_category_id else int(root_category_id) if root_category_id else None
+                            st.session_state["active_project_category_name"] = category_name
 
                             if cached_count > 0:
                                 st.caption(f"⚡ Cached {cached_count} products + network intelligence for instant future loads")

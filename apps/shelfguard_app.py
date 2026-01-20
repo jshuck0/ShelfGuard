@@ -825,6 +825,24 @@ with main_tab1:
         portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
         market_df = market_snapshot  # View only - no modification needed
         
+        # CRITICAL FIX: Ensure revenue_proxy exists in market_snapshot early
+        # Discovery creates: revenue_proxy, monthly_units, price, avg_weekly_revenue
+        # But if missing, create it now to prevent KeyError downstream
+        if 'revenue_proxy' not in market_snapshot.columns or market_snapshot['revenue_proxy'].isna().all():
+            if 'avg_weekly_revenue' in market_snapshot.columns:
+                market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+            elif 'price' in market_snapshot.columns and 'monthly_units' in market_snapshot.columns:
+                market_snapshot['revenue_proxy'] = (
+                    pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0) *
+                    pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
+                )
+            else:
+                market_snapshot['revenue_proxy'] = 0.0
+        
+        # Ensure portfolio_df also has it (should be copied, but ensure it exists)
+        if 'revenue_proxy' not in portfolio_df.columns:
+            portfolio_df['revenue_proxy'] = market_snapshot.loc[market_snapshot['is_your_brand'], 'revenue_proxy'].values if len(portfolio_df) > 0 else 0.0
+        
         # === CALCULATE COMPETITIVE INTELLIGENCE FOR GROWTH LAYER ===
         # Calculate price gaps (your price vs. competitor average price)
         # This enables the Growth Intelligence layer to detect opportunities
@@ -975,6 +993,37 @@ with main_tab1:
                     st.caption(f"📅 Last updated: {snapshot_date}")
 
         # Step 3: Calculate key metrics
+        # CRITICAL FIX: Ensure revenue_proxy exists in both DataFrames before accessing
+        # This prevents KeyError when discovery data doesn't have revenue_proxy column
+        # Discovery creates: revenue_proxy, monthly_units, price, avg_weekly_revenue
+        if 'revenue_proxy' not in portfolio_df.columns or portfolio_df['revenue_proxy'].isna().all():
+            # Create revenue_proxy from available columns (priority order)
+            if 'avg_weekly_revenue' in portfolio_df.columns:
+                # Historical data available - use weekly * 4.33
+                portfolio_df['revenue_proxy'] = pd.to_numeric(portfolio_df['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+            elif 'price' in portfolio_df.columns and 'monthly_units' in portfolio_df.columns:
+                # Use price * monthly_units
+                portfolio_df['revenue_proxy'] = (
+                    pd.to_numeric(portfolio_df['price'], errors='coerce').fillna(0) *
+                    pd.to_numeric(portfolio_df['monthly_units'], errors='coerce').fillna(0)
+                )
+            else:
+                portfolio_df['revenue_proxy'] = 0.0
+        
+        if 'revenue_proxy' not in market_df.columns or market_df['revenue_proxy'].isna().all():
+            # Create revenue_proxy from available columns (priority order)
+            if 'avg_weekly_revenue' in market_df.columns:
+                # Historical data available - use weekly * 4.33
+                market_df['revenue_proxy'] = pd.to_numeric(market_df['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+            elif 'price' in market_df.columns and 'monthly_units' in market_df.columns:
+                # Use price * monthly_units
+                market_df['revenue_proxy'] = (
+                    pd.to_numeric(market_df['price'], errors='coerce').fillna(0) *
+                    pd.to_numeric(market_df['monthly_units'], errors='coerce').fillna(0)
+                )
+            else:
+                market_df['revenue_proxy'] = 0.0
+        
         # Portfolio (Your Brand) metrics
         portfolio_revenue = portfolio_df['revenue_proxy'].sum()
         portfolio_product_count = len(portfolio_df)

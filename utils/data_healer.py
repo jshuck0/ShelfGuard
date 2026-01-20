@@ -45,11 +45,15 @@ FINANCIAL_METRICS = MetricGroup(
         "new_fba_price",
         "fba_fees",
         "weekly_sales_filled",
+        "revenue_proxy",        # ADDED: Monthly revenue estimate (critical for Command Center)
+        "monthly_units",        # ADDED: Monthly units estimate
+        "avg_weekly_revenue",   # ADDED: Weekly revenue from historical data
         "estimated_units",
         "eff_p",
         "synthetic_cogs",
         "landed_logistics",
         "net_margin",
+        "price",                # ADDED: Base price from discovery
     ],
     fill_strategy="interpolate",
     default_value=0.0,
@@ -209,6 +213,10 @@ def clean_and_interpolate_metrics(
         print("UNIVERSAL DATA HEALER - Starting")
         print("="*60)
     
+    # CRITICAL: Ensure revenue_proxy exists FIRST (before metric group processing)
+    # This creates the column from available sources if missing
+    df = ensure_revenue_proxy(df, verbose=verbose)
+    
     # Process each metric group
     for group in ALL_METRIC_GROUPS:
         if verbose:
@@ -314,6 +322,94 @@ def _apply_fill_strategy(
         df[column] = df.groupby(group_by_column)[column].bfill(limit=max_gap_limit)
         # Forward fill remaining
         df[column] = df.groupby(group_by_column)[column].ffill(limit=1)
+    
+    return df
+
+
+# =============================================================================
+# REVENUE PROXY CREATION (CRITICAL FOR COMMAND CENTER)
+# =============================================================================
+
+def ensure_revenue_proxy(
+    df: pd.DataFrame,
+    verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Ensure revenue_proxy column exists and has valid values.
+    
+    Creates revenue_proxy from available columns if missing:
+    1. avg_weekly_revenue * 4.33 (best - from historical data)
+    2. price * monthly_units (good - from discovery)
+    3. filled_price * estimated_units (fallback)
+    4. 0.0 (last resort)
+    
+    Also creates weekly_sales_filled as alias for backward compatibility.
+    """
+    df = df.copy()
+    
+    # Check if revenue_proxy already exists with valid data
+    has_valid_revenue = (
+        'revenue_proxy' in df.columns and 
+        df['revenue_proxy'].notna().any() and 
+        (df['revenue_proxy'] > 0).any()
+    )
+    
+    if not has_valid_revenue:
+        if verbose:
+            print(f"  Creating revenue_proxy from available columns...")
+        
+        # Priority 1: avg_weekly_revenue * 4.33 (from 90-day historical)
+        if 'avg_weekly_revenue' in df.columns:
+            df['revenue_proxy'] = pd.to_numeric(df['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+            if verbose:
+                print(f"    → Created from avg_weekly_revenue (historical)")
+        
+        # Priority 2: price * monthly_units (from discovery/BSR formula)
+        elif 'price' in df.columns and 'monthly_units' in df.columns:
+            df['revenue_proxy'] = (
+                pd.to_numeric(df['price'], errors='coerce').fillna(0) *
+                pd.to_numeric(df['monthly_units'], errors='coerce').fillna(0)
+            )
+            if verbose:
+                print(f"    → Created from price × monthly_units")
+        
+        # Priority 3: filled_price * estimated_units (dashboard columns)
+        elif 'filled_price' in df.columns and 'estimated_units' in df.columns:
+            df['revenue_proxy'] = (
+                pd.to_numeric(df['filled_price'], errors='coerce').fillna(0) *
+                pd.to_numeric(df['estimated_units'], errors='coerce').fillna(0)
+            )
+            if verbose:
+                print(f"    → Created from filled_price × estimated_units")
+        
+        # Priority 4: buy_box_price * estimated_units
+        elif 'buy_box_price' in df.columns and 'estimated_units' in df.columns:
+            df['revenue_proxy'] = (
+                pd.to_numeric(df['buy_box_price'], errors='coerce').fillna(0) *
+                pd.to_numeric(df['estimated_units'], errors='coerce').fillna(0)
+            )
+            if verbose:
+                print(f"    → Created from buy_box_price × estimated_units")
+        
+        # Last resort: default to 0
+        else:
+            df['revenue_proxy'] = 0.0
+            if verbose:
+                print(f"    → No revenue sources found, defaulting to 0")
+    else:
+        # Column exists - ensure it's numeric
+        df['revenue_proxy'] = pd.to_numeric(df['revenue_proxy'], errors='coerce').fillna(0)
+    
+    # Also create weekly_sales_filled as alias (backward compatibility)
+    if 'weekly_sales_filled' not in df.columns:
+        df['weekly_sales_filled'] = df['revenue_proxy'].copy()
+    
+    # Report data quality
+    if verbose:
+        products_with_revenue = (df['revenue_proxy'] > 0).sum()
+        total_products = len(df)
+        pct = products_with_revenue / total_products * 100 if total_products > 0 else 0
+        print(f"  Revenue data quality: {products_with_revenue}/{total_products} ({pct:.0f}%) products have revenue")
     
     return df
 

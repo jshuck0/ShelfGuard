@@ -665,50 +665,37 @@ with main_tab1:
             market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
             if not market_snapshot.empty:
                 data_source = "session"
-                # CRITICAL: Normalize session state data to ensure consistent column names and dtypes
-                # Discovery phase uses: price, bsr, revenue_proxy, monthly_units
-                # Dashboard expects: weekly_sales_filled (numeric), revenue_proxy (numeric)
-                # FIX: ALWAYS create revenue_proxy even if missing (prevents KeyError downstream)
-                if 'revenue_proxy' in market_snapshot.columns:
-                    market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
-                else:
-                    # Create revenue_proxy from price * monthly_units if available, else 0
-                    if 'price' in market_snapshot.columns and 'monthly_units' in market_snapshot.columns:
-                        market_snapshot['revenue_proxy'] = (
-                            pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0) *
-                            pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
-                        )
-                    else:
-                        market_snapshot['revenue_proxy'] = 0.0
-                market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
-                if 'bsr' in market_snapshot.columns:
-                    market_snapshot['sales_rank_filled'] = pd.to_numeric(market_snapshot['bsr'], errors='coerce').fillna(0)
-                if 'price' in market_snapshot.columns:
-                    market_snapshot['filled_price'] = pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0)
-                    market_snapshot['buy_box_price'] = market_snapshot['filled_price'].copy()
-                if 'monthly_units' in market_snapshot.columns:
-                    market_snapshot['estimated_units'] = pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
-                # Ensure AI-critical metrics are numeric (prevents "zero buy box" false positives)
-                if 'amazon_bb_share' in market_snapshot.columns:
-                    market_snapshot['amazon_bb_share'] = pd.to_numeric(market_snapshot['amazon_bb_share'], errors='coerce').fillna(0)
-                if 'review_count' in market_snapshot.columns:
-                    market_snapshot['review_count'] = pd.to_numeric(market_snapshot['review_count'], errors='coerce').fillna(0).astype(int)
-                if 'rating' in market_snapshot.columns:
-                    market_snapshot['rating'] = pd.to_numeric(market_snapshot['rating'], errors='coerce').fillna(0)
-                if 'new_offer_count' in market_snapshot.columns:
-                    market_snapshot['new_offer_count'] = pd.to_numeric(market_snapshot['new_offer_count'], errors='coerce').fillna(1).astype(int)
-                
-                # === DATA HEALER: Apply comprehensive gap-filling ===
-                # Ensures AI receives complete data with no gaps
-                try:
-                    from utils.data_healer import clean_and_interpolate_metrics
-                    market_snapshot = clean_and_interpolate_metrics(market_snapshot, group_by_column="asin", verbose=False)
-                except ImportError:
-                    pass  # Data healer not available
 
         if df_weekly.empty or market_snapshot.empty:
             st.warning("⚠️ No project data found. Please create a project in Market Discovery.")
             st.stop()
+        
+        # === DATA HEALER: Apply comprehensive gap-filling (ALL code paths) ===
+        # This ensures revenue_proxy and all critical metrics exist with valid values
+        # MUST run BEFORE brand filtering to ensure portfolio_df inherits healed data
+        try:
+            from utils.data_healer import clean_and_interpolate_metrics, ensure_revenue_proxy
+            # First ensure revenue_proxy exists (critical for Command Center)
+            market_snapshot = ensure_revenue_proxy(market_snapshot, verbose=False)
+            # Then apply full healing for all metrics
+            market_snapshot = clean_and_interpolate_metrics(market_snapshot, group_by_column="asin", verbose=False)
+            # Also heal df_weekly if it's different from market_snapshot
+            if not df_weekly.equals(market_snapshot):
+                df_weekly = ensure_revenue_proxy(df_weekly, verbose=False)
+        except ImportError:
+            # Fallback: Manual revenue_proxy creation if healer not available
+            if 'revenue_proxy' not in market_snapshot.columns or market_snapshot['revenue_proxy'].isna().all():
+                if 'avg_weekly_revenue' in market_snapshot.columns:
+                    market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+                elif 'price' in market_snapshot.columns and 'monthly_units' in market_snapshot.columns:
+                    market_snapshot['revenue_proxy'] = (
+                        pd.to_numeric(market_snapshot['price'], errors='coerce').fillna(0) *
+                        pd.to_numeric(market_snapshot['monthly_units'], errors='coerce').fillna(0)
+                    )
+                else:
+                    market_snapshot['revenue_proxy'] = 0.0
+            if 'weekly_sales_filled' not in market_snapshot.columns:
+                market_snapshot['weekly_sales_filled'] = market_snapshot['revenue_proxy'].copy()
         
         # 3. VELOCITY EXTRACTION FROM DATABASE (FIX 1.1 - Critical Pipeline Fix)
         # Extract velocity trends from historical_metrics table instead of session state

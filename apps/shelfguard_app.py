@@ -2974,8 +2974,8 @@ with main_tab1:
                 except ImportError:
                     pass  # Trigger detection not available
             
-            # Reduced from 6 to 3 rows - we just need a few data points for trend visualization
-            if not df_weekly.empty and 'week_start' in df_weekly.columns and len(df_weekly) >= 3:
+            # Require 6+ weeks of data for meaningful causality analysis
+            if not df_weekly.empty and 'week_start' in df_weekly.columns and len(df_weekly) >= 6:
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
                 
@@ -3283,7 +3283,7 @@ with main_tab1:
                     debug_msg += f", weeks: {df_weekly['week_start'].nunique()}"
                 else:
                     debug_msg += ", no week_start column"
-                st.info(f"📊 Causality chart requires time-series data with week_start column. ({debug_msg})")
+                st.info(f"📊 Causality chart requires 6+ weeks of time-series data. ({debug_msg})")
         except Exception as e:
             st.warning(f"⚠️ Could not generate causality chart: {str(e)[:50]}")
         

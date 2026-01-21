@@ -32,7 +32,7 @@ ShelfGuard replaces analysis paralysis with **prescriptive intelligence**:
 ├────────────────────────────────────────────────────────────────┤
 │                                                                │
 │   📊 Market Data ──→ 🧠 Unified AI ──→ ⚡ Action Queue         │
-│   (36 months)         Engine           (Prioritized)           │
+│   (90-day trends)      Engine           (Prioritized)          │
 │                                                                │
 │   "RXBAR Variety    "DISTRESS:        "Pause ads,              │
 │    Pack BSR +340%    margin erosion    cut price 12%,          │
@@ -72,7 +72,7 @@ graph LR
 ```
 
 ### Phase 1: Two-Phase Discovery
-Enter a product ASIN or keyword. ShelfGuard automatically maps your entire competitive landscape—up to 200 products with 36 months of price, rank, and review history.
+Enter a product ASIN or keyword. ShelfGuard automatically maps your entire competitive landscape—up to 200 products with 90 days of price, rank, and review trends.
 
 ### Phase 2: Unified Intelligence
 A single AI engine analyzes every product across three dimensions:
@@ -91,8 +91,6 @@ Every product gets a specific recommendation with causal reasoning:
 ---
 
 ## The Command Center
-
-![Command Center Architecture](docs/command_center.png)
 
 ### Strategic Governor
 Bias the AI toward your current business objective:

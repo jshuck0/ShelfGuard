@@ -2818,7 +2818,10 @@ with main_tab1:
                     # Exclude by brand field (case-insensitive, contains match)
                     brand_match = market_df['brand'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False)
                     # Also exclude by title field (backup - catches products where brand field is missing/different)
-                    title_match = market_df['title'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False) if 'title' in market_df.columns else False
+                    if 'title' in market_df.columns:
+                        title_match = market_df['title'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False)
+                    else:
+                        title_match = pd.Series([False] * len(market_df))  # FIX: Must be a Series, not False
                     # Competitor = NOT brand match AND NOT title match
                     competitors = market_df[~brand_match & ~title_match].copy()
                 else:
@@ -2829,26 +2832,53 @@ with main_tab1:
                     top_competitors = competitors.nlargest(10, rev_col) if rev_col in competitors.columns else competitors.head(10)
                     
                     # Calculate median for price comparison (use healed data)
-                    median_price = competitors[price_col].median() if price_col in competitors.columns else category_median
+                    # FIX: Convert to numeric and filter valid prices
+                    price_values = pd.to_numeric(competitors[price_col], errors='coerce') if price_col in competitors.columns else pd.Series()
+                    valid_prices = price_values[price_values > 1.0]
+                    median_price = float(valid_prices.median()) if len(valid_prices) > 0 else category_median
                     if median_price <= 0:
                         median_price = category_median  # Fallback
                     
                     # Build comparison table
                     comp_data = []
                     for _, row in top_competitors.iterrows():
-                        price = row.get(price_col, row.get('buy_box_price', 0)) or 0
-                        # If still 0, use category median
+                        # FIX: Try multiple price columns
+                        price = 0
+                        for pcol in ['buy_box_price', 'filled_price', 'price', 'price_per_unit']:
+                            if pcol in row and pd.notna(row.get(pcol)) and float(row.get(pcol) or 0) > 0:
+                                price = float(row.get(pcol))
+                                break
                         if price <= 0:
                             price = category_median
-                        pack_size = row.get('number_of_items', 1) or 1
-                        price_per_unit = price / pack_size if pack_size > 1 else price
-                        revenue = row.get(rev_col, 0) or 0
-                        rank = row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0
-                        seller_count = row.get('seller_count', row.get('new_offer_count', 0)) or 0
-                        is_amazon = row.get('buybox_is_amazon', False)
-                        oos_30 = row.get('oos_count_amazon_30', 0) or 0
-                        velocity = row.get('velocity_30d', 0) or 0
-                        price_source = row.get('price_source', 'original')
+                        
+                        # Pack size and per-unit calculation
+                        pack_size = int(row.get('number_of_items', 1) or 1)
+                        if pack_size < 1:
+                            pack_size = 1
+                        price_per_unit = price / pack_size
+                        
+                        revenue = float(row.get(rev_col, 0) or 0)
+                        
+                        # FIX: Try multiple rank columns
+                        rank = 0
+                        for rcol in ['sales_rank_filled', 'sales_rank', 'bsr']:
+                            if rcol in row and pd.notna(row.get(rcol)) and float(row.get(rcol) or 0) > 0:
+                                rank = int(float(row.get(rcol)))
+                                break
+                        
+                        seller_count = int(row.get('seller_count', row.get('new_offer_count', 0)) or 0)
+                        
+                        # FIX: Try multiple amazon seller columns
+                        is_amazon = row.get('buybox_is_amazon', False) or row.get('has_amazon_seller', False) or row.get('amazon_bb_share', 0) > 0.5
+                        
+                        # FIX: Try multiple OOS columns
+                        oos_30 = 0
+                        for oos_col in ['oos_count_amazon_30', 'oos_pct_30', 'outOfStockPercentage30']:
+                            if oos_col in row and pd.notna(row.get(oos_col)):
+                                oos_30 = float(row.get(oos_col) or 0)
+                                break
+                        
+                        velocity = float(row.get('velocity_30d', row.get('velocity_trend_30d', 0)) or 0)
                         
                         # Price comparison vs median
                         price_gap = ((price - median_price) / median_price * 100) if median_price > 0 else 0
@@ -2865,20 +2895,17 @@ with main_tab1:
                         else:
                             vel_badge = "→ Stable"
                         
-                        # Mark healed prices
-                        price_display = f"${price:.2f}" if price_source == 'original' else f"~${price:.2f}"
-                        
                         comp_data.append({
-                            'Brand': row.get('brand', 'Unknown')[:15],
+                            'Brand': str(row.get('brand', 'Unknown'))[:15],
                             'Product': str(row.get('title', row.get('asin', '')))[:30] + '...',
-                            'Price': price_display,
-                            'Per Unit': f"${price_per_unit:.2f}" if pack_size > 1 else "-",
+                            'Price': f"${price:.2f}",
+                            'Per Unit': f"${price_per_unit:.2f}",  # FIX: Always show per-unit
                             'vs Median': f"{price_gap:+.0f}%",
-                            'BSR': f"#{int(rank):,}" if rank > 0 else "-",
-                            'Sellers': int(seller_count) if seller_count > 0 else 1,
+                            'BSR': f"#{rank:,}" if rank > 0 else "-",
+                            'Sellers': seller_count if seller_count > 0 else 1,
                             'Trend': vel_badge,
                             'Amz': '✓' if is_amazon else '',
-                            'OOS30': int(oos_30) if oos_30 > 0 else '-'  # Show '-' for 0 OOS (likely no data)
+                            'OOS30': f"{oos_30:.0f}" if oos_30 > 0 else '-'
                         })
                     
                     if comp_data:

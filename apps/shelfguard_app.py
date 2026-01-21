@@ -2322,18 +2322,10 @@ with main_tab1:
             # PREDICTIVE ALPHA: Use early calculation for consistency
             # (Enriched DataFrame already calculated - no redundant copy)
             
-            # FIX: Compute sum DIRECTLY from enriched DataFrame to ensure exact match with cards
-            # This guarantees topline = sum of individual card values
-            if 'thirty_day_risk' in enriched_portfolio_df.columns:
-                thirty_day_risk = enriched_portfolio_df['thirty_day_risk'].fillna(0).sum()
-                thirty_day_growth = enriched_portfolio_df['thirty_day_growth'].fillna(0).sum()
-            else:
-                thirty_day_risk = early_predictive_risk.get("thirty_day_risk", 0)
-                thirty_day_growth = early_predictive_risk.get("thirty_day_growth", 0)
-            
-            # Get other metrics from early calculation
+            # Reuse early calculation for consistency
             predictive_risk = early_predictive_risk
-            risk_pct = (thirty_day_risk / total_rev_curr * 100) if total_rev_curr > 0 else 0
+            thirty_day_risk = predictive_risk["thirty_day_risk"]
+            risk_pct = predictive_risk["risk_pct"]
             portfolio_status = predictive_risk["portfolio_status"]
             risk_status_emoji = predictive_risk["status_emoji"]  # Renamed to avoid conflict
             defend_count = predictive_risk["defend_count"]
@@ -2341,7 +2333,8 @@ with main_tab1:
             replenish_count = predictive_risk["replenish_count"]
             
             # Extract GROWTH metrics (offensive layer)
-            growth_pct = (thirty_day_growth / total_rev_curr * 100) if total_rev_curr > 0 else 0
+            thirty_day_growth = predictive_risk.get("thirty_day_growth", 0)
+            growth_pct = predictive_risk.get("growth_pct", 0)
             price_lift_count = predictive_risk.get("price_lift_count", 0)
             conquest_count = predictive_risk.get("conquest_count", 0)
             expand_count = predictive_risk.get("expand_count", 0)
@@ -3578,25 +3571,21 @@ with main_tab1:
                             pred_state_badge = ""
                         
                         # Escape cost of inaction for HTML - use 120 chars to show full reason
-                        # FIX: Build proper cost/value message with dollar amount
-                        if cost_of_inaction and len(cost_of_inaction) > 5:
+                        # FIX: Only show when we have meaningful values (> $100)
+                        escaped_cost = ""  # Default to empty (hide section)
+                        
+                        if cost_of_inaction and len(cost_of_inaction) > 5 and "$0" not in cost_of_inaction:
                             escaped_cost = html.escape(cost_of_inaction[:120]) + ("..." if len(cost_of_inaction) > 120 else "")
-                        elif is_actual_risk and thirty_day_risk > 0:
-                            # Build risk explanation
+                        elif is_actual_risk and thirty_day_risk > 100:
+                            # Only show risk if meaningful (> $100)
                             escaped_cost = f"${thirty_day_risk:,.0f} at risk if no action taken in 30 days"
-                        elif thirty_day_growth > 0:
-                            # Build growth explanation
+                        elif thirty_day_growth > 100:
+                            # Only show growth if meaningful (> $100)
                             escaped_cost = f"${thirty_day_growth:,.0f} potential revenue from optimization"
-                        elif optimization_value > 0:
-                            # Use optimization_value directly if available
+                        elif optimization_value > 100:
+                            # Only show optimization if meaningful (> $100)
                             escaped_cost = f"${optimization_value:,.0f} potential upside from pricing/positioning optimization"
-                        elif rev > 0:
-                            # Fallback to revenue-based estimate (5% of monthly revenue)
-                            est_opportunity = rev * 0.05  # 5% of monthly revenue as conservative estimate
-                            escaped_cost = f"${est_opportunity:,.0f} estimated opportunity (5% of {f_money(rev)}/mo revenue)"
-                        else:
-                            # No data - hide the optimization section for this card
-                            escaped_cost = ""
+                        # REMOVED: $0 fallback - don't show "5% of revenue" if values are small/zero
                         
                         # Determine time sensitivity/urgency
                         urgency_badge = ""

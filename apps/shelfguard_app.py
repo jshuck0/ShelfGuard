@@ -2063,7 +2063,7 @@ with main_tab1:
                 
                 st.markdown(f"""
                 <div style="background: white; border: 1px solid #e0e0e0; border-left: 4px solid {impact_color}; 
-                            padding: 16px; border-radius: 6px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+                            padding: 16px; border-radius: 6px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); min-height: 140px;">
                     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
                         <div style="font-size: 16px; font-weight: 700; color: #1a1a1a;">
                             {action_item['priority']}. {action_item['action']}
@@ -2072,6 +2072,7 @@ with main_tab1:
                             {action_item['impact']}
                         </div>
                     </div>
+                    <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 4px;">Opportunity Alpha</div>
                     <div style="font-size: 12px; color: #666; margin-bottom: 8px; line-height: 1.4;">
                         <strong>Why:</strong> {action_item['why']}
                     </div>
@@ -2377,7 +2378,7 @@ with main_tab1:
             
             action_line = " • ".join(action_parts) if action_parts else "No actions needed"
             
-            # Display Opportunity Alpha (Risk + Growth)
+            # Display Opportunity Alpha (Risk + Growth) - MATCHED FORMAT with portfolio cards
             st.markdown(f"""
 <div class="custom-metric-container" title="Combined 30-day opportunity: Risk to avert + Growth to capture. Based on velocity trends and competitive signals.">
     <div class="custom-metric-label">Opportunity Alpha</div>
@@ -2386,9 +2387,9 @@ with main_tab1:
         <span style="color: #666; font-size: 0.7em;"> + </span>
         <span style="color: #28a745;">{f_money(thirty_day_growth)}</span>
     </div>
-    <div class="benchmark-row" style="flex-wrap: wrap; gap: 4px;">
+    <div style="font-size: 0.7rem; color: #666; margin-top: 4px;">{f_money(opportunity_alpha)} total alpha</div>
+    <div class="benchmark-row" style="flex-wrap: wrap; gap: 4px; margin-top: 4px;">
         <span class="benchmark-badge benchmark-{status_color}">{risk_icon} {portfolio_status}</span>
-        <span class="benchmark-target" style="font-size: 0.7rem;">{f_money(opportunity_alpha)} total</span>
     </div>
     <div style="font-size: 0.65rem; color: #666; margin-top: 6px;">{action_line}</div>
 </div>
@@ -3653,15 +3654,15 @@ with main_tab1:
 </div>
 {('<div style="background: ' + urgency_color + '; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-bottom: 8px; display: inline-block;">' + urgency_badge + '</div>') if urgency_badge else ''}
 <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}{velocity_badge_html}</div>
-<div style="display: flex; align-items: baseline; gap: 6px; margin: 4px 0;">
+<div style="margin: 4px 0;">
+<div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 2px;">Opportunity Alpha</div>
+<div style="display: flex; align-items: baseline; gap: 6px;">
 <span style="font-size: 18px; color: #dc3545; font-weight: 700;">{f_money(thirty_day_risk)}</span>
 <span style="font-size: 11px; color: #666;">+</span>
 <span style="font-size: 18px; color: #28a745; font-weight: 700;">{f_money(thirty_day_growth)}</span>
 </div>
-<div style="display: flex; align-items: center; gap: 6px; margin-top: 4px;">
-<span style="font-size: 10px; background: {'#f8d7da' if is_actual_risk else '#fff3cd'}; color: {'#721c24' if is_actual_risk else '#856404'}; padding: 2px 6px; border-radius: 3px;">{'🔴 Risk' if is_actual_risk else '💰 Opportunity'}</span>
-<span style="font-size: 10px; color: #666;">{f_money(total_opportunity)} total</span>
 </div>
+<div style="font-size: 10px; color: #666; margin-top: 2px;">{f_money(total_opportunity)} total alpha</div>
 {reasoning_preview}
 {signals_preview}
 <div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">

@@ -3368,7 +3368,8 @@ with main_tab1:
                     # The enriched_portfolio_df already has thirty_day_risk, thirty_day_growth, etc.
                     
                     # Get pre-calculated predictive values (SAME SOURCE as topline)
-                    actual_risk = float(product.get('thirty_day_risk', 0) or 0)
+                    # FIX: Use actual risk column directly - DO NOT substitute optimization_value
+                    thirty_day_risk = float(product.get('thirty_day_risk', 0) or 0)
                     thirty_day_growth = float(product.get('thirty_day_growth', 0) or 0)
                     optimization_value = float(product.get('optimization_value', 0) or 0)
                     predictive_state = product.get('predictive_state', 'HOLD')
@@ -3376,8 +3377,8 @@ with main_tab1:
                     model_certainty = float(product.get('model_certainty', 0.5) or 0.5)
                     
                     # Determine if this is an optimization opportunity vs actual risk
-                    is_actual_risk = predictive_state in ["DEFEND", "REPLENISH"] or actual_risk > 100
-                    thirty_day_risk = actual_risk if is_actual_risk else optimization_value
+                    # But DON'T overwrite thirty_day_risk - keep it as the pure risk value
+                    is_actual_risk = predictive_state in ["DEFEND", "REPLENISH"] or thirty_day_risk > 100
                     
                     # Get strategic info via get_product_strategy (for actions, not values)
                     bias = st.session_state.get('strategic_bias_value', '⚖️ Balanced Defense')

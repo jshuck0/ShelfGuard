@@ -20,6 +20,31 @@ from dataclasses import dataclass
 
 
 # =============================================================================
+# SAFE INTERPOLATION HELPER (Pandas 2.0+ compatible)
+# =============================================================================
+
+def _safe_interpolate(series: pd.Series, method: str = 'linear', limit: int = None) -> pd.Series:
+    """
+    Safely interpolate a series, handling edge cases that raise ValueError in pandas 2.0+.
+    
+    Args:
+        series: Pandas Series to interpolate
+        method: Interpolation method (default: 'linear')
+        limit: Maximum number of consecutive NaN values to fill
+    
+    Returns:
+        Interpolated series (or original if interpolation not possible)
+    """
+    if len(series) <= 1 or series.isna().all():
+        return series
+    try:
+        return series.interpolate(method=method, limit=limit)
+    except ValueError:
+        # Fallback to forward fill if interpolate fails
+        return series.ffill(limit=limit)
+
+
+# =============================================================================
 # METRIC GROUP DEFINITIONS
 # =============================================================================
 
@@ -398,8 +423,10 @@ def clean_and_interpolate_metrics(
             )
             
             # Apply default fallback for remaining gaps
+            # FIX: Skip fillna if default is None (None means "keep as unknown")
             default = SPECIAL_DEFAULTS.get(col, group.default_value)
-            df[col] = df[col].fillna(default)
+            if default is not None:
+                df[col] = df[col].fillna(default)
             
             # Count gaps after filling
             gaps_after = df[col].isna().sum()
@@ -456,8 +483,18 @@ def _apply_fill_strategy(
     """
     if strategy == "interpolate":
         # Linear interpolation within groups
+        # FIX: Handle pandas 2.0+ where interpolate on all-NaN raises ValueError
+        def safe_interpolate(x, limit):
+            if len(x) <= 1 or x.isna().all():
+                return x
+            try:
+                return x.interpolate(method='linear', limit=limit)
+            except ValueError:
+                # Fallback to ffill if interpolate fails (e.g., all NaN)
+                return x.ffill(limit=limit)
+        
         df[column] = df.groupby(group_by_column)[column].transform(
-            lambda x: x.interpolate(method='linear', limit=max_gap_limit) if len(x) > 1 else x
+            lambda x: safe_interpolate(x, max_gap_limit)
         )
         # Forward fill remaining gaps
         df[column] = df.groupby(group_by_column)[column].ffill(limit=max_gap_limit)
@@ -905,7 +942,7 @@ def heal_price_metrics(
     
     # Interpolate remaining gaps
     df["filled_price"] = df.groupby(group_by)["filled_price"].transform(
-        lambda x: x.interpolate(method='linear', limit=2) if len(x) > 1 else x
+        lambda x: _safe_interpolate(x, method='linear', limit=2)
     )
     
     # Final fallback to 0
@@ -943,7 +980,7 @@ def heal_rank_metrics(
     
     # Interpolate gaps
     df[f"{rank_col}_filled"] = df.groupby(group_by)[rank_col].transform(
-        lambda x: x.interpolate(method='linear', limit=max_weeks) if len(x) > 1 else x
+        lambda x: _safe_interpolate(x, method='linear', limit=max_weeks)
     )
     
     # Forward fill short gaps
@@ -987,7 +1024,7 @@ def heal_review_metrics(
     if rating_col in df.columns:
         df[rating_col] = df.groupby(group_by)[rating_col].ffill()
         df[rating_col] = df.groupby(group_by)[rating_col].transform(
-            lambda x: x.interpolate(method='linear', limit=2) if len(x) > 1 else x
+            lambda x: _safe_interpolate(x, method='linear', limit=2)
         )
         df[rating_col] = df[rating_col].fillna(0.0)
     
@@ -1033,7 +1070,7 @@ def heal_competitive_metrics(
         if col in df.columns:
             df[col] = df.groupby(group_by)[col].ffill()
             df[col] = df.groupby(group_by)[col].transform(
-                lambda x: x.interpolate(method='linear', limit=2) if len(x) > 1 else x
+                lambda x: _safe_interpolate(x, method='linear', limit=2)
             )
             # Default: Assume 50% if unknown (or 0 for switches)
             default = 0.5 if "share" in col.lower() else 0

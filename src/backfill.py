@@ -307,9 +307,16 @@ def build_historical_metrics(products: List[Dict]) -> pd.DataFrame:
     # Interpolate BSR (sales rank)
     if "sales_rank" in df_full.columns:
         # Use interpolation to fill gaps (limit covers ~3 weeks of data)
-        df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank"].transform(
-            lambda x: x.interpolate(method='linear', limit=MAX_RANK_GAP_LIMIT) if len(x) > 1 else x
-        )
+        # FIX: Handle pandas 2.0+ where interpolate on all-NaN raises ValueError
+        def safe_interpolate_rank(x):
+            if len(x) <= 1 or x.isna().all():
+                return x.ffill()
+            try:
+                return x.interpolate(method='linear', limit=MAX_RANK_GAP_LIMIT)
+            except ValueError:
+                return x.ffill()
+        
+        df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank"].transform(safe_interpolate_rank)
         # Fallback: if interpolation didn't fill all values, forward fill remaining
         df_full["sales_rank_filled"] = df_full.groupby("asin")["sales_rank_filled"].ffill()
 

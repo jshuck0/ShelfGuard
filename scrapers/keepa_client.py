@@ -344,9 +344,16 @@ def build_keepa_weekly_table(products, window_start=None):
     # Fill price gaps using forward-fill, then backward-fill for leading gaps
     # This ensures we use the most recent known price, but also fill early weeks
     # that had no price data by using the earliest available price
-    df["filled_price"] = df.groupby("asin")["eff_p"].transform(
-        lambda x: x.ffill(limit=MAX_PRICE_FFILL_WEEKS).bfill(limit=MAX_PRICE_FFILL_WEEKS)
-    )
+    # FIX: Handle pandas 2.0+ where ffill/bfill might fail on edge cases
+    def safe_fill_price(x):
+        if x.isna().all():
+            return x
+        try:
+            return x.ffill(limit=MAX_PRICE_FFILL_WEEKS).bfill(limit=MAX_PRICE_FFILL_WEEKS)
+        except ValueError:
+            return x
+    
+    df["filled_price"] = df.groupby("asin")["eff_p"].transform(safe_fill_price)
 
     # ULTIMATE FALLBACK: For any remaining NaN prices, use the ASIN's mean price
     # This handles cases where price data gaps exceed MAX_PRICE_FFILL_WEEKS
@@ -356,9 +363,16 @@ def build_keepa_weekly_table(products, window_start=None):
     # Fill BSR with interpolation if available
     if "sales_rank" in df.columns:
         # Interpolate BSR to handle gaps smoothly
-        df["sales_rank_filled"] = df.groupby("asin")["sales_rank"].transform(
-            lambda x: x.interpolate(limit=MAX_RANK_GAP_WEEKS).ffill().bfill()
-        )
+        # FIX: Handle pandas 2.0+ where interpolate on all-NaN raises ValueError
+        def safe_interpolate_bsr(x):
+            if len(x) <= 1 or x.isna().all():
+                return x.ffill().bfill()
+            try:
+                return x.interpolate(limit=MAX_RANK_GAP_WEEKS).ffill().bfill()
+            except ValueError:
+                return x.ffill().bfill()
+        
+        df["sales_rank_filled"] = df.groupby("asin")["sales_rank"].transform(safe_interpolate_bsr)
     else:
         # No BSR data - use high default (low confidence)
         df["sales_rank_filled"] = 100000

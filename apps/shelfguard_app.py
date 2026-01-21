@@ -2988,6 +2988,226 @@ with main_tab1:
         except Exception as e:
             st.warning(f"⚠️ Could not load trigger events: {str(e)[:50]}")
         
+        # === MARKET CAUSALITY CHART (Interactive time series with annotations) ===
+        st.markdown("---")
+        st.markdown("### 📈 Market Causality Analysis")
+        st.caption("How competitor actions and market dynamics influence your performance over time")
+        
+        try:
+            df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
+            market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+            target_brand = st.session_state.get('active_brand', '')
+            
+            if not df_weekly.empty and 'week_start' in df_weekly.columns and len(df_weekly) >= 6:
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+                
+                # Prepare data - separate your brand vs competitors
+                df_weekly['week_start'] = pd.to_datetime(df_weekly['week_start'])
+                
+                # Identify your brand's products
+                if target_brand and 'brand' in df_weekly.columns:
+                    target_brand_lower = target_brand.lower().strip()
+                    brand_mask = df_weekly['brand'].str.lower().str.contains(target_brand_lower, case=False, na=False)
+                    if 'title' in df_weekly.columns:
+                        title_mask = df_weekly['title'].str.lower().str.contains(target_brand_lower, case=False, na=False)
+                        brand_mask = brand_mask | title_mask
+                else:
+                    brand_mask = pd.Series([True] * len(df_weekly))
+                
+                your_brand_df = df_weekly[brand_mask].copy()
+                competitor_df = df_weekly[~brand_mask].copy()
+                
+                # Aggregate by week
+                price_col = 'filled_price' if 'filled_price' in df_weekly.columns else 'buy_box_price' if 'buy_box_price' in df_weekly.columns else None
+                rank_col = 'sales_rank_filled' if 'sales_rank_filled' in df_weekly.columns else 'sales_rank' if 'sales_rank' in df_weekly.columns else None
+                
+                if price_col and rank_col:
+                    # Your brand weekly averages
+                    your_weekly = your_brand_df.groupby('week_start').agg({
+                        price_col: 'mean',
+                        rank_col: 'mean'
+                    }).reset_index()
+                    your_weekly.columns = ['week', 'your_price', 'your_rank']
+                    
+                    # Competitor weekly averages
+                    if not competitor_df.empty:
+                        comp_weekly = competitor_df.groupby('week_start').agg({
+                            price_col: 'mean',
+                            rank_col: 'mean'
+                        }).reset_index()
+                        comp_weekly.columns = ['week', 'comp_price', 'comp_rank']
+                        
+                        # Merge
+                        chart_data = your_weekly.merge(comp_weekly, on='week', how='outer').sort_values('week')
+                    else:
+                        chart_data = your_weekly.copy()
+                        chart_data['comp_price'] = None
+                        chart_data['comp_rank'] = None
+                    
+                    # Create subplot with secondary y-axis
+                    fig = make_subplots(
+                        rows=2, cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.08,
+                        row_heights=[0.6, 0.4],
+                        subplot_titles=('💰 Price Comparison', '📊 Rank Performance (Lower is Better)')
+                    )
+                    
+                    # === PRICE SUBPLOT ===
+                    # Your price line
+                    fig.add_trace(
+                        go.Scatter(
+                            x=chart_data['week'],
+                            y=chart_data['your_price'],
+                            name=f'{target_brand} Avg Price',
+                            line=dict(color='#00704A', width=3),
+                            mode='lines+markers',
+                            hovertemplate='%{x|%b %d}<br>$%{y:.2f}<extra></extra>'
+                        ),
+                        row=1, col=1
+                    )
+                    
+                    # Competitor price line
+                    if 'comp_price' in chart_data.columns and chart_data['comp_price'].notna().any():
+                        fig.add_trace(
+                            go.Scatter(
+                                x=chart_data['week'],
+                                y=chart_data['comp_price'],
+                                name='Competitor Avg Price',
+                                line=dict(color='#dc3545', width=2, dash='dot'),
+                                mode='lines+markers',
+                                hovertemplate='%{x|%b %d}<br>$%{y:.2f}<extra></extra>'
+                            ),
+                            row=1, col=1
+                        )
+                        
+                        # Price gap shading (when you're above competitors = green, below = red)
+                        if len(chart_data) > 1:
+                            for i in range(len(chart_data) - 1):
+                                row1 = chart_data.iloc[i]
+                                row2 = chart_data.iloc[i + 1]
+                                if pd.notna(row1['your_price']) and pd.notna(row1['comp_price']):
+                                    gap_color = 'rgba(40, 167, 69, 0.1)' if row1['your_price'] > row1['comp_price'] else 'rgba(220, 53, 69, 0.1)'
+                    
+                    # === RANK SUBPLOT ===
+                    # Your rank line
+                    fig.add_trace(
+                        go.Scatter(
+                            x=chart_data['week'],
+                            y=chart_data['your_rank'],
+                            name=f'{target_brand} Avg Rank',
+                            line=dict(color='#007bff', width=3),
+                            mode='lines+markers',
+                            hovertemplate='%{x|%b %d}<br>#%{y:,.0f}<extra></extra>'
+                        ),
+                        row=2, col=1
+                    )
+                    
+                    # Competitor rank line
+                    if 'comp_rank' in chart_data.columns and chart_data['comp_rank'].notna().any():
+                        fig.add_trace(
+                            go.Scatter(
+                                x=chart_data['week'],
+                                y=chart_data['comp_rank'],
+                                name='Competitor Avg Rank',
+                                line=dict(color='#6c757d', width=2, dash='dot'),
+                                mode='lines+markers',
+                                hovertemplate='%{x|%b %d}<br>#%{y:,.0f}<extra></extra>'
+                            ),
+                            row=2, col=1
+                        )
+                    
+                    # Invert rank axis (lower = better = up)
+                    fig.update_yaxes(autorange="reversed", row=2, col=1)
+                    
+                    # Add trigger event annotations if available
+                    try:
+                        if 'all_triggers' in dir() and all_triggers:
+                            for t in all_triggers[:5]:  # Top 5 events
+                                if hasattr(t, 'detected_at') and t.detected_at:
+                                    event_date = pd.to_datetime(t.detected_at)
+                                    event_color = '#dc3545' if getattr(t, 'nature', '') == 'THREAT' else '#28a745'
+                                    fig.add_vline(
+                                        x=event_date,
+                                        line_width=2,
+                                        line_dash="dash",
+                                        line_color=event_color,
+                                        annotation_text=t.event_type[:15],
+                                        annotation_position="top",
+                                        row=1, col=1
+                                    )
+                    except:
+                        pass  # Annotations are optional enhancement
+                    
+                    # Layout styling
+                    fig.update_layout(
+                        height=500,
+                        showlegend=True,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        ),
+                        hovermode='x unified',
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        margin=dict(l=60, r=40, t=80, b=40)
+                    )
+                    
+                    # Grid styling
+                    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0')
+                    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0', tickprefix='$', row=1, col=1)
+                    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0', tickprefix='#', row=2, col=1)
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Causality insights
+                    if len(chart_data) >= 4:
+                        # Calculate trends
+                        first_half = chart_data.head(len(chart_data)//2)
+                        second_half = chart_data.tail(len(chart_data)//2)
+                        
+                        your_price_trend = second_half['your_price'].mean() - first_half['your_price'].mean()
+                        your_rank_trend = second_half['your_rank'].mean() - first_half['your_rank'].mean()
+                        
+                        insight_cols = st.columns(3)
+                        with insight_cols[0]:
+                            if your_price_trend > 1:
+                                st.success(f"📈 **Price Up:** ${your_price_trend:.2f} avg increase")
+                            elif your_price_trend < -1:
+                                st.warning(f"📉 **Price Down:** ${abs(your_price_trend):.2f} avg decrease")
+                            else:
+                                st.info(f"➡️ **Price Stable:** ±${abs(your_price_trend):.2f}")
+                        
+                        with insight_cols[1]:
+                            if your_rank_trend < -50:  # Negative = improving (lower rank is better)
+                                st.success(f"🚀 **Rank Improving:** {abs(your_rank_trend):,.0f} avg improvement")
+                            elif your_rank_trend > 50:
+                                st.warning(f"📉 **Rank Declining:** {your_rank_trend:,.0f} avg decline")
+                            else:
+                                st.info(f"➡️ **Rank Stable:** ±{abs(your_rank_trend):,.0f}")
+                        
+                        with insight_cols[2]:
+                            if 'comp_price' in chart_data.columns and chart_data['comp_price'].notna().any():
+                                comp_price_trend = second_half['comp_price'].mean() - first_half['comp_price'].mean()
+                                if comp_price_trend > 1:
+                                    st.info(f"👀 **Competitors Rising:** +${comp_price_trend:.2f} - pricing power opportunity")
+                                elif comp_price_trend < -1:
+                                    st.warning(f"⚔️ **Competitors Cutting:** -${abs(comp_price_trend):.2f} - price war risk")
+                                else:
+                                    st.info("⚖️ **Competitors Stable**")
+                            else:
+                                st.caption("No competitor trend data")
+                else:
+                    st.info("📊 Price and rank data required for causality analysis.")
+            else:
+                st.info("📊 Causality chart will appear once historical data is loaded (requires 6+ weeks of data).")
+        except Exception as e:
+            st.warning(f"⚠️ Could not generate causality chart: {str(e)[:50]}")
+        
         # --- AI ACTION QUEUE (Outside of columns - full width) ---
         tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
 

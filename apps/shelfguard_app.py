@@ -2887,116 +2887,51 @@ with main_tab1:
         except Exception as e:
             st.warning(f"⚠️ Could not load competitor pricing data: {str(e)[:50]}")
         
-        # === MARKET TRIGGER EVENT TIMELINE ===
-        st.markdown("---")
-        st.markdown("### 📅 Market Event Timeline")
-        
-        try:
-            # Get historical data and detect trigger events across the portfolio
-            df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
-            market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
-            
-            if not df_weekly.empty and 'asin' in df_weekly.columns:
-                from src.trigger_detection import detect_trigger_events
-                
-                # Aggregate trigger events across top products
-                all_triggers = []
-                target_brand = st.session_state.get('active_brand', '')
-                
-                # Get top revenue products for trigger detection
-                if target_brand and 'brand' in df_weekly.columns:
-                    brand_asins = df_weekly[df_weekly['brand'].str.lower() == target_brand.lower()]['asin'].unique()[:10]
-                else:
-                    brand_asins = df_weekly['asin'].unique()[:10]
-                
-                for asin in brand_asins:
-                    asin_history = df_weekly[df_weekly['asin'] == asin]
-                    if not asin_history.empty and len(asin_history) >= 3:
-                        try:
-                            triggers = detect_trigger_events(
-                                asin=asin,
-                                df_historical=asin_history,
-                                df_competitors=market_df,
-                                lookback_days=30
-                            )
-                            # Tag each trigger with its ASIN
-                            for t in triggers:
-                                t.asin = asin
-                            all_triggers.extend(triggers)
-                        except Exception:
-                            pass  # Skip failed detections silently
-                
-                if all_triggers:
-                    # Sort all triggers by severity and take top 15
-                    all_triggers = sorted(all_triggers, key=lambda e: e.severity, reverse=True)[:15]
-                    
-                    # Display timeline
-                    timeline_col1, timeline_col2 = st.columns([2, 1])
-                    
-                    with timeline_col1:
-                        # Group by event type
-                        threat_events = [t for t in all_triggers if hasattr(t, 'nature') and t.nature == 'THREAT']
-                        opportunity_events = [t for t in all_triggers if hasattr(t, 'nature') and t.nature == 'OPPORTUNITY']
-                        other_events = [t for t in all_triggers if not hasattr(t, 'nature') or t.nature not in ['THREAT', 'OPPORTUNITY']]
-                        
-                        if threat_events:
-                            st.markdown("#### 🔴 Threats Detected")
-                            for t in threat_events[:5]:
-                                severity_bar = "█" * min(t.severity, 10) + "░" * (10 - min(t.severity, 10))
-                                delta_str = f"{t.delta_pct:+.1f}%" if hasattr(t, 'delta_pct') and t.delta_pct else ""
-                                asin_short = t.asin[:10] if hasattr(t, 'asin') else ""
-                                st.markdown(f"""
-                                    <div style="background: #fff5f5; border-left: 3px solid #dc3545; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px;">
-                                        <div style="font-size: 12px; font-weight: 600; color: #dc3545;">{t.event_type}</div>
-                                        <div style="font-size: 11px; color: #666;">{t.metric_name} {delta_str}</div>
-                                        <div style="font-size: 10px; color: #999; font-family: monospace;">{asin_short} | Severity: <span style="color: #dc3545;">{severity_bar}</span></div>
-                                    </div>
-                                """, unsafe_allow_html=True)
-                        
-                        if opportunity_events:
-                            st.markdown("#### 🟢 Opportunities Detected")
-                            for t in opportunity_events[:5]:
-                                severity_bar = "█" * min(t.severity, 10) + "░" * (10 - min(t.severity, 10))
-                                delta_str = f"{t.delta_pct:+.1f}%" if hasattr(t, 'delta_pct') and t.delta_pct else ""
-                                asin_short = t.asin[:10] if hasattr(t, 'asin') else ""
-                                st.markdown(f"""
-                                    <div style="background: #f0fff4; border-left: 3px solid #28a745; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px;">
-                                        <div style="font-size: 12px; font-weight: 600; color: #155724;">{t.event_type}</div>
-                                        <div style="font-size: 11px; color: #666;">{t.metric_name} {delta_str}</div>
-                                        <div style="font-size: 10px; color: #999; font-family: monospace;">{asin_short} | Impact: <span style="color: #28a745;">{severity_bar}</span></div>
-                                    </div>
-                                """, unsafe_allow_html=True)
-                    
-                    with timeline_col2:
-                        # Summary stats
-                        st.markdown("#### 📊 Event Summary")
-                        st.metric("Total Events", len(all_triggers))
-                        st.metric("Threats", len(threat_events), delta=f"-{len(threat_events)}" if threat_events else None, delta_color="inverse")
-                        st.metric("Opportunities", len(opportunity_events), delta=f"+{len(opportunity_events)}" if opportunity_events else None)
-                        
-                        # Average severity
-                        if all_triggers:
-                            avg_severity = sum(t.severity for t in all_triggers) / len(all_triggers)
-                            severity_label = "Critical" if avg_severity >= 7 else "Moderate" if avg_severity >= 5 else "Low"
-                            st.markdown(f"**Avg Severity:** {avg_severity:.1f}/10 ({severity_label})")
-                else:
-                    st.info("📊 No significant market events detected in the past 30 days. Your market position is stable.")
-            else:
-                st.info("📊 Trigger event timeline will appear once historical data is loaded.")
-        except ImportError:
-            st.info("📊 Trigger detection module not available.")
-        except Exception as e:
-            st.warning(f"⚠️ Could not load trigger events: {str(e)[:50]}")
-        
-        # === MARKET CAUSALITY CHART (Interactive time series with annotations) ===
+        # === UNIFIED MARKET CAUSALITY ANALYSIS (Chart + Event Annotations) ===
         st.markdown("---")
         st.markdown("### 📈 Market Causality Analysis")
-        st.caption("How competitor actions and market dynamics influence your performance over time")
+        st.caption("Track price and rank trends with market events annotated on the timeline")
         
         try:
             df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
             market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
             target_brand = st.session_state.get('active_brand', '')
+            
+            # === STEP 1: Detect trigger events FIRST so we can annotate the chart ===
+            all_triggers = []
+            trigger_detection_available = False
+            
+            if not df_weekly.empty and 'asin' in df_weekly.columns:
+                try:
+                    from src.trigger_detection import detect_trigger_events
+                    trigger_detection_available = True
+                    
+                    # Get top revenue products for trigger detection
+                    if target_brand and 'brand' in df_weekly.columns:
+                        brand_asins = df_weekly[df_weekly['brand'].str.lower() == target_brand.lower()]['asin'].unique()[:10]
+                    else:
+                        brand_asins = df_weekly['asin'].unique()[:10]
+                    
+                    for asin in brand_asins:
+                        asin_history = df_weekly[df_weekly['asin'] == asin]
+                        if not asin_history.empty and len(asin_history) >= 3:
+                            try:
+                                triggers = detect_trigger_events(
+                                    asin=asin,
+                                    df_historical=asin_history,
+                                    df_competitors=market_df,
+                                    lookback_days=30
+                                )
+                                for t in triggers:
+                                    t.asin = asin
+                                all_triggers.extend(triggers)
+                            except Exception:
+                                pass
+                    
+                    # Sort by severity, take top 10
+                    all_triggers = sorted(all_triggers, key=lambda e: e.severity, reverse=True)[:10]
+                except ImportError:
+                    pass  # Trigger detection not available
             
             if not df_weekly.empty and 'week_start' in df_weekly.columns and len(df_weekly) >= 6:
                 import plotly.graph_objects as go
@@ -3121,28 +3056,60 @@ with main_tab1:
                     # Invert rank axis (lower = better = up)
                     fig.update_yaxes(autorange="reversed", row=2, col=1)
                     
-                    # Add trigger event annotations if available
-                    try:
-                        if 'all_triggers' in dir() and all_triggers:
-                            for t in all_triggers[:5]:  # Top 5 events
-                                if hasattr(t, 'detected_at') and t.detected_at:
-                                    event_date = pd.to_datetime(t.detected_at)
-                                    event_color = '#dc3545' if getattr(t, 'nature', '') == 'THREAT' else '#28a745'
-                                    fig.add_vline(
-                                        x=event_date,
-                                        line_width=2,
-                                        line_dash="dash",
-                                        line_color=event_color,
-                                        annotation_text=t.event_type[:15],
-                                        annotation_position="top",
-                                        row=1, col=1
-                                    )
-                    except:
-                        pass  # Annotations are optional enhancement
+                    # === ADD TRIGGER EVENT ANNOTATIONS ON CHART ===
+                    if all_triggers:
+                        # Get chart date range for validation
+                        chart_min_date = chart_data['week'].min()
+                        chart_max_date = chart_data['week'].max()
+                        
+                        annotation_offset = 0  # Stagger annotations vertically
+                        for i, t in enumerate(all_triggers[:5]):  # Top 5 events
+                            # Try multiple date attributes
+                            event_date = None
+                            for date_attr in ['detected_at', 'date', 'timestamp', 'event_date']:
+                                if hasattr(t, date_attr) and getattr(t, date_attr):
+                                    try:
+                                        event_date = pd.to_datetime(getattr(t, date_attr))
+                                        break
+                                    except:
+                                        pass
+                            
+                            # If no date found, use most recent week as proxy
+                            if event_date is None:
+                                event_date = chart_max_date
+                            
+                            # Only annotate if date is within chart range
+                            if chart_min_date <= event_date <= chart_max_date:
+                                event_color = '#dc3545' if getattr(t, 'nature', '') == 'THREAT' else '#28a745'
+                                event_icon = '🔴' if getattr(t, 'nature', '') == 'THREAT' else '🟢'
+                                
+                                # Add vertical line spanning both subplots
+                                fig.add_vline(
+                                    x=event_date,
+                                    line_width=2,
+                                    line_dash="dash",
+                                    line_color=event_color,
+                                    opacity=0.7
+                                )
+                                
+                                # Add annotation with staggered positioning
+                                fig.add_annotation(
+                                    x=event_date,
+                                    y=1.08 - (i * 0.04),  # Stagger annotations
+                                    xref="x",
+                                    yref="paper",
+                                    text=f"{event_icon} {t.event_type[:12]}",
+                                    showarrow=False,
+                                    font=dict(size=9, color=event_color),
+                                    bgcolor="white",
+                                    bordercolor=event_color,
+                                    borderwidth=1,
+                                    borderpad=2
+                                )
                     
                     # Layout styling
                     fig.update_layout(
-                        height=500,
+                        height=550,  # Slightly taller to accommodate annotations
                         showlegend=True,
                         legend=dict(
                             orientation="h",
@@ -3201,6 +3168,70 @@ with main_tab1:
                                     st.info("⚖️ **Competitors Stable**")
                             else:
                                 st.caption("No competitor trend data")
+                    
+                    # === COMPACT TOP EVENTS SUMMARY (Below chart) ===
+                    if all_triggers:
+                        threat_events = [t for t in all_triggers if getattr(t, 'nature', '') == 'THREAT']
+                        opportunity_events = [t for t in all_triggers if getattr(t, 'nature', '') == 'OPPORTUNITY']
+                        
+                        st.markdown("#### 📊 Key Market Events Detected")
+                        
+                        event_cols = st.columns([1, 1, 1])
+                        
+                        with event_cols[0]:
+                            st.metric(
+                                "Total Events", 
+                                len(all_triggers),
+                                help="Significant market changes detected in last 30 days"
+                            )
+                        
+                        with event_cols[1]:
+                            if threat_events:
+                                st.markdown(f"""
+                                <div style="background: #fff5f5; border-left: 4px solid #dc3545; padding: 10px; border-radius: 4px;">
+                                    <div style="font-weight: 600; color: #dc3545; font-size: 14px;">🔴 {len(threat_events)} Threats</div>
+                                    <div style="font-size: 11px; color: #666; margin-top: 4px;">
+                                        {', '.join([t.event_type[:15] for t in threat_events[:3]])}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.success("✅ No threats detected")
+                        
+                        with event_cols[2]:
+                            if opportunity_events:
+                                st.markdown(f"""
+                                <div style="background: #f0fff4; border-left: 4px solid #28a745; padding: 10px; border-radius: 4px;">
+                                    <div style="font-weight: 600; color: #155724; font-size: 14px;">🟢 {len(opportunity_events)} Opportunities</div>
+                                    <div style="font-size: 11px; color: #666; margin-top: 4px;">
+                                        {', '.join([t.event_type[:15] for t in opportunity_events[:3]])}
+                                    </div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.info("📊 No opportunities detected yet")
+                        
+                        # Expandable detailed event list
+                        with st.expander("📋 View All Detected Events", expanded=False):
+                            for t in all_triggers:
+                                nature = getattr(t, 'nature', 'INFO')
+                                icon = '🔴' if nature == 'THREAT' else '🟢' if nature == 'OPPORTUNITY' else '📊'
+                                severity = getattr(t, 'severity', 5)
+                                severity_bar = "█" * min(severity, 10) + "░" * (10 - min(severity, 10))
+                                delta_str = f" ({t.delta_pct:+.1f}%)" if hasattr(t, 'delta_pct') and t.delta_pct else ""
+                                asin_short = getattr(t, 'asin', '')[:10]
+                                metric = getattr(t, 'metric_name', '')
+                                
+                                st.markdown(f"""
+                                <div style="display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid #eee;">
+                                    <span style="font-size: 14px; margin-right: 8px;">{icon}</span>
+                                    <span style="font-weight: 500; flex: 1;">{t.event_type}</span>
+                                    <span style="color: #666; font-size: 11px; margin-right: 12px;">{metric}{delta_str}</span>
+                                    <span style="font-family: monospace; font-size: 10px; color: #999;">{asin_short}</span>
+                                </div>
+                                """, unsafe_allow_html=True)
+                    elif trigger_detection_available:
+                        st.info("📊 No significant market events detected in the past 30 days. Your market position is stable.")
                 else:
                     st.info("📊 Price and rank data required for causality analysis.")
             else:

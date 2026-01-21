@@ -929,6 +929,9 @@ with main_tab1:
                                   ('amazon_bb_share', 0.5), ('competitor_oos_pct', 0.0)]:
                 if col not in market_snapshot.columns:
                     market_snapshot[col] = default
+            
+            # CRITICAL: Also store df_weekly in fallback path
+            st.session_state['df_weekly'] = df_weekly
         
         # 3. VELOCITY EXTRACTION FROM DATABASE (FIX 1.1 - Critical Pipeline Fix)
         # Extract velocity trends from historical_metrics table instead of session state

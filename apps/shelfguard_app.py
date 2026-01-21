@@ -2993,8 +2993,15 @@ with main_tab1:
                     
                     # Sort by severity, take top 10
                     all_triggers = sorted(all_triggers, key=lambda e: e.severity, reverse=True)[:10]
-                except ImportError:
-                    pass  # Trigger detection not available
+                    
+                    # Debug: Show trigger detection results
+                    if all_triggers:
+                        st.caption(f"📍 Detected {len(all_triggers)} market events to overlay on chart")
+                    
+                except ImportError as e:
+                    st.caption("📍 Trigger detection module not available")
+                except Exception as e:
+                    st.caption(f"📍 Trigger detection error: {str(e)[:50]}")
             
             # Require 6+ weeks of data for meaningful causality analysis
             if not df_weekly.empty and 'week_start' in df_weekly.columns and len(df_weekly) >= 6:
@@ -3130,8 +3137,9 @@ with main_tab1:
                         # Get chart date range for validation
                         chart_min_date = chart_data['week'].min()
                         chart_max_date = chart_data['week'].max()
+                        chart_weeks = sorted(chart_data['week'].unique())
                         
-                        annotation_offset = 0  # Stagger annotations vertically
+                        events_added = 0
                         for i, t in enumerate(all_triggers[:5]):  # Top 5 events
                             # Try multiple date attributes
                             event_date = None
@@ -3143,12 +3151,14 @@ with main_tab1:
                                     except:
                                         pass
                             
-                            # If no date found, use most recent week as proxy
-                            if event_date is None:
-                                event_date = chart_max_date
+                            # If no date found, distribute events across recent weeks
+                            if event_date is None and chart_weeks:
+                                # Use recent weeks, staggered by event index
+                                week_idx = min(i, len(chart_weeks) - 1)
+                                event_date = chart_weeks[-(week_idx + 1)]  # Most recent weeks
                             
-                            # Only annotate if date is within chart range
-                            if chart_min_date <= event_date <= chart_max_date:
+                            # Annotate (don't require date to be in range - just use it)
+                            if event_date is not None:
                                 event_color = '#dc3545' if getattr(t, 'nature', '') == 'THREAT' else '#28a745'
                                 event_icon = '🔴' if getattr(t, 'nature', '') == 'THREAT' else '🟢'
                                 

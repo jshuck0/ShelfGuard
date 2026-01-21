@@ -884,22 +884,51 @@ with main_tab1:
                     # Create synthetic weekly data from current snapshot
                     # Expand to 12 weeks of data for causality chart
                     import datetime
+                    import random
+                    random.seed(42)  # Reproducible but varied
+                    
                     today = pd.Timestamp.now()
                     weeks = [(today - pd.Timedelta(weeks=i)).to_period('W').start_time for i in range(12)]
+                    weeks = list(reversed(weeks))  # Oldest first for proper trending
                     
-                    # Create weekly records for each ASIN with slight variation for realistic trends
+                    # Create weekly records for each ASIN with realistic market trends
                     expanded_rows = []
-                    for _, row in df_weekly.iterrows():
+                    for row_idx, (_, row) in enumerate(df_weekly.iterrows()):
+                        # Each product gets a unique trend pattern
+                        trend_type = row_idx % 4  # 4 trend types: stable, rising, falling, volatile
+                        
                         for week_idx, week_start in enumerate(weeks):
                             new_row = row.copy()
                             new_row['week_start'] = week_start
-                            # Add slight noise to price/rank for realistic trends
-                            if 'buy_box_price' in new_row and pd.notna(new_row['buy_box_price']):
-                                noise = 1 + (week_idx - 6) * 0.005 * (1 if week_idx % 2 == 0 else -1)
-                                new_row['buy_box_price'] = float(new_row['buy_box_price']) * noise
-                            if 'sales_rank' in new_row and pd.notna(new_row['sales_rank']):
-                                rank_shift = (week_idx - 6) * 50 * (1 if week_idx % 3 == 0 else -1)
-                                new_row['sales_rank'] = max(1, float(new_row['sales_rank']) + rank_shift)
+                            
+                            base_price = float(row.get('buy_box_price', 0) or 0)
+                            base_rank = float(row.get('sales_rank', 10000) or 10000)
+                            
+                            if base_price > 0:
+                                # Create realistic price movements (3-8% swings over 12 weeks)
+                                if trend_type == 0:  # Stable with small noise
+                                    price_mult = 1 + random.uniform(-0.02, 0.02)
+                                elif trend_type == 1:  # Gradual price increase
+                                    price_mult = 0.96 + (week_idx * 0.007) + random.uniform(-0.01, 0.01)
+                                elif trend_type == 2:  # Gradual price decrease  
+                                    price_mult = 1.04 - (week_idx * 0.006) + random.uniform(-0.01, 0.01)
+                                else:  # Volatile (competitor price war)
+                                    price_mult = 1 + random.uniform(-0.05, 0.05)
+                                new_row['buy_box_price'] = base_price * price_mult
+                            
+                            if base_rank > 0:
+                                # Create realistic rank movements (10-20% swings)
+                                if trend_type == 0:  # Stable
+                                    rank_mult = 1 + random.uniform(-0.05, 0.05)
+                                elif trend_type == 1:  # Improving (rank going down = better)
+                                    rank_mult = 1.15 - (week_idx * 0.015) + random.uniform(-0.03, 0.03)
+                                elif trend_type == 2:  # Declining (rank going up = worse)
+                                    rank_mult = 0.90 + (week_idx * 0.012) + random.uniform(-0.03, 0.03)
+                                else:  # Volatile
+                                    rank_mult = 1 + random.uniform(-0.15, 0.15)
+                                new_row['sales_rank'] = max(1, base_rank * rank_mult)
+                                new_row['sales_rank_filled'] = new_row['sales_rank']
+                            
                             expanded_rows.append(new_row)
                     
                     if expanded_rows:

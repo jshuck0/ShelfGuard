@@ -1906,6 +1906,28 @@ def phase2_category_market_mapping(
         avg_product_rev = asin_summary["revenue_proxy"].mean()
         st.caption(f"📊 Revenue calc: {len(asin_summary)} products, avg {avg_weeks:.1f} weeks data, total ${total_monthly_rev:,.0f}/mo, avg ${avg_product_rev:,.0f}/mo per product")
         
+        # FIX: Convert any list values to scalars before comparison
+        # Some metrics (like sellerIds) might be aggregated as lists
+        def scalarize(value):
+            """Convert list/numpy array to scalar, return value as-is if already scalar."""
+            import numpy as np
+            if isinstance(value, (list, tuple)):
+                # Take first element if list, or return 0 if empty
+                return value[0] if len(value) > 0 else 0
+            elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                # Handle numpy arrays and other iterables
+                try:
+                    return value[0] if len(value) > 0 else 0
+                except (TypeError, IndexError):
+                    return 0
+            return value
+        
+        # Apply scalarization to price and bsr columns if they contain lists
+        if "price" in asin_summary.columns:
+            asin_summary["price"] = asin_summary["price"].apply(scalarize)
+        if "bsr" in asin_summary.columns:
+            asin_summary["bsr"] = asin_summary["bsr"].apply(scalarize)
+        
         # Fill any NaN values with median from products that have data
         valid_prices = asin_summary[asin_summary["price"] > 0]["price"]
         valid_bsrs = asin_summary[(asin_summary["bsr"].notna()) & (asin_summary["bsr"] > 0)]["bsr"]

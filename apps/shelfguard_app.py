@@ -2972,6 +2972,11 @@ with main_tab1:
                 # Prepare data - separate your brand vs competitors
                 df_weekly['week_start'] = pd.to_datetime(df_weekly['week_start'])
                 
+                # === FILTER TO LAST 90 DAYS ONLY ===
+                # The Keepa data may contain 2+ years of history, but we only want recent trends
+                cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=90)
+                df_weekly = df_weekly[df_weekly['week_start'] >= cutoff_date].copy()
+                
                 # Identify your brand's products
                 if target_brand and 'brand' in df_weekly.columns:
                     target_brand_lower = target_brand.lower().strip()

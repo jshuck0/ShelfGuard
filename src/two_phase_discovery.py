@@ -1857,7 +1857,9 @@ def phase2_category_market_mapping(
         
         # Build weekly table using the same methodology as the main dashboard
         # This creates: week_start, asin, title, sales_rank_filled, filled_price, weekly_sales_filled, etc.
-        df_weekly = build_keepa_weekly_table(historical_products)
+        # Pass window_start to limit to last 90 days (not 2+ years of history)
+        window_start_90d = (pd.Timestamp.now() - pd.Timedelta(days=90)).strftime('%Y-%m-%d')
+        df_weekly = build_keepa_weekly_table(historical_products, window_start=window_start_90d)
         
         if df_weekly.empty:
             st.warning("⚠️ Could not build weekly table - falling back to current estimates")
@@ -2269,7 +2271,9 @@ def fetch_detailed_weekly_data(asins: tuple, days: int = 90) -> pd.DataFrame:
         return pd.DataFrame()
     
     # Build weekly table using the same function as the scraper
-    df_weekly = build_keepa_weekly_table(all_products)
+    # Pass window_start to limit to last 90 days
+    window_start_90d = (pd.Timestamp.now() - pd.Timedelta(days=90)).strftime('%Y-%m-%d')
+    df_weekly = build_keepa_weekly_table(all_products, window_start=window_start_90d)
     
     if df_weekly.empty:
         st.warning("⚠️ Could not build weekly table from Keepa data")

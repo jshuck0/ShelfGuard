@@ -2322,10 +2322,18 @@ with main_tab1:
             # PREDICTIVE ALPHA: Use early calculation for consistency
             # (Enriched DataFrame already calculated - no redundant copy)
             
-            # Reuse early calculation for consistency
+            # FIX: Compute sum DIRECTLY from enriched DataFrame to ensure exact match with cards
+            # This guarantees topline = sum of individual card values
+            if 'thirty_day_risk' in enriched_portfolio_df.columns:
+                thirty_day_risk = enriched_portfolio_df['thirty_day_risk'].fillna(0).sum()
+                thirty_day_growth = enriched_portfolio_df['thirty_day_growth'].fillna(0).sum()
+            else:
+                thirty_day_risk = early_predictive_risk.get("thirty_day_risk", 0)
+                thirty_day_growth = early_predictive_risk.get("thirty_day_growth", 0)
+            
+            # Get other metrics from early calculation
             predictive_risk = early_predictive_risk
-            thirty_day_risk = predictive_risk["thirty_day_risk"]
-            risk_pct = predictive_risk["risk_pct"]
+            risk_pct = (thirty_day_risk / total_rev_curr * 100) if total_rev_curr > 0 else 0
             portfolio_status = predictive_risk["portfolio_status"]
             risk_status_emoji = predictive_risk["status_emoji"]  # Renamed to avoid conflict
             defend_count = predictive_risk["defend_count"]
@@ -2333,8 +2341,7 @@ with main_tab1:
             replenish_count = predictive_risk["replenish_count"]
             
             # Extract GROWTH metrics (offensive layer)
-            thirty_day_growth = predictive_risk.get("thirty_day_growth", 0)
-            growth_pct = predictive_risk.get("growth_pct", 0)
+            growth_pct = (thirty_day_growth / total_rev_curr * 100) if total_rev_curr > 0 else 0
             price_lift_count = predictive_risk.get("price_lift_count", 0)
             conquest_count = predictive_risk.get("conquest_count", 0)
             expand_count = predictive_risk.get("expand_count", 0)

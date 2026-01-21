@@ -17,6 +17,7 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import requests
 import os
+import time
 from threading import Thread
 
 
@@ -103,6 +104,8 @@ def fetch_90day_history(asins: List[str], domain: int = 1, days: int = 90) -> Li
     # Batch ASINs (Keepa limit: 100 ASINs per request)
     batch_size = 100
     all_products = []
+    max_retries = 3
+    retry_delay = 5  # Start with 5 seconds, exponential backoff
 
     for i in range(0, len(asins), batch_size):
         batch = asins[i:i + batch_size]
@@ -117,21 +120,61 @@ def fetch_90day_history(asins: List[str], domain: int = 1, days: int = 90) -> Li
             "stats": 0,    # Don't need stats (we have history)
         }
 
-        try:
-            response = requests.get(
-                f"{KEEPA_BASE_URL}/product",
-                params=params,
-                timeout=120  # Historical calls take longer
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            products = data.get("products", [])
-            all_products.extend(products)
-
-        except requests.exceptions.RequestException as e:
-            st.warning(f"⚠️ Keepa backfill batch failed: {str(e)}")
-            continue
+        batch_success = False
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(
+                    f"{KEEPA_BASE_URL}/product",
+                    params=params,
+                    timeout=120  # Historical calls take longer
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    products = data.get("products", [])
+                    all_products.extend(products)
+                    batch_success = True
+                    break  # Success, exit retry loop
+                    
+                elif response.status_code == 429:  # Rate limited
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential: 5s, 10s, 20s
+                        if st:
+                            st.warning(f"⚠️ Rate limited (429) on batch {i//batch_size + 1}. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        if st:
+                            st.error(f"❌ Rate limited after {max_retries} attempts on batch {i//batch_size + 1}. Skipping batch.")
+                        break  # Give up on this batch
+                else:
+                    # Other HTTP errors
+                    response.raise_for_status()
+                    
+            except requests.exceptions.RequestException as e:
+                error_msg = str(e).lower()
+                if "429" in error_msg or "rate" in error_msg or "limit" in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential: 5s, 10s, 20s
+                        if st:
+                            st.warning(f"⚠️ Rate limited on batch {i//batch_size + 1}. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        if st:
+                            st.error(f"❌ Rate limited after {max_retries} attempts on batch {i//batch_size + 1}. Skipping batch.")
+                        break  # Give up on this batch
+                else:
+                    # Other errors - log and skip this batch
+                    if st:
+                        st.warning(f"⚠️ Keepa backfill batch {i//batch_size + 1} failed: {str(e)[:100]}")
+                    break  # Don't retry for non-rate-limit errors
+        
+        # Rate limit protection: Add delay between batches to avoid hitting limits
+        # Keepa allows ~100 requests/minute, so we need ~0.6s between requests minimum
+        # Using 1.5s to be safe
+        if i + batch_size < len(asins):
+            time.sleep(1.5)  # Delay between batches to respect rate limits
 
     return all_products
 

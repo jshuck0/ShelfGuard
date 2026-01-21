@@ -2821,9 +2821,14 @@ with main_tab1:
                     if 'title' in market_df.columns:
                         title_match = market_df['title'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False)
                     else:
-                        title_match = pd.Series([False] * len(market_df))  # FIX: Must be a Series, not False
+                        title_match = pd.Series([False] * len(market_df), index=market_df.index)  # FIX: Must have aligned index
                     # Competitor = NOT brand match AND NOT title match
                     competitors = market_df[~brand_match & ~title_match].copy()
+                    
+                    # Debug: Log exclusion stats
+                    excluded_count = len(market_df) - len(competitors)
+                    if excluded_count == 0:
+                        st.caption(f"⚠️ Brand '{target_brand}' not found in data - showing all products")
                 else:
                     competitors = market_df.copy()
                 
@@ -3012,7 +3017,7 @@ with main_tab1:
                         title_mask = df_weekly['title'].str.lower().str.contains(target_brand_lower, case=False, na=False)
                         brand_mask = brand_mask | title_mask
                 else:
-                    brand_mask = pd.Series([True] * len(df_weekly))
+                    brand_mask = pd.Series([True] * len(df_weekly), index=df_weekly.index)
                 
                 your_brand_df = df_weekly[brand_mask].copy()
                 competitor_df = df_weekly[~brand_mask].copy()

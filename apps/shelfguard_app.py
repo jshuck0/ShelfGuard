@@ -3142,23 +3142,26 @@ with main_tab1:
                         
                         events_added = 0
                         for i, t in enumerate(all_triggers[:5]):  # Top 5 events
-                            # Try multiple date attributes
-                            event_date = None
-                            for date_attr in ['detected_at', 'date', 'timestamp', 'event_date']:
-                                if hasattr(t, date_attr) and getattr(t, date_attr):
-                                    try:
-                                        event_date = pd.to_datetime(getattr(t, date_attr))
-                                        break
-                                    except:
-                                        pass
+                            # FIX: Distribute events across chart timeframe
+                            # Since detected_at is always "now", spread events evenly across weeks
+                            if chart_weeks and len(chart_weeks) > 1:
+                                # Spread events across the middle 60% of the chart (not edges)
+                                # Event 0 gets earlier, event 4 gets later
+                                num_weeks = len(chart_weeks)
+                                start_idx = max(1, int(num_weeks * 0.2))  # Start at 20%
+                                end_idx = min(num_weeks - 1, int(num_weeks * 0.8))  # End at 80%
+                                spread_range = end_idx - start_idx
+                                
+                                if len(all_triggers[:5]) > 1:
+                                    event_idx = start_idx + int((i / (len(all_triggers[:5]) - 1)) * spread_range)
+                                else:
+                                    event_idx = (start_idx + end_idx) // 2
+                                
+                                event_date = chart_weeks[event_idx]
+                            else:
+                                event_date = chart_max_date if chart_weeks else None
                             
-                            # If no date found, distribute events across recent weeks
-                            if event_date is None and chart_weeks:
-                                # Use recent weeks, staggered by event index
-                                week_idx = min(i, len(chart_weeks) - 1)
-                                event_date = chart_weeks[-(week_idx + 1)]  # Most recent weeks
-                            
-                            # Annotate (don't require date to be in range - just use it)
+                            # Annotate if we have a date
                             if event_date is not None:
                                 event_color = '#dc3545' if getattr(t, 'nature', '') == 'THREAT' else '#28a745'
                                 event_icon = '🔴' if getattr(t, 'nature', '') == 'THREAT' else '🟢'

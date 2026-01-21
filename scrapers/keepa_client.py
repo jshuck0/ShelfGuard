@@ -171,24 +171,41 @@ def extract_weekly_facts(product, window_start=None):
     # Stats object for pre-calculated metrics
     stats = product.get("stats", {}) or {}
     
+    # Helper to safely extract scalar from potentially list values
+    def _safe_stat(val, default=0):
+        """Extract scalar from Keepa stat that might be a list."""
+        if val is None:
+            return default
+        if isinstance(val, (list, tuple)):
+            return val[-1] if len(val) > 0 and val[-1] is not None else default
+        if isinstance(val, (int, float)):
+            return val
+        return default
+    
     # OOS counts (more useful than just percentage)
-    oos_count_amazon_30 = stats.get("outOfStockCountAmazon30", 0) or 0
-    oos_count_amazon_90 = stats.get("outOfStockCountAmazon90", 0) or 0
-    oos_pct_30 = stats.get("outOfStockPercentage30", 0) or 0
-    oos_pct_90 = stats.get("outOfStockPercentage90", 0) or 0
+    oos_count_amazon_30 = _safe_stat(stats.get("outOfStockCountAmazon30"), 0)
+    oos_count_amazon_90 = _safe_stat(stats.get("outOfStockCountAmazon90"), 0)
+    oos_pct_30 = _safe_stat(stats.get("outOfStockPercentage30"), 0)
+    oos_pct_90 = _safe_stat(stats.get("outOfStockPercentage90"), 0)
     
     # Buy Box stats from Keepa (backup to our calculation)
-    bb_stats_amazon_30 = stats.get("buyBoxStatsAmazon30", None)
-    bb_stats_amazon_90 = stats.get("buyBoxStatsAmazon90", None)
-    bb_stats_top_seller_30 = stats.get("buyBoxStatsTopSeller30", None)
-    bb_stats_seller_count_30 = stats.get("buyBoxStatsSellerCount30", None)
+    bb_stats_amazon_30 = _safe_stat(stats.get("buyBoxStatsAmazon30"), None)
+    bb_stats_amazon_90 = _safe_stat(stats.get("buyBoxStatsAmazon90"), None)
+    bb_stats_top_seller_30 = _safe_stat(stats.get("buyBoxStatsTopSeller30"), None)
+    bb_stats_seller_count_30 = _safe_stat(stats.get("buyBoxStatsSellerCount30"), None)
     
     # Velocity deltas (pre-calculated by Keepa)
-    delta_pct_30 = stats.get("deltaPercent30", [])
-    delta_pct_90 = stats.get("deltaPercent90", [])
-    # BSR is at index 3
-    velocity_30d = delta_pct_30[3] if delta_pct_30 and len(delta_pct_30) > 3 and delta_pct_30[3] is not None else None
-    velocity_90d = delta_pct_90[3] if delta_pct_90 and len(delta_pct_90) > 3 and delta_pct_90[3] is not None else None
+    delta_pct_30 = stats.get("deltaPercent30", []) or []
+    delta_pct_90 = stats.get("deltaPercent90", []) or []
+    # BSR is at index 3 - safely extract
+    try:
+        velocity_30d = float(delta_pct_30[3]) if delta_pct_30 and len(delta_pct_30) > 3 and delta_pct_30[3] is not None else None
+    except (TypeError, ValueError, IndexError):
+        velocity_30d = None
+    try:
+        velocity_90d = float(delta_pct_90[3]) if delta_pct_90 and len(delta_pct_90) > 3 and delta_pct_90[3] is not None else None
+    except (TypeError, ValueError, IndexError):
+        velocity_90d = None
     
     # Subscribe & Save eligibility
     is_sns = product.get("isSNS", False) or False
@@ -265,11 +282,13 @@ def extract_weekly_facts(product, window_start=None):
     out["has_amazon_seller"] = has_amazon_seller
     out["oos_count_amazon_30"] = oos_count_amazon_30
     out["oos_count_amazon_90"] = oos_count_amazon_90
-    out["oos_pct_30"] = oos_pct_30 / 100.0 if oos_pct_30 > 1 else oos_pct_30  # Normalize
-    out["oos_pct_90"] = oos_pct_90 / 100.0 if oos_pct_90 > 1 else oos_pct_90  # Normalize
-    out["bb_stats_amazon_30"] = bb_stats_amazon_30 / 100.0 if bb_stats_amazon_30 and bb_stats_amazon_30 > 1 else bb_stats_amazon_30
-    out["bb_stats_amazon_90"] = bb_stats_amazon_90 / 100.0 if bb_stats_amazon_90 and bb_stats_amazon_90 > 1 else bb_stats_amazon_90
-    out["bb_stats_top_seller_30"] = bb_stats_top_seller_30 / 100.0 if bb_stats_top_seller_30 and bb_stats_top_seller_30 > 1 else bb_stats_top_seller_30
+    # Normalize percentages (Keepa sometimes returns 0-100 scale, sometimes 0-1)
+    # Use explicit numeric checks to avoid list comparison errors
+    out["oos_pct_30"] = (oos_pct_30 / 100.0) if isinstance(oos_pct_30, (int, float)) and oos_pct_30 > 1 else (oos_pct_30 if isinstance(oos_pct_30, (int, float)) else 0)
+    out["oos_pct_90"] = (oos_pct_90 / 100.0) if isinstance(oos_pct_90, (int, float)) and oos_pct_90 > 1 else (oos_pct_90 if isinstance(oos_pct_90, (int, float)) else 0)
+    out["bb_stats_amazon_30"] = (bb_stats_amazon_30 / 100.0) if isinstance(bb_stats_amazon_30, (int, float)) and bb_stats_amazon_30 > 1 else bb_stats_amazon_30
+    out["bb_stats_amazon_90"] = (bb_stats_amazon_90 / 100.0) if isinstance(bb_stats_amazon_90, (int, float)) and bb_stats_amazon_90 > 1 else bb_stats_amazon_90
+    out["bb_stats_top_seller_30"] = (bb_stats_top_seller_30 / 100.0) if isinstance(bb_stats_top_seller_30, (int, float)) and bb_stats_top_seller_30 > 1 else bb_stats_top_seller_30
     out["bb_stats_seller_count_30"] = bb_stats_seller_count_30
     out["velocity_30d"] = velocity_30d
     out["velocity_90d"] = velocity_90d
@@ -279,12 +298,40 @@ def extract_weekly_facts(product, window_start=None):
 
 def build_keepa_weekly_table(products, window_start=None):
     all_dfs = [extract_weekly_facts(p, window_start) for p in products if p]
+    # Filter out empty DataFrames
+    all_dfs = [df for df in all_dfs if not df.empty]
     if not all_dfs: return pd.DataFrame()
     
     df = pd.concat(all_dfs, ignore_index=True)
     
+    # Check if we have any data
+    if df.empty or 'asin' not in df.columns:
+        return pd.DataFrame()
+    
     # --- FIX 2: Deduplication by ASIN and Week ---
     df = df.drop_duplicates(subset=["asin", "week_start"])
+    
+    # --- FIX: Scalarize columns that might contain list values ---
+    # Some Keepa fields can come back as lists, which cause comparison errors
+    def _scalarize_column(series):
+        """Convert any list values in a series to scalars."""
+        def _to_scalar(val):
+            if val is None:
+                return np.nan
+            if isinstance(val, (list, tuple)):
+                return val[-1] if len(val) > 0 else np.nan
+            return val
+        return series.apply(_to_scalar)
+    
+    # Scalarize numeric columns that might have list values
+    numeric_cols = ['sales_rank', 'monthly_sold', 'number_of_items', 'seller_count',
+                    'oos_count_amazon_30', 'oos_count_amazon_90', 'oos_pct_30', 'oos_pct_90',
+                    'bb_stats_amazon_30', 'bb_stats_amazon_90', 'bb_stats_top_seller_30',
+                    'bb_stats_seller_count_30', 'velocity_30d', 'velocity_90d']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = _scalarize_column(df[col])
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
     # Build effective price from available price columns
     # Priority: buy_box > amazon > new > new_fba

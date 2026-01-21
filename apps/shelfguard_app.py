@@ -836,7 +836,8 @@ with main_tab1:
 
                 if not market_snapshot.empty:
                     data_source = "supabase"
-                    df_weekly = market_snapshot.copy()  # Use snapshot as weekly data
+                    # DON'T use market_snapshot as df_weekly - that's the aggregated view!
+                    # Real weekly data should come from session state (has week_start column)
 
                     # Check freshness and show indicator
                     freshness = check_data_freshness(project_asins)
@@ -846,10 +847,17 @@ with main_tab1:
             except Exception as e:
                 st.caption(f"⚠️ Cache unavailable, using session data")
         
-        # === SESSION STATE FALLBACK ===
-        # For newly created projects not yet harvested
+        # === GET REAL WEEKLY DATA FROM SESSION STATE ===
+        # The actual weekly time-series data (with week_start) is stored in active_project_data
+        # This contains the Keepa historical data with multiple rows per ASIN (one per week)
+        df_weekly = st.session_state.get('active_project_data', pd.DataFrame())
+        
+        # Fallback to market snapshot if no weekly data
+        if df_weekly.empty:
+            df_weekly = market_snapshot.copy() if not market_snapshot.empty else pd.DataFrame()
+        
+        # Get market snapshot from session if not from Supabase
         if market_snapshot.empty:
-            df_weekly = st.session_state.get('active_project_data', pd.DataFrame())
             market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
             if not market_snapshot.empty:
                 data_source = "session"
@@ -872,67 +880,20 @@ with main_tab1:
                 df_weekly = heal_market_snapshot(df_weekly, verbose=False)
             
             # === ENSURE week_start COLUMN EXISTS FOR CAUSALITY CHART ===
-            # If week_start is missing, create it from available date columns or timestamps
+            # The real Keepa weekly data should already have week_start from build_keepa_weekly_table()
+            # Only create it from timestamps if truly missing (edge case)
             if 'week_start' not in df_weekly.columns:
-                if 'timestamp' in df_weekly.columns:
-                    df_weekly['week_start'] = pd.to_datetime(df_weekly['timestamp']).dt.to_period('W').dt.start_time
-                elif 'last_update' in df_weekly.columns:
-                    df_weekly['week_start'] = pd.to_datetime(df_weekly['last_update']).dt.to_period('W').dt.start_time
-                elif 'created_at' in df_weekly.columns:
-                    df_weekly['week_start'] = pd.to_datetime(df_weekly['created_at']).dt.to_period('W').dt.start_time
-                else:
-                    # Create synthetic weekly data from current snapshot
-                    # Expand to 12 weeks of data for causality chart
-                    import datetime
-                    import random
-                    random.seed(42)  # Reproducible but varied
-                    
-                    today = pd.Timestamp.now()
-                    weeks = [(today - pd.Timedelta(weeks=i)).to_period('W').start_time for i in range(12)]
-                    weeks = list(reversed(weeks))  # Oldest first for proper trending
-                    
-                    # Create weekly records for each ASIN with realistic market trends
-                    expanded_rows = []
-                    for row_idx, (_, row) in enumerate(df_weekly.iterrows()):
-                        # Each product gets a unique trend pattern
-                        trend_type = row_idx % 4  # 4 trend types: stable, rising, falling, volatile
-                        
-                        for week_idx, week_start in enumerate(weeks):
-                            new_row = row.copy()
-                            new_row['week_start'] = week_start
-                            
-                            base_price = float(row.get('buy_box_price', 0) or 0)
-                            base_rank = float(row.get('sales_rank', 10000) or 10000)
-                            
-                            if base_price > 0:
-                                # Create realistic price movements (3-8% swings over 12 weeks)
-                                if trend_type == 0:  # Stable with small noise
-                                    price_mult = 1 + random.uniform(-0.02, 0.02)
-                                elif trend_type == 1:  # Gradual price increase
-                                    price_mult = 0.96 + (week_idx * 0.007) + random.uniform(-0.01, 0.01)
-                                elif trend_type == 2:  # Gradual price decrease  
-                                    price_mult = 1.04 - (week_idx * 0.006) + random.uniform(-0.01, 0.01)
-                                else:  # Volatile (competitor price war)
-                                    price_mult = 1 + random.uniform(-0.05, 0.05)
-                                new_row['buy_box_price'] = base_price * price_mult
-                            
-                            if base_rank > 0:
-                                # Create realistic rank movements (10-20% swings)
-                                if trend_type == 0:  # Stable
-                                    rank_mult = 1 + random.uniform(-0.05, 0.05)
-                                elif trend_type == 1:  # Improving (rank going down = better)
-                                    rank_mult = 1.15 - (week_idx * 0.015) + random.uniform(-0.03, 0.03)
-                                elif trend_type == 2:  # Declining (rank going up = worse)
-                                    rank_mult = 0.90 + (week_idx * 0.012) + random.uniform(-0.03, 0.03)
-                                else:  # Volatile
-                                    rank_mult = 1 + random.uniform(-0.15, 0.15)
-                                new_row['sales_rank'] = max(1, base_rank * rank_mult)
-                                new_row['sales_rank_filled'] = new_row['sales_rank']
-                            
-                            expanded_rows.append(new_row)
-                    
-                    if expanded_rows:
-                        df_weekly = pd.DataFrame(expanded_rows)
+                # Try to derive from date columns
+                for date_col in ['timestamp', 'last_update', 'created_at']:
+                    if date_col in df_weekly.columns:
+                        df_weekly['week_start'] = pd.to_datetime(df_weekly[date_col]).dt.to_period('W').dt.start_time
+                        break
+            
+            # Debug: Log weekly data stats for causality chart
+            if 'week_start' in df_weekly.columns:
+                unique_weeks = df_weekly['week_start'].nunique()
+                unique_asins = df_weekly['asin'].nunique() if 'asin' in df_weekly.columns else 0
+                st.session_state['_weekly_data_stats'] = f"{len(df_weekly)} rows, {unique_weeks} weeks, {unique_asins} ASINs"
             
             # Store df_weekly in session state for causality chart and other components
             st.session_state['df_weekly'] = df_weekly
@@ -3306,12 +3267,19 @@ with main_tab1:
                 else:
                     st.info("📊 Price and rank data required for causality analysis.")
             else:
-                # Debug: Show what data we have
+                # Debug: Show what data we have to help diagnose issues
                 debug_msg = f"df_weekly: {len(df_weekly)} rows"
                 if 'week_start' in df_weekly.columns:
-                    debug_msg += f", weeks: {df_weekly['week_start'].nunique()}"
+                    unique_weeks = df_weekly['week_start'].nunique()
+                    debug_msg += f", {unique_weeks} unique weeks"
+                    if unique_weeks < 6:
+                        debug_msg += " (need 6+)"
                 else:
-                    debug_msg += ", no week_start column"
+                    debug_msg += ", no week_start column (Keepa data may not have loaded)"
+                
+                if df_weekly.empty:
+                    debug_msg = "No weekly data loaded - check that project was created properly"
+                
                 st.info(f"📊 Causality chart requires 6+ weeks of time-series data. ({debug_msg})")
         except Exception as e:
             st.warning(f"⚠️ Could not generate causality chart: {str(e)[:50]}")

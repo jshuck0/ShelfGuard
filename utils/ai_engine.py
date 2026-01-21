@@ -307,32 +307,104 @@ IMPORTANT: Products with strong revenue ($5K+/week) and good rank (#30 or better
 should NEVER be classified as TERMINAL just because review/BB data is missing.
 TERMINAL requires CONFIRMED negative signals, not missing data.
 
+## NEW: Critical Intelligence Signals (High Value)
+
+### Amazon Buy Box Ownership Flags
+- `amazon_owns_buybox: YES` = Amazon 1P is the Buy Box winner (HIGH competitive pressure)
+- `buybox_is_fba: FBA/FBM` = Fulfillment type of current winner
+- `buybox_status: BACKORDER` = Supply chain crisis - URGENT intervention needed
+
+### True Seller Intelligence  
+- `true_seller_count: N` = Actual sellers from sellerIds (more accurate than offer count)
+- `amazon_is_seller: YES/NO` = Whether Amazon 1P is among the sellers
+
+### Amazon Supply Intelligence (Opportunity Detection)
+- `amazon_oos_events_30d: N` = How many times Amazon went OOS in 30 days
+  - 3+ events = Amazon supply unstable = CONQUEST OPPORTUNITY
+  - 5+ events = Major opportunity to capture Amazon's customers
+- `amazon_supply_stability: UNSTABLE` = Frequent OOS signals opportunity
+
+### Velocity Intelligence
+- `bsr_velocity_30d: +/-X%` = Pre-calculated rank change from Keepa
+  - Positive = rank worsening (DECLINING)
+  - Negative = rank improving (GROWTH)
+- `momentum: ACCELERATING/DECELERATING` = Growth trajectory
+
+### Pack Size & Unit Economics
+- `pack_size: N` = Number of items (e.g., 24 for a 24-pack)
+- `price_per_unit: $X.XX` = Per-unit price for fair comparison across pack sizes
+
+### Data Confidence
+- `units_data_source: AMAZON ACTUAL` = Using Amazon's monthly sold (HIGH confidence)
+- `units_data_source: BSR FORMULA` = Estimated from rank (MODERATE confidence)
+- `amazon_monthly_units: N` = Amazon's actual monthly units sold
+
+### Subscription Opportunity
+- `sns_eligible: YES` = Subscribe & Save available (loyalty/retention lever)
+
 ## Nuanced Pattern Recognition
 
 ### FORTRESS Patterns
 - High reviews (500+) + High price + Stable rank = Pricing power
 - Strong Buy Box (80%+) + Few competitors = Market control
 - Premium brand recognition + Loyal customer base
+- `amazon_owns_buybox: NO` + High margin = No 1P competition
 
 ### HARVEST Patterns  
 - Stable mature product + Good margins = Cash cow
 - Declining ad efficiency but holding rank = Reduce spend
 - Category leader maintaining position organically
+- `sns_eligible: YES` = Build subscription base for recurring revenue
 
 ### TRENCH_WAR Patterns
 - New sellers entering (competitor_count increasing)
 - Price compression trend (current price < 90d avg)
 - Buy Box rotating among sellers
+- `amazon_owns_buybox: YES` = Amazon 1P as competitor (CRITICAL)
+- `true_seller_count: 10+` = Crowded listing
 
 ### DISTRESS Patterns
 - Rank decay + Margin erosion = Spiral risk
 - Lost Buy Box + Inventory issues = Revenue at risk
 - Review velocity stagnant while competitors grow
+- `buybox_status: BACKORDER` = URGENT supply crisis
+- `bsr_velocity_30d: +20%+` = Accelerating decline
 
 ### TERMINAL Patterns
 - Negative margins sustained >90 days
 - Rank collapse with no recovery
 - Category obsolescence (technology shift)
+- `amazon_owns_buybox: YES` + Low margin + Declining rank = Exit
+
+### CONQUEST OPPORTUNITY Patterns (look for these!)
+- `amazon_oos_events_30d: 3+` = Amazon supply unstable
+- High competitor OOS rate + Your product in stock = Capture demand
+- `momentum: ACCELERATING` + Market gaps = Expansion opportunity
+
+## TRIGGER EVENTS (Real-Time Intelligence)
+
+When trigger events are provided, USE THEM to inform your analysis:
+
+### Threat Triggers (adjust state negatively)
+- **PRICE_WAR_ACTIVE**: Multiple price drops in 7 days = TRENCH_WAR or worse
+- **BUYBOX_COLLAPSE**: Buy Box share dropped >15% = Immediate DISTRESS signal
+- **RANK_DETERIORATION**: Sustained rank worsening = Velocity problem
+- **NEW_COMPETITOR_SURGE**: 3+ new sellers = TRENCH_WAR pressure
+- **RATING_DECLINE**: Rating dropped = Social proof erosion
+
+### Opportunity Triggers (adjust state positively or add to reasoning)
+- **COMPETITOR_OOS_IMMINENT**: Competitor inventory <5 units = CONQUEST opportunity
+- **AMAZON_SUPPLY_UNSTABLE**: Amazon OOS events = Capture their customers
+- **REVIEW_VELOCITY_SPIKE**: Accelerating reviews = Momentum building
+- **PRICE_POWER_DETECTED**: Underpriced vs category = Raise price opportunity
+- **MOMENTUM_ACCELERATION**: Rank improving = Growth signal
+- **SUBSCRIPTION_OPPORTUNITY**: S&S eligible + healthy = Loyalty play
+
+### How to Use Triggers
+1. CRITICAL/WARNING triggers should LOWER your confidence if not reflected in state
+2. Opportunity triggers should inform your recommended_action
+3. Multiple threat triggers = likely DISTRESS or worse
+4. Multiple opportunity triggers = likely FORTRESS or HARVEST
 
 ## Specific Action Guidelines
 
@@ -524,21 +596,54 @@ async def analyze_strategy_with_llm(
     # Prepare data for LLM (clean and format)
     clean_data = _prepare_row_for_llm(row_data)
     
+    # === TRIGGER EVENT PRE-DETECTION (Feed to LLM for smarter reasoning) ===
+    trigger_context = ""
+    detected_triggers = []
+    if 'historical_df' in row_data:
+        try:
+            from src.trigger_detection import detect_trigger_events
+            asin = row_data.get('asin', '')
+            historical_df = row_data['historical_df']
+            competitors_df = row_data.get('competitors_df', pd.DataFrame())
+            
+            if not historical_df.empty:
+                detected_triggers = detect_trigger_events(
+                    asin=asin,
+                    df_historical=historical_df,
+                    df_competitors=competitors_df
+                )
+                
+                if detected_triggers:
+                    # Build trigger context for LLM
+                    trigger_lines = []
+                    for t in detected_triggers[:5]:  # Top 5 most severe
+                        severity_label = "CRITICAL" if t.severity >= 8 else "WARNING" if t.severity >= 6 else "INFO"
+                        trigger_lines.append(f"- [{severity_label}] {t.event_type}: {t.metric_name} changed {t.delta_pct:+.1f}%")
+                    
+                    trigger_context = "\n\n### DETECTED TRIGGER EVENTS (use these to inform your analysis):\n" + "\n".join(trigger_lines)
+                    clean_data["trigger_events_detected"] = len(detected_triggers)
+                    clean_data["most_severe_trigger"] = detected_triggers[0].event_type if detected_triggers else None
+        except Exception:
+            pass  # Silently continue if trigger detection fails
+    
     # Build system prompt with strategic bias
     bias_instructions = _get_strategic_bias_instructions(strategic_bias)
     full_system_prompt = f"{STRATEGIST_SYSTEM_PROMPT}\n\n{bias_instructions}"
     
     try:
+        # Build user message with trigger context if available
+        user_message = f"Analyze this product:\n\n```json\n{json.dumps(clean_data, indent=2)}\n```{trigger_context}"
+        
         # Call LLM with timeout
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=model,
                 messages=[
                     {"role": "system", "content": full_system_prompt},
-                    {"role": "user", "content": f"Analyze this product:\n\n```json\n{json.dumps(clean_data, indent=2)}\n```"}
+                    {"role": "user", "content": user_message}
                 ],
                 temperature=0.3,  # Low temperature for consistency
-                max_tokens=300,
+                max_tokens=400,  # Increased for richer reasoning with trigger context
                 response_format={"type": "json_object"}
             ),
             timeout=timeout
@@ -586,6 +691,13 @@ async def analyze_strategy_with_llm(
         # Track successful LLM call
         _track_llm_call(success=True)
         
+        # Combine static signal summary with detected trigger events
+        signals = _extract_signal_summary(clean_data)
+        for trigger in detected_triggers[:5]:
+            trigger_signal = f"{trigger.event_type} ({trigger.delta_pct:+.0f}%)"
+            if trigger_signal not in signals:
+                signals.append(trigger_signal)
+        
         return StrategicBrief(
             strategic_state=state_str,
             confidence=confidence,
@@ -595,7 +707,7 @@ async def analyze_strategy_with_llm(
             state_color=state_def["color"],
             primary_outcome=state_def["primary_outcome"],
             source="llm",
-            signals_detected=_extract_signal_summary(clean_data),
+            signals_detected=signals,
             asin=row_data.get("asin", ""),
         )
         
@@ -1069,6 +1181,97 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
                 clean["oos_opportunity"] = "MODERATE (some supply issues)"
     
     # =============================================
+    # NEW CRITICAL METRICS (2026-01-21)
+    # =============================================
+    
+    # Buy Box ownership flags (more precise than percentage)
+    if "buybox_is_amazon" in row_data and row_data["buybox_is_amazon"] is not None:
+        is_amazon = row_data["buybox_is_amazon"]
+        clean["amazon_owns_buybox"] = "YES" if is_amazon else "NO"
+        if is_amazon:
+            clean["buybox_status"] = "AMAZON 1P (competitive pressure high)"
+    
+    if "buybox_is_fba" in row_data and row_data["buybox_is_fba"] is not None:
+        is_fba = row_data["buybox_is_fba"]
+        clean["buybox_is_fba"] = "FBA" if is_fba else "FBM/Other"
+    
+    if "buybox_is_backorder" in row_data and row_data["buybox_is_backorder"]:
+        clean["supply_status"] = "BACKORDER (supply chain issue)"
+    
+    # True seller count from sellerIds (more accurate than offer count)
+    if "seller_count" in row_data:
+        seller_ct = _safe_float(row_data["seller_count"])
+        if seller_ct is not None and seller_ct > 0:
+            clean["true_seller_count"] = int(seller_ct)
+            # Override competitor count with more accurate data
+            if "competitor_count" not in clean:
+                clean["competitor_count"] = int(seller_ct)
+    
+    # Amazon as seller indicator
+    if "has_amazon_seller" in row_data and row_data["has_amazon_seller"] is not None:
+        has_amz = row_data["has_amazon_seller"]
+        clean["amazon_is_seller"] = "YES" if has_amz else "NO"
+    
+    # OOS event counts (more actionable than percentage)
+    if "oos_count_amazon_30" in row_data:
+        oos_30 = _safe_float(row_data["oos_count_amazon_30"])
+        if oos_30 is not None and oos_30 > 0:
+            clean["amazon_oos_events_30d"] = int(oos_30)
+            if oos_30 >= 5:
+                clean["amazon_supply_stability"] = "UNSTABLE (frequent OOS)"
+            elif oos_30 >= 2:
+                clean["amazon_supply_stability"] = "MODERATE (occasional OOS)"
+    
+    if "oos_count_amazon_90" in row_data:
+        oos_90 = _safe_float(row_data["oos_count_amazon_90"])
+        if oos_90 is not None and oos_90 > 0:
+            clean["amazon_oos_events_90d"] = int(oos_90)
+    
+    # Pre-calculated velocity from Keepa
+    if "velocity_30d" in row_data:
+        vel_30 = _safe_float(row_data["velocity_30d"])
+        if vel_30 is not None:
+            clean["bsr_velocity_30d"] = f"{vel_30:+.1f}%"
+            if vel_30 > 20:
+                clean["momentum"] = "ACCELERATING (strong growth)"
+            elif vel_30 < -20:
+                clean["momentum"] = "DECELERATING (declining)"
+    
+    if "velocity_90d" in row_data:
+        vel_90 = _safe_float(row_data["velocity_90d"])
+        if vel_90 is not None:
+            clean["bsr_velocity_90d"] = f"{vel_90:+.1f}%"
+    
+    # Pack size and per-unit price (for fair comparison)
+    if "number_of_items" in row_data:
+        pack_size = _safe_float(row_data["number_of_items"])
+        if pack_size is not None and pack_size > 1:
+            clean["pack_size"] = int(pack_size)
+    
+    if "price_per_unit" in row_data:
+        ppu = _safe_float(row_data["price_per_unit"])
+        if ppu is not None and ppu > 0:
+            clean["price_per_unit"] = f"${ppu:.2f}"
+    
+    # Units source tracking
+    if "units_source" in row_data:
+        src = row_data["units_source"]
+        if src == "amazon_monthly_sold":
+            clean["units_data_source"] = "AMAZON ACTUAL (high confidence)"
+        else:
+            clean["units_data_source"] = "BSR FORMULA (estimated)"
+    
+    # Amazon's monthly sold (if available)
+    if "monthly_sold" in row_data:
+        sold = _safe_float(row_data["monthly_sold"])
+        if sold is not None and sold > 0:
+            clean["amazon_monthly_units"] = f"{int(sold):,}"
+    
+    # Subscribe & Save eligibility
+    if "is_sns" in row_data and row_data["is_sns"]:
+        clean["sns_eligible"] = "YES (Subscribe & Save)"
+    
+    # =============================================
     # DATA QUALITY INDICATOR
     # =============================================
     # Count how many key metrics we have
@@ -1079,10 +1282,16 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
     competitive_metrics = ["price_vs_market_median", "review_vs_market", "total_market_competitors"]
     competitive_present = sum(1 for m in competitive_metrics if m in clean)
     
+    # Count new critical metrics (2026-01-21)
+    new_critical_metrics = ["amazon_owns_buybox", "true_seller_count", "bsr_velocity_30d", "amazon_monthly_units", "amazon_oos_events_30d"]
+    new_metrics_present = sum(1 for m in new_critical_metrics if m in clean)
+    
     if metrics_present >= 5:
         clean["data_quality"] = "HIGH"
         if competitive_present >= 2:
             clean["competitive_context"] = "ENRICHED"
+        if new_metrics_present >= 3:
+            clean["data_richness"] = "PREMIUM (Amazon direct data available)"
     elif metrics_present >= 3:
         clean["data_quality"] = "MEDIUM"
     else:
@@ -1144,6 +1353,26 @@ def _determine_state_fallback(
     rank_delta_90 = _safe_float(row_data.get("deltaPercent90_SALES") or row_data.get("rank_delta_90d_pct"), default=0)
     price_gap = _safe_float(row_data.get("price_gap"), default=0)
     
+    # NEW: Use new critical metrics when available (2026-01-21)
+    # Use seller_count if available (more accurate than offer_count)
+    seller_count = _safe_float(row_data.get("seller_count"))
+    if seller_count is not None and seller_count > 0:
+        offer_count = seller_count
+    
+    # Use pre-calculated velocity if available
+    velocity_30d = _safe_float(row_data.get("velocity_30d"))
+    if velocity_30d is not None:
+        # Convert velocity percentage to decay factor
+        # Positive velocity = growth, negative = decay
+        velocity_decay = 1.0 - (velocity_30d / 100.0) if velocity_30d < 0 else 1.0
+    
+    # Check if Amazon owns Buy Box (competitive pressure indicator)
+    amazon_owns_bb = row_data.get("buybox_is_amazon")
+    is_backorder = row_data.get("buybox_is_backorder", False)
+    
+    # OOS events indicate supply instability
+    oos_count_30 = _safe_float(row_data.get("oos_count_amazon_30"), default=0)
+    
     # Adjust thresholds based on strategic bias
     if strategic_bias == "Profit Maximization":
         # More strict on margins, less forgiving
@@ -1165,6 +1394,42 @@ def _determine_state_fallback(
     
     # Decision tree
     signals = []
+    opportunities = []
+    
+    # =========================================================================
+    # NEW: Extract intelligence from new critical metrics (2026-01-21)
+    # =========================================================================
+    
+    # Amazon as Buy Box winner = major competitive pressure
+    amazon_1p_pressure = amazon_owns_bb is True
+    if amazon_1p_pressure:
+        signals.append("Amazon 1P owns Buy Box (HIGH competitive pressure)")
+    
+    # Backorder = supply chain crisis
+    supply_crisis = is_backorder is True
+    if supply_crisis:
+        signals.append("BACKORDER STATUS (supply chain issue)")
+    
+    # Amazon OOS events = conquest opportunity  
+    amazon_unstable = oos_count_30 >= 3
+    if amazon_unstable:
+        opportunities.append(f"Amazon OOS {int(oos_count_30)}x in 30d (conquest opportunity)")
+    
+    # Get additional new metrics
+    is_sns = row_data.get("is_sns", False)
+    monthly_sold = _safe_float(row_data.get("monthly_sold"), default=0)
+    units_source = row_data.get("units_source", "bsr_formula")
+    number_of_items = _safe_float(row_data.get("number_of_items"), default=1)
+    has_amazon_seller = row_data.get("has_amazon_seller")
+    
+    # High-confidence data available
+    premium_data = units_source == "amazon_monthly_sold" and monthly_sold > 0
+    if premium_data:
+        signals.append(f"Amazon data: {int(monthly_sold):,} units/mo (HIGH confidence)")
+    
+    # S&S opportunity
+    if is_sns:
+        opportunities.append("Subscribe & Save eligible (loyalty opportunity)")
     
     # TERMINAL: Severe margin issues or sustained decline
     # Growth mode is more forgiving if rank is improving
@@ -1181,33 +1446,51 @@ def _determine_state_fallback(
         if rank_delta_90 > 30:
             signals.append(f"Rank DECLINING ({rank_delta_90:+.0f}%)")
     
-    # DISTRESS: Margin compression or velocity decay
-    elif margin < margin_distress or velocity_decay > 1.3:
+    # DISTRESS: Margin compression or velocity decay or supply crisis
+    elif margin < margin_distress or velocity_decay > 1.3 or supply_crisis:
         state = StrategicState.DISTRESS
-        confidence = 0.75
-        reasoning = f"Product showing stress signals. Margin {margin*100:.1f}%, velocity decay {velocity_decay:.2f}x."
-        if strategic_bias == "Profit Maximization":
-            action = "Cut all discretionary spend. Raise price immediately."
-        elif strategic_bias == "Aggressive Growth":
-            action = "Optimize spend efficiency. Maintain market position."
+        confidence = 0.80 if supply_crisis else 0.75
+        
+        if supply_crisis:
+            reasoning = f"SUPPLY CRISIS: Product is backordered. This damages rank, reviews, and long-term velocity."
+            action = "URGENT: Expedite inventory. Consider air freight. Communicate with supplier daily."
+            signals.append("BACKORDER (supply chain crisis)")
         else:
-            action = "Pause non-essential spend. Investigate root cause. Fix pricing if needed."
+            reasoning = f"Product showing stress signals. Margin {margin*100:.1f}%, velocity decay {velocity_decay:.2f}x."
+            if strategic_bias == "Profit Maximization":
+                action = "Cut all discretionary spend. Raise price immediately."
+            elif strategic_bias == "Aggressive Growth":
+                action = "Optimize spend efficiency. Maintain market position."
+            else:
+                action = "Pause non-essential spend. Investigate root cause. Fix pricing if needed."
+        
         if margin < margin_distress:
             signals.append(f"Margin LOW ({margin*100:.1f}%)")
         if velocity_decay > 1.3:
             signals.append(f"Velocity DECAYING ({velocity_decay:.2f}x)")
     
-    # TRENCH_WAR: High competition or BB pressure
-    elif offer_count > 10 or bb_share < 0.60 or price_gap > 0.10:
+    # TRENCH_WAR: High competition or BB pressure or Amazon 1P
+    elif offer_count > 10 or bb_share < 0.60 or price_gap > 0.10 or amazon_1p_pressure:
         state = StrategicState.TRENCH_WAR
-        confidence = 0.70
-        reasoning = f"Competitive pressure detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
-        if strategic_bias == "Profit Maximization":
-            action = "Avoid price war. Focus on differentiation. Consider raising price."
-        elif strategic_bias == "Aggressive Growth":
-            action = "Defend aggressively. Match pricing. Scale defensive ads."
+        confidence = 0.75 if amazon_1p_pressure else 0.70
+        
+        if amazon_1p_pressure:
+            reasoning = f"Amazon 1P competition detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
+            if strategic_bias == "Profit Maximization":
+                action = "Differentiate on value-adds Amazon can't match. Focus on bundle/subscription."
+            elif strategic_bias == "Aggressive Growth":
+                action = "Compete on keywords Amazon doesn't bid on. Build brand moat."
+            else:
+                action = "Defend with brand differentiation. Avoid direct price war with Amazon."
         else:
-            action = "Defend position. Match competitor pricing. Increase visibility spend."
+            reasoning = f"Competitive pressure detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
+            if strategic_bias == "Profit Maximization":
+                action = "Avoid price war. Focus on differentiation. Consider raising price."
+            elif strategic_bias == "Aggressive Growth":
+                action = "Defend aggressively. Match pricing. Scale defensive ads."
+            else:
+                action = "Defend position. Match competitor pricing. Increase visibility spend."
+        
         if offer_count > 10:
             signals.append(f"Competition HIGH ({int(offer_count)} sellers)")
         if bb_share < 0.60:
@@ -1260,6 +1543,17 @@ def _determine_state_fallback(
     
     state_def = STATE_DEFINITIONS[state]
     
+    # Merge opportunities into signals for display
+    all_signals = signals + opportunities
+    
+    # Boost confidence if we have premium Amazon data
+    if premium_data:
+        confidence = min(confidence + 0.10, 0.95)
+    
+    # Add opportunity context to reasoning
+    if opportunities:
+        reasoning += f" Opportunities: {'; '.join(opportunities)}."
+    
     # Create base brief
     brief = StrategicBrief(
         strategic_state=state.value,
@@ -1270,7 +1564,7 @@ def _determine_state_fallback(
         state_color=state_def["color"],
         primary_outcome=state_def["primary_outcome"],
         source="fallback",
-        signals_detected=signals,
+        signals_detected=all_signals,
         asin=row_data.get("asin", ""),
     )
     
@@ -2068,34 +2362,89 @@ def calculate_expansion_alpha(
             ai_recommendation = f"💰 Price Opportunity: You're priced {price_headroom*100:.0f}% below market. Raise price to capture ${price_optimization_gain:,.0f} additional margin."
     
     # ========== CONQUEST ANALYSIS ==========
-    # If competitor is vulnerable (OOS or price cutting aggressively)
-    if competitor_oos_pct > 0.30:
+    # Use NEW Amazon OOS intelligence for better conquest detection
+    amazon_oos_30 = row_data.get('oos_count_amazon_30', 0) or 0
+    amazon_oos_90 = row_data.get('oos_count_amazon_90', 0) or 0
+    amazon_owns_bb = row_data.get('buybox_is_amazon', False)
+    amazon_pct_30 = row_data.get('bb_stats_amazon_30', 0) or 0
+    
+    # Amazon instability detection - when Amazon has OOS events, that's conquest gold
+    amazon_unstable = amazon_oos_30 >= 3 or amazon_oos_90 >= 5
+    amazon_is_competitor = amazon_owns_bb or amazon_pct_30 > 0.20
+    
+    # Calculate effective competitor vulnerability
+    # Priority: Amazon OOS data > generic competitor OOS
+    if amazon_unstable and amazon_is_competitor:
+        # Amazon is having supply issues - major conquest opportunity!
+        amazon_oos_rate = min(1.0, amazon_oos_30 / 10)  # Normalize to 0-1
+        effective_oos_pct = max(competitor_oos_pct, amazon_oos_rate)
+        target_is_amazon = True
+    else:
+        effective_oos_pct = competitor_oos_pct
+        target_is_amazon = False
+    
+    if effective_oos_pct > 0.30 or amazon_unstable:
         target_competitor_asin = row_data.get('top_competitor_asin', '')
         effective_competitor_rev = competitor_monthly_rev if competitor_monthly_rev > 0 else revenue * 2
-        conquest_revenue = effective_competitor_rev * competitor_oos_pct * conquest_capture_rate
+        
+        # Amazon conquest is worth more (larger customer base)
+        if target_is_amazon:
+            conquest_revenue = effective_competitor_rev * effective_oos_pct * conquest_capture_rate * 1.5
+        else:
+            conquest_revenue = effective_competitor_rev * effective_oos_pct * conquest_capture_rate
         
         if not opportunity_type or conquest_revenue > price_optimization_gain:
             opportunity_type = "CONQUEST"
-            opportunity_urgency = "HIGH" if competitor_oos_pct > 0.50 else "MEDIUM"
+            opportunity_urgency = "HIGH" if effective_oos_pct > 0.50 or amazon_unstable else "MEDIUM"
             
-            if target_competitor_asin:
-                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {target_competitor_asin} is {int(competitor_oos_pct*100)}% OOS. Redirect ad budget to their keywords to capture ${conquest_revenue:,.0f} in 30-day revenue."
+            if target_is_amazon:
+                ai_recommendation = f"🎯 AMAZON CONQUEST: Amazon went OOS {int(amazon_oos_30)}x in 30 days! Attack with aggressive ads on their keywords to capture ${conquest_revenue:,.0f} in 30-day revenue."
+            elif target_competitor_asin:
+                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {target_competitor_asin} is {int(effective_oos_pct*100)}% OOS. Redirect ad budget to their keywords to capture ${conquest_revenue:,.0f} in 30-day revenue."
             else:
-                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {int(competitor_oos_pct*100)}% OOS. Increase ad spend on category keywords to capture ${conquest_revenue:,.0f}."
+                ai_recommendation = f"🎯 Conquest Opportunity: Competitor {int(effective_oos_pct*100)}% OOS. Increase ad spend on category keywords to capture ${conquest_revenue:,.0f}."
     
     # ========== KEYWORD EXPANSION ANALYSIS ==========
-    # If velocity is improving (negative = rank improving), recommend expansion
-    if velocity_trend_90d < -0.05:  # Improving by more than 5%
-        velocity_multiplier = 1.0 + abs(velocity_trend_90d)
+    # Use NEW pre-calculated velocity from Keepa when available
+    velocity_30d = row_data.get('velocity_30d')
+    velocity_90d = row_data.get('velocity_90d')
+    
+    # Prefer Keepa's velocity calculation if available
+    if velocity_30d is not None and velocity_30d < 0:
+        # Keepa velocity: negative = improving (opposite of our convention)
+        effective_velocity = velocity_30d / 100.0  # Already negative
+    elif velocity_trend_90d < -0.05:
+        effective_velocity = velocity_trend_90d
+    else:
+        effective_velocity = 0
+    
+    if effective_velocity < -0.05:  # Improving by more than 5%
+        velocity_multiplier = 1.0 + abs(effective_velocity)
         keyword_expansion_gain = revenue * expansion_rate * velocity_multiplier
         
         if not opportunity_type:
             opportunity_type = "EXPAND"
-            opportunity_urgency = "MEDIUM" if velocity_trend_90d < -0.10 else "LOW"
-            ai_recommendation = f"🚀 Expansion Opportunity: Momentum detected (velocity +{abs(velocity_trend_90d)*100:.0f}%). Scale keyword coverage to capture ${keyword_expansion_gain:,.0f} in new revenue."
+            opportunity_urgency = "MEDIUM" if effective_velocity < -0.10 else "LOW"
+            ai_recommendation = f"🚀 Expansion Opportunity: Momentum detected (velocity +{abs(effective_velocity)*100:.0f}%). Scale keyword coverage to capture ${keyword_expansion_gain:,.0f} in new revenue."
+    
+    # ========== S&S RETENTION OPPORTUNITY ==========
+    # NEW: Detect Subscribe & Save upsell opportunities
+    is_sns = row_data.get('is_sns', False)
+    sns_opportunity = 0.0
+    
+    if is_sns and strategic_state in ["FORTRESS", "HARVEST"]:
+        # Products with good fundamentals + S&S = subscription upsell opportunity
+        # Estimate: 5-15% of revenue can be converted to recurring subscriptions
+        sns_conversion_rate = 0.10 if "Growth" in strategic_bias else 0.05
+        sns_opportunity = revenue * sns_conversion_rate * 12 / 30  # Monthly value / 30 days
+        
+        if not opportunity_type and sns_opportunity > 1000:
+            opportunity_type = "SUBSCRIBE"
+            opportunity_urgency = "MEDIUM"
+            ai_recommendation = f"🔄 S&S Opportunity: Product eligible for Subscribe & Save. Push subscription messaging to capture ${sns_opportunity:,.0f}/mo in recurring revenue."
     
     # ========== TOTAL 30-DAY GROWTH ==========
-    thirty_day_growth = price_optimization_gain + conquest_revenue + keyword_expansion_gain
+    thirty_day_growth = price_optimization_gain + conquest_revenue + keyword_expansion_gain + sns_opportunity
     
     # Default recommendation if no specific opportunity
     if not ai_recommendation and thirty_day_growth > 0:
@@ -2186,6 +2535,39 @@ def calculate_portfolio_intelligence_vectorized(
     # Normalize competitor OOS to 0-1 range (vectorized)
     competitor_oos = np.where(competitor_oos > 1, competitor_oos / 100, competitor_oos)
     
+    # === NEW CRITICAL METRICS (2026-01-21) ===
+    # Amazon OOS intelligence - for conquest detection
+    amazon_oos_30 = result['oos_count_amazon_30'].fillna(0).values if 'oos_count_amazon_30' in result.columns else np.zeros(n_rows)
+    amazon_oos_90 = result['oos_count_amazon_90'].fillna(0).values if 'oos_count_amazon_90' in result.columns else np.zeros(n_rows)
+    
+    # Amazon Buy Box ownership - competitive pressure indicator
+    amazon_owns_bb = result['buybox_is_amazon'].fillna(False).values if 'buybox_is_amazon' in result.columns else np.zeros(n_rows, dtype=bool)
+    bb_amazon_share_30 = result['bb_stats_amazon_30'].fillna(0).values if 'bb_stats_amazon_30' in result.columns else np.zeros(n_rows)
+    
+    # True seller count - more accurate than offer count
+    seller_count = result['seller_count'].fillna(5).values if 'seller_count' in result.columns else np.full(n_rows, 5)
+    
+    # Supply chain status
+    is_backorder = result['buybox_is_backorder'].fillna(False).values if 'buybox_is_backorder' in result.columns else np.zeros(n_rows, dtype=bool)
+    
+    # Subscribe & Save eligibility
+    is_sns = result['is_sns'].fillna(False).values if 'is_sns' in result.columns else np.zeros(n_rows, dtype=bool)
+    
+    # Pre-calculated velocity from Keepa
+    velocity_30d_keepa = result['velocity_30d'].fillna(0).values if 'velocity_30d' in result.columns else np.zeros(n_rows)
+    velocity_90d_keepa = result['velocity_90d'].fillna(0).values if 'velocity_90d' in result.columns else np.zeros(n_rows)
+    
+    # Units source for confidence weighting
+    has_amazon_units = result['units_source'].fillna('').values == 'amazon_monthly_sold' if 'units_source' in result.columns else np.zeros(n_rows, dtype=bool)
+    
+    # Amazon instability detection (conquest opportunity)
+    amazon_unstable = (amazon_oos_30 >= 3) | (amazon_oos_90 >= 5)
+    amazon_is_competitor = amazon_owns_bb | (bb_amazon_share_30 > 0.20)
+    
+    # Enhance competitor OOS with Amazon-specific intelligence
+    amazon_oos_pct = np.minimum(1.0, amazon_oos_30 / 10.0)  # Normalize to 0-1
+    enhanced_oos = np.maximum(competitor_oos, np.where(amazon_unstable & amazon_is_competitor, amazon_oos_pct, 0))
+    
     # === STRATEGIC BIAS WEIGHTS ===
     if "Profit" in strategic_bias:
         price_weight, inventory_weight, rank_weight = 1.5, 0.8, 0.7
@@ -2274,32 +2656,37 @@ def calculate_portfolio_intelligence_vectorized(
     # Determine if there's ACTUAL risk (not just optimization headroom)
     has_actual_risk = thirty_day_risk > revenue * 0.02  # More than 2% of revenue at actual risk
     
+    # NEW: Backorder status is URGENT supply crisis
+    has_supply_crisis = is_backorder
+    
     predictive_state = np.where(
-        has_actual_stockout_data & (stockout_risk_val > revenue * 0.05), "REPLENISH",  # Stockout imminent
+        has_supply_crisis, "REPLENISH",  # BACKORDER = URGENT supply action
         np.where(
-            is_declining_fast & has_actual_risk, "DEFEND",  # Velocity crash with real impact
+            has_actual_stockout_data & (stockout_risk_val > revenue * 0.05), "REPLENISH",  # Stockout imminent
             np.where(
-                is_being_undercut & has_actual_risk, "DEFEND",  # Price war with real impact
+                amazon_owns_bb & is_declining_fast, "DEFEND",  # Amazon 1P + declining = serious threat
                 np.where(
-                    competitor_oos > 0.20, "EXPLOIT",  # Competitor OOS - conquest opportunity
+                    is_declining_fast & has_actual_risk, "DEFEND",  # Velocity crash with real impact
                     np.where(
-                        (rank <= 100) & (v90 <= 0.05), "GROW",  # Market leader, stable - pricing power
-                        "STABLE"  # Healthy position, no urgent action
+                        is_being_undercut & has_actual_risk, "DEFEND",  # Price war with real impact
+                        np.where(
+                            amazon_unstable & amazon_is_competitor, "EXPLOIT",  # Amazon OOS = premium conquest
+                            np.where(
+                                enhanced_oos > 0.20, "EXPLOIT",  # Competitor OOS - conquest opportunity
+                                np.where(
+                                    (rank <= 100) & (v90 <= 0.05), "GROW",  # Market leader, stable - pricing power
+                                    "STABLE"  # Healthy position, no urgent action
+                                )
+                            )
+                        )
                     )
                 )
             )
         )
     )
     
-    # === OPTIMIZATION VALUE (for STABLE/GROW products) ===
-    # This is UPSIDE POTENTIAL, not risk - different semantic meaning
-    # Only calculate for products without actual threats
-    optimization_rate = 0.15  # 15% potential improvement for healthy products
-    optimization_value = np.where(
-        thirty_day_risk < revenue * 0.02,  # No significant actual risk
-        revenue * optimization_rate,       # Show optimization potential
-        0                                  # Don't double-count with actual risk
-    )
+    # NOTE: optimization_value will be calculated AFTER growth components are computed
+    # See below after sns_gain is calculated
     
     # === GROWTH CALCULATION (vectorized) ===
     # Velocity gate: block growth for declining ASINs
@@ -2314,10 +2701,12 @@ def calculate_portfolio_intelligence_vectorized(
         0
     )
     
-    # Conquest opportunity (competitor OOS)
+    # Conquest opportunity (competitor OOS - enhanced with Amazon intelligence)
+    # Amazon conquest is worth 1.5x more (larger customer base, higher intent)
+    amazon_conquest_bonus = np.where(amazon_unstable & amazon_is_competitor, 1.5, 1.0)
     conquest_gain = np.where(
-        (competitor_oos > 0.30) & growth_validated,
-        revenue * 2 * competitor_oos * conquest_rate,
+        (enhanced_oos > 0.30) & growth_validated,
+        revenue * 2 * enhanced_oos * conquest_rate * amazon_conquest_bonus,
         0
     )
     
@@ -2357,14 +2746,23 @@ def calculate_portfolio_intelligence_vectorized(
         0
     )
     
-    # Total growth (include new opportunity types)
-    thirty_day_growth = np.where(
-        growth_validated,
-        price_lift_gain + conquest_gain + expansion_gain + price_power_gain + review_moat_gain,
+    # === NEW: S&S SUBSCRIPTION OPPORTUNITY ===
+    # Products with S&S eligibility and strong fundamentals = subscription upsell
+    sns_conversion_rate = np.where(np.char.find(np.full(n_rows, strategic_bias), 'Growth') >= 0, 0.10, 0.05)
+    sns_gain = np.where(
+        is_sns & growth_validated & is_stable_position,
+        revenue * sns_conversion_rate * 12 / 30,  # Monthly subscription value / 30 days
         0
     )
     
-    # Opportunity type (priority: CONQUEST > PRICE_LIFT > PRICE_POWER > REVIEW_MOAT > EXPAND)
+    # Total growth (include new opportunity types)
+    thirty_day_growth = np.where(
+        growth_validated,
+        price_lift_gain + conquest_gain + expansion_gain + price_power_gain + review_moat_gain + sns_gain,
+        0
+    )
+    
+    # Opportunity type (priority: CONQUEST > PRICE_LIFT > PRICE_POWER > SUBSCRIBE > REVIEW_MOAT > EXPAND)
     opportunity_type = np.where(
         conquest_gain > 0, "CONQUEST",
         np.where(
@@ -2372,14 +2770,27 @@ def calculate_portfolio_intelligence_vectorized(
             np.where(
                 price_power_gain > 0, "PRICE_POWER",
                 np.where(
-                    review_moat_gain > 0, "REVIEW_MOAT",
+                    sns_gain > 1000, "SUBSCRIBE",  # Only flag if $1K+ opportunity
                     np.where(
-                        expansion_gain > 0, "EXPAND",
-                        ""
+                        review_moat_gain > 0, "REVIEW_MOAT",
+                        np.where(
+                            expansion_gain > 0, "EXPAND",
+                            ""
+                        )
                     )
                 )
             )
         )
+    )
+    
+    # === OPTIMIZATION VALUE (for STABLE/GROW products) ===
+    # This is UPSIDE POTENTIAL for healthy products = sum of actual opportunity types
+    # NOT a flat percentage - uses real calculated opportunities
+    optimization_value = np.where(
+        thirty_day_risk < revenue * 0.02,  # No significant actual risk = healthy product
+        # Sum all opportunity types (the actual $ values, not just growth flag)
+        price_lift_gain + price_power_gain + review_moat_gain + sns_gain,  # Exclude conquest (that's thirty_day_growth)
+        0  # Products with real risk don't get optimization value
     )
     
     # === COMBINED OPPORTUNITY ALPHA ===
@@ -2394,18 +2805,22 @@ def calculate_portfolio_intelligence_vectorized(
     # Normalize bb_share if > 1 (assume percentage)
     bb_share = np.where(bb_share > 1, bb_share / 100, bb_share)
     
+    # Use true seller count if available (more accurate than offer count)
+    effective_seller_count = np.where(seller_count > 0, seller_count, new_offer_count)
+    
     # Strategic state classification (priority order)
     # TERMINAL: Very low BB (<10%), significant risk, negative velocity
     is_terminal = (bb_share < 0.10) & (v90 > 0.30)
     
-    # DISTRESS: Low BB (<40%), declining velocity, high risk
-    is_distress = (bb_share < 0.40) & (v90 > 0.20) & (~is_terminal)
+    # DISTRESS: Supply crisis (backorder) OR Low BB (<40%) + declining velocity
+    is_distress = has_supply_crisis | ((bb_share < 0.40) & (v90 > 0.20) & (~is_terminal))
     
-    # TRENCH_WAR: Contested BB (30-60%), many competitors, competitive pressure
-    is_trench = (bb_share >= 0.30) & (bb_share < 0.60) & (new_offer_count >= 8) & (~is_distress) & (~is_terminal)
+    # TRENCH_WAR: Amazon 1P owns BB OR Contested BB (30-60%) with many competitors
+    is_amazon_trench = amazon_owns_bb & (bb_share < 0.80)  # Amazon 1P = competitive pressure
+    is_trench = (is_amazon_trench | ((bb_share >= 0.30) & (bb_share < 0.60) & (effective_seller_count >= 8))) & (~is_distress) & (~is_terminal)
     
-    # FORTRESS: High BB (>80%), stable or improving velocity
-    is_fortress = (bb_share >= 0.80) & (v90 <= 0.10)
+    # FORTRESS: High BB (>80%), stable or improving velocity, no Amazon 1P
+    is_fortress = (bb_share >= 0.80) & (v90 <= 0.10) & (~amazon_owns_bb)
     
     # HARVEST: Everything else (stable, good BB)
     strategic_state = np.where(
@@ -2437,19 +2852,32 @@ def calculate_portfolio_intelligence_vectorized(
     result['optimization_value'] = np.asarray(optimization_value, dtype=np.float32)  # NEW: Upside potential (not risk)
     result['opportunity_alpha'] = np.asarray(opportunity_alpha, dtype=np.float32)
     result['predictive_state'] = pd.Categorical(predictive_state, categories=["STABLE", "GROW", "DEFEND", "EXPLOIT", "REPLENISH"])  # UPDATED categories
-    result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND", "PRICE_POWER", "REVIEW_MOAT"])
+    result['opportunity_type'] = pd.Categorical(opportunity_type, categories=["", "PRICE_LIFT", "CONQUEST", "EXPAND", "PRICE_POWER", "REVIEW_MOAT", "SUBSCRIBE"])
     result['growth_validated'] = np.asarray(growth_validated, dtype=bool)
     result['price_erosion_risk'] = np.asarray(price_erosion, dtype=np.float32)
     result['share_erosion_risk'] = np.asarray(share_erosion, dtype=np.float32)
     result['stockout_risk'] = np.asarray(stockout_risk_val, dtype=np.float32)
     result['strategic_state'] = pd.Categorical(strategic_state, categories=["FORTRESS", "HARVEST", "TRENCH_WAR", "DISTRESS", "TERMINAL"])
     
+    # NEW: Store Amazon 1P and S&S flags for dashboard display
+    result['amazon_1p_competitor'] = amazon_owns_bb
+    result['sns_eligible'] = is_sns
+    result['amazon_unstable'] = amazon_unstable
+    
     # Model certainty based on data quality
+    # BOOSTED when we have Amazon's actual monthly sold data
     if 'data_weeks' in result.columns:
         data_weeks = result['data_weeks'].fillna(4).values
     else:
         data_weeks = np.full(n_rows, 4.0, dtype=np.float32)
-    result['model_certainty'] = np.clip(0.40 + (data_weeks / 48) * 0.55, 0.40, 0.95).astype(np.float32)
+    
+    # Base certainty from data weeks
+    base_certainty = 0.40 + (data_weeks / 48) * 0.50
+    
+    # Boost certainty if we have Amazon's actual unit data
+    amazon_data_boost = np.where(has_amazon_units, 0.10, 0.0)
+    
+    result['model_certainty'] = np.clip(base_certainty + amazon_data_boost, 0.40, 0.95).astype(np.float32)
     
     return result
 
@@ -2976,8 +3404,16 @@ async def generate_portfolio_brief(
 
 2. **PRODUCT STATUS DISTRIBUTION**
    - FORTRESS/HARVEST = Healthy (extract value)
-   - TRENCH_WAR = Defend (maintain position)
-   - DISTRESS/TERMINAL = Fix or Exit
+   - TRENCH_WAR = Defend (maintain position, especially if Amazon 1P competitor detected)
+   - DISTRESS = Fix (check for backorder status, supply issues)
+   - TERMINAL = Exit
+
+3. **PREDICTIVE STATES** (Action urgency)
+   - EXPLOIT = Amazon/competitor supply unstable = conquest opportunity NOW
+   - DEFEND = Velocity declining or price war = protect revenue
+   - REPLENISH = Backorder or stockout imminent = supply chain URGENT
+   - GROW = Market leader position stable = test price increases
+   - STABLE = No urgent action needed
 
 3. **RISK INTERPRETATION (CRITICAL)**
    - "At-Risk Revenue" is the SUM of risk across the ENTIRE portfolio
@@ -3013,7 +3449,18 @@ RULES:
 - PRICE_POWER: Top-100 rank products can test 3-5% price increases
 - REVIEW_MOAT: 500+ reviews = pricing power, test premium positioning
 - CONQUEST: Competitor out of stock = capture their customers
+- AMAZON_CONQUEST: Amazon 1P supply unstable (3+ OOS events) = attack their keywords
+- SUBSCRIBE: Products with S&S eligibility = push subscription messaging for recurring revenue
 - EXPAND: Improving velocity = increase ad spend to accelerate
+
+## NEW INTELLIGENCE SIGNALS (High-value insights)
+- **Amazon 1P Competition**: If Amazon owns Buy Box, brand faces pricing pressure. Recommend differentiation.
+- **Amazon Supply Instability**: Amazon going OOS frequently = prime conquest opportunity.
+- **Backorder Status**: Products in backorder need URGENT supply chain action.
+- **True Seller Count**: More accurate than offer count for competition assessment.
+- **S&S Eligibility**: Subscription opportunity for customer retention.
+- **Amazon Actual Units**: When "units_source: AMAZON ACTUAL" is shown, data confidence is HIGH.
+- **Pack Size Arbitrage**: Compare price-per-unit across pack sizes for pricing optimization.
 
 ## SOPHISTICATED RECOMMENDATIONS (Not kindergarten advice)
 GOOD - Specific and quantified:

@@ -146,7 +146,8 @@ EVENT_CATEGORIES = {
     "inventory": [
         "competitor_oos_imminent",
         "inventory_low",
-        "competitor_restocked"
+        "competitor_restocked",
+        "backorder_crisis"          # NEW: Supply chain crisis (2026-01-21)
     ],
     "pricing": [
         "price_war_active",
@@ -182,6 +183,11 @@ EVENT_CATEGORIES = {
         "category_decline",
         "seller_consolidation",     # New: competitors leaving
         "low_competition"           # New: market opportunity
+    ],
+    # NEW: Amazon Intelligence category (2026-01-21)
+    "amazon_intelligence": [
+        "amazon_supply_unstable",   # Amazon 1P has frequent OOS events
+        "subscription_opportunity"  # S&S eligible with good fundamentals
     ]
 }
 
@@ -202,6 +208,7 @@ EVENT_NATURE = {
     "new_competitor_entered": "threat",
     "competitor_review_surge": "threat",
     "category_decline": "threat",
+    "backorder_crisis": "threat",       # NEW: Supply crisis is urgent threat (2026-01-21)
     
     # OPPORTUNITIES (offensive priorities)
     "competitor_oos_imminent": "opportunity",
@@ -217,7 +224,9 @@ EVENT_NATURE = {
     "competitor_exit": "opportunity",
     "category_growth": "opportunity",
     "seller_consolidation": "opportunity",
-    "low_competition": "opportunity"
+    "low_competition": "opportunity",
+    "amazon_supply_unstable": "opportunity",   # NEW: Amazon OOS = conquest (2026-01-21)
+    "subscription_opportunity": "opportunity"   # NEW: S&S eligible (2026-01-21)
 }
 
 

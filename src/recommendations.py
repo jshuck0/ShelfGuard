@@ -301,6 +301,149 @@ def detect_new_entrants(
     return alerts
 
 
+def detect_amazon_conquest_opportunities(
+    df_current: pd.DataFrame
+) -> List[Dict]:
+    """
+    Identify Amazon 1P supply instability = conquest opportunity.
+    
+    Uses NEW Keepa metrics:
+    - oos_count_amazon_30: Number of times Amazon went OOS in 30 days
+    - amazon_unstable: Boolean flag from intelligence engine
+    - buybox_is_amazon: Whether Amazon owns the Buy Box
+    
+    Criteria:
+    - Amazon went OOS 3+ times in 30 days (supply instability)
+    - Amazon is a seller on the listing
+    
+    Returns:
+        List of high-priority conquest opportunity alerts
+    """
+    if df_current.empty:
+        return []
+    
+    alerts = []
+    
+    # Check for Amazon OOS opportunities
+    if 'oos_count_amazon_30' in df_current.columns:
+        # Amazon went OOS 3+ times = supply unstable
+        unstable_df = df_current[df_current['oos_count_amazon_30'] >= 3].copy()
+        
+        for _, row in unstable_df.iterrows():
+            oos_count = int(row.get('oos_count_amazon_30', 0))
+            revenue = row.get('weekly_sales_filled', row.get('revenue_proxy', 0))
+            
+            # Calculate conquest value (estimate 15-25% capture rate)
+            capture_rate = 0.20 if oos_count >= 5 else 0.15
+            conquest_value = revenue * capture_rate * 4  # Monthly estimate
+            
+            alerts.append({
+                "type": "amazon_conquest",
+                "severity": "high",
+                "asin": row.get("asin", ""),
+                "title": "Amazon Supply Unstable - CONQUEST OPPORTUNITY",
+                "message": (
+                    f"Amazon went OOS {oos_count}x in 30 days on {row.get('asin', '')}. "
+                    f"Estimated conquest value: ${conquest_value:,.0f}/mo. "
+                    f"Their customers are searching NOW."
+                ),
+                "oos_count": oos_count,
+                "conquest_value": conquest_value,
+                "action": "🎯 ACTION: Attack Amazon's keywords with aggressive ads. Capture their customers!"
+            })
+    
+    return alerts
+
+
+def detect_supply_chain_crisis(
+    df_current: pd.DataFrame
+) -> List[Dict]:
+    """
+    Identify products with supply chain issues requiring URGENT action.
+    
+    Uses NEW Keepa metrics:
+    - buybox_is_backorder: Product is backordered
+    
+    Returns:
+        List of CRITICAL supply chain alerts
+    """
+    if df_current.empty:
+        return []
+    
+    alerts = []
+    
+    if 'buybox_is_backorder' in df_current.columns:
+        backordered_df = df_current[df_current['buybox_is_backorder'] == True].copy()
+        
+        for _, row in backordered_df.iterrows():
+            revenue = row.get('weekly_sales_filled', row.get('revenue_proxy', 0))
+            
+            alerts.append({
+                "type": "supply_crisis",
+                "severity": "high",
+                "asin": row.get("asin", ""),
+                "title": "URGENT: Product Backordered",
+                "message": (
+                    f"ASIN {row.get('asin', '')} is BACKORDERED. "
+                    f"Weekly revenue at risk: ${revenue:,.0f}. "
+                    f"Every day of backorder damages rank and loses customers to competitors."
+                ),
+                "revenue_at_risk": revenue,
+                "action": "🚨 URGENT: Expedite inventory. Consider air freight. Communicate with supplier daily."
+            })
+    
+    return alerts
+
+
+def detect_subscription_opportunities(
+    df_current: pd.DataFrame
+) -> List[Dict]:
+    """
+    Identify Subscribe & Save opportunities for customer retention.
+    
+    Uses NEW Keepa metrics:
+    - is_sns: Product is S&S eligible
+    - strategic_state: Must be FORTRESS or HARVEST (healthy products)
+    
+    Returns:
+        List of subscription opportunity alerts
+    """
+    if df_current.empty:
+        return []
+    
+    alerts = []
+    
+    if 'is_sns' in df_current.columns and 'strategic_state' in df_current.columns:
+        # S&S eligible products in healthy states
+        sns_eligible = df_current[
+            (df_current['is_sns'] == True) & 
+            (df_current['strategic_state'].isin(['FORTRESS', 'HARVEST']))
+        ].copy()
+        
+        for _, row in sns_eligible.head(5).iterrows():  # Limit to top 5
+            revenue = row.get('weekly_sales_filled', row.get('revenue_proxy', 0))
+            monthly_revenue = revenue * 4.33
+            
+            # Estimate subscription conversion opportunity (5-10% of customers)
+            sns_opportunity = monthly_revenue * 0.08  # 8% average
+            
+            alerts.append({
+                "type": "subscription_opportunity",
+                "severity": "low",
+                "asin": row.get("asin", ""),
+                "title": "Subscribe & Save Opportunity",
+                "message": (
+                    f"ASIN {row.get('asin', '')} is S&S eligible with ${monthly_revenue:,.0f}/mo revenue. "
+                    f"Push subscription messaging to capture ${sns_opportunity:,.0f}/mo recurring revenue."
+                ),
+                "monthly_revenue": monthly_revenue,
+                "sns_opportunity": sns_opportunity,
+                "action": "🔄 ACTION: Add S&S promotional messaging. Consider subscription-only discounts."
+            })
+    
+    return alerts
+
+
 def generate_resolution_cards(
     df_metrics: pd.DataFrame,
     df_current: pd.DataFrame,
@@ -328,9 +471,16 @@ def generate_resolution_cards(
     # Run all detectors
     all_alerts = []
 
+    # Classic detectors
     all_alerts.extend(detect_volume_stealers(df_metrics))
     all_alerts.extend(detect_efficiency_gaps(df_current))
     all_alerts.extend(detect_new_entrants(df_metrics))
+    
+    # NEW: Intelligence-powered detectors (using new Keepa metrics)
+    all_alerts.extend(detect_amazon_conquest_opportunities(df_current))
+    all_alerts.extend(detect_supply_chain_crisis(df_current))
+    all_alerts.extend(detect_subscription_opportunities(df_current))
+    
     # all_alerts.extend(detect_buybox_loss(df_metrics))  # TODO: Enable when BB data available
 
     # Score each alert based on mission profile

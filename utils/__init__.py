@@ -50,6 +50,9 @@ from utils.data_healer import (
     validate_healing,
     MetricGroup,
     ALL_METRIC_GROUPS,
+    # Variation deduplication
+    apply_variation_deduplication,
+    heal_market_snapshot,
 )
 
 __all__ = [
@@ -87,4 +90,7 @@ __all__ = [
     "validate_healing",
     "MetricGroup",
     "ALL_METRIC_GROUPS",
+    # Variation deduplication
+    "apply_variation_deduplication",
+    "heal_market_snapshot",
 ]

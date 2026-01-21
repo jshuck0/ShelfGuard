@@ -117,13 +117,24 @@ SPECIAL_DEFAULTS = {
     "current_COUNT_NEW": 1,
     "used_offer_count": 0,
     "current_COUNT_USED": 0,
+    "seller_count": 1,  # NEW: True seller count from sellerIds
     # Buy Box: Assume 50% if unknown (neutral, doesn't trigger "zero BB" alerts)
     "amazon_bb_share": 0.5,
     "buy_box_switches": 0,
+    "buybox_is_amazon": None,  # NEW: None means "unknown" - don't assume
+    "buybox_is_fba": None,     # NEW: None means "unknown"
+    "buybox_is_backorder": False,  # NEW: Assume not backordered
+    "has_amazon_seller": None,     # NEW: None means "unknown"
+    "bb_seller_count_30": 0,       # NEW: Buy Box seller count
+    "bb_top_seller_30": 0.0,       # NEW: Top seller's BB share
+    "bb_stats_amazon_30": None,    # NEW: Keepa's Amazon BB stat
+    "bb_stats_amazon_90": None,    # NEW: Keepa's Amazon BB stat
     # Velocity: Assume stable (no decay/growth) if unknown
     "velocity_decay": 1.0,
     "velocity_trend_30d": 0.0,
     "velocity_trend_90d": 0.0,
+    "velocity_30d": None,  # NEW: Keepa's pre-calculated velocity (None = no data)
+    "velocity_90d": None,  # NEW: Keepa's pre-calculated velocity (None = no data)
     # BSR/Rank: Assume worst case if missing (high rank = low sales)
     "bsr": 1_000_000,
     "sales_rank": 1_000_000,
@@ -133,6 +144,11 @@ SPECIAL_DEFAULTS = {
     "weekly_sales_filled": 0.0,
     "monthly_units": 0.0,
     "estimated_units": 0.0,
+    "monthly_sold": 0,  # NEW: Amazon's actual monthly sold estimate
+    "units_source": "unknown",  # NEW: Track data source
+    # Pack size
+    "number_of_items": 1,  # NEW: Pack size (1 = single item)
+    "price_per_unit": 0.0,  # NEW: Price per unit
     # Competitive: Neutral defaults
     "competitor_count": 0,
     "competitor_oos_pct": 0.0,
@@ -148,7 +164,13 @@ SPECIAL_DEFAULTS = {
     # OOS: Assume in stock if unknown
     "outOfStockPercentage30": 0.0,
     "outOfStockPercentage90": 0.0,
+    "oos_pct_30": 0.0,      # NEW: Alternate naming
+    "oos_pct_90": 0.0,      # NEW: Alternate naming
+    "oos_count_amazon_30": 0,  # NEW: OOS event count (more actionable)
+    "oos_count_amazon_90": 0,  # NEW: OOS event count
     "days_until_stockout": 999,  # 999 = no stockout predicted
+    # Subscribe & Save
+    "is_sns": False,  # NEW: S&S eligibility
 }
 
 # Group D: Buy Box & Ownership Metrics
@@ -161,6 +183,12 @@ BUYBOX_METRICS = MetricGroup(
         "buyBoxStatsAmazon90",
         "buyBoxStatsTopSeller30",
         "buyBoxStatsSellerCount30",
+        # NEW (2026-01-21): Rich BB metrics from Keepa
+        "bb_stats_amazon_30",
+        "bb_stats_amazon_90",
+        "bb_stats_top_seller_30",
+        "bb_seller_count_30",
+        "bb_top_seller_30",
     ],
     fill_strategy="ffill",
     default_value=0.5,  # Assume 50% if unknown
@@ -168,13 +196,31 @@ BUYBOX_METRICS = MetricGroup(
     description="Buy Box metrics use forward fill"
 )
 
+# Group D2: Buy Box Boolean Flags (don't fill - keep as None if unknown)
+BUYBOX_FLAGS = MetricGroup(
+    name="Buy Box Flags",
+    columns=[
+        "buybox_is_amazon",
+        "buybox_is_fba",
+        "buybox_is_backorder",
+        "buybox_is_unqualified",
+        "has_amazon_seller",
+    ],
+    fill_strategy="ffill",  # Forward fill for booleans
+    default_value=None,  # Keep as None if unknown - don't assume
+    max_gap_limit=1,  # Only fill 1 week for booleans
+    description="Buy Box boolean flags - None means unknown"
+)
+
 # Group E: Velocity & Decay Metrics
 VELOCITY_METRICS = MetricGroup(
     name="Velocity & Decay",
     columns=[
         "velocity_decay",
-        "velocity_trend_30d",   # ADDED: 30-day velocity trend (critical for AI)
-        "velocity_trend_90d",   # ADDED: 90-day velocity trend (critical for AI)
+        "velocity_trend_30d",   # 30-day velocity trend (critical for AI)
+        "velocity_trend_90d",   # 90-day velocity trend (critical for AI)
+        "velocity_30d",         # NEW: Keepa's pre-calculated velocity
+        "velocity_90d",         # NEW: Keepa's pre-calculated velocity
         "forecast_change",
         "deltaPercent30_SALES",
         "deltaPercent90_SALES",
@@ -233,6 +279,10 @@ OOS_METRICS = MetricGroup(
     columns=[
         "outOfStockPercentage30",
         "outOfStockPercentage90",
+        "oos_pct_30",           # NEW: Alternate naming
+        "oos_pct_90",           # NEW: Alternate naming
+        "oos_count_amazon_30",  # NEW: OOS event count (more actionable)
+        "oos_count_amazon_90",  # NEW: OOS event count
         "days_until_stockout",
     ],
     fill_strategy="ffill",
@@ -241,16 +291,34 @@ OOS_METRICS = MetricGroup(
     description="OOS metrics use forward fill"
 )
 
+# Group I: Product Attributes (static per product)
+PRODUCT_ATTRIBUTES = MetricGroup(
+    name="Product Attributes",
+    columns=[
+        "number_of_items",      # Pack size
+        "price_per_unit",       # Per-unit price
+        "monthly_sold",         # Amazon's sold estimate
+        "seller_count",         # True seller count from sellerIds
+        "is_sns",               # Subscribe & Save eligibility
+    ],
+    fill_strategy="ffill",
+    default_value=1,  # Assume 1 for pack size
+    max_gap_limit=8,
+    description="Product attributes - mostly static"
+)
+
 # All metric groups
 ALL_METRIC_GROUPS = [
     FINANCIAL_METRICS,
     PERFORMANCE_METRICS,
     SOCIAL_COMPETITIVE_METRICS,
     BUYBOX_METRICS,
+    BUYBOX_FLAGS,       # NEW: Buy Box boolean flags
     VELOCITY_METRICS,
     COMPETITIVE_METRICS,
     AI_RISK_METRICS,
     OOS_METRICS,
+    PRODUCT_ATTRIBUTES, # NEW: Pack size, monthly_sold, etc.
 ]
 
 
@@ -447,7 +515,7 @@ def ensure_revenue_proxy(
         if 'avg_weekly_revenue' in df.columns:
             df['revenue_proxy'] = pd.to_numeric(df['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
             if verbose:
-                print(f"    → Created from avg_weekly_revenue (historical)")
+                print(f"    Created from avg_weekly_revenue (historical)")
         
         # Priority 2: price * monthly_units (from discovery/BSR formula)
         elif 'price' in df.columns and 'monthly_units' in df.columns:
@@ -456,7 +524,7 @@ def ensure_revenue_proxy(
                 pd.to_numeric(df['monthly_units'], errors='coerce').fillna(0)
             )
             if verbose:
-                print(f"    → Created from price × monthly_units")
+                print(f"    Created from price * monthly_units")
         
         # Priority 3: filled_price * estimated_units (dashboard columns)
         elif 'filled_price' in df.columns and 'estimated_units' in df.columns:
@@ -465,7 +533,7 @@ def ensure_revenue_proxy(
                 pd.to_numeric(df['estimated_units'], errors='coerce').fillna(0)
             )
             if verbose:
-                print(f"    → Created from filled_price × estimated_units")
+                print(f"    Created from filled_price * estimated_units")
         
         # Priority 4: buy_box_price * estimated_units
         elif 'buy_box_price' in df.columns and 'estimated_units' in df.columns:
@@ -474,13 +542,13 @@ def ensure_revenue_proxy(
                 pd.to_numeric(df['estimated_units'], errors='coerce').fillna(0)
             )
             if verbose:
-                print(f"    → Created from buy_box_price × estimated_units")
+                print(f"    Created from buy_box_price * estimated_units")
         
         # Last resort: default to 0
         else:
             df['revenue_proxy'] = 0.0
             if verbose:
-                print(f"    → No revenue sources found, defaulting to 0")
+                print(f"    No revenue sources found, defaulting to 0")
     else:
         # Column exists - ensure it's numeric
         df['revenue_proxy'] = pd.to_numeric(df['revenue_proxy'], errors='coerce').fillna(0)
@@ -495,6 +563,76 @@ def ensure_revenue_proxy(
         total_products = len(df)
         pct = products_with_revenue / total_products * 100 if total_products > 0 else 0
         print(f"  Revenue data quality: {products_with_revenue}/{total_products} ({pct:.0f}%) products have revenue")
+    
+    return df
+
+
+def apply_variation_deduplication(
+    df: pd.DataFrame,
+    verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Apply variation deduplication for BSR-derived metrics.
+    
+    When products share a parent_asin, they are variations of ONE listing.
+    They all inherit the parent's BSR, so BSR-derived metrics (revenue, units)
+    would be counted N times if we just sum. Fix: divide by sibling count.
+    
+    Example: ALOHA has 22 variations all sharing parent B0FP2N64VD with BSR=25
+    Without fix: 22 products × $72k each = $1.5M (22x overcounted)
+    With fix: $72k / 22 per product = $72k total (correct)
+    
+    Creates adjusted columns:
+    - revenue_proxy_adjusted: revenue divided by sibling count
+    - monthly_units_adjusted: units divided by sibling count
+    - _sibling_count: number of products sharing same parent
+    """
+    if df.empty:
+        df["revenue_proxy_adjusted"] = 0.0
+        df["monthly_units_adjusted"] = 0.0
+        df["_sibling_count"] = 1
+        return df
+    
+    if "parent_asin" in df.columns:
+        # Count siblings per parent ASIN (products with same parent)
+        valid_parents = df["parent_asin"].notna() & (df["parent_asin"] != "")
+        parent_counts = df[valid_parents].groupby("parent_asin").size()
+        
+        # Create sibling count column (default 1 for products without parent)
+        df["_sibling_count"] = df["parent_asin"].map(parent_counts).fillna(1).astype(int)
+        df.loc[~valid_parents, "_sibling_count"] = 1
+        
+        # Adjust revenue by dividing by sibling count
+        if "revenue_proxy" in df.columns:
+            df["revenue_proxy_adjusted"] = df["revenue_proxy"] / df["_sibling_count"]
+        else:
+            df["revenue_proxy_adjusted"] = 0.0
+        
+        # Also adjust units (also BSR-derived)
+        if "monthly_units" in df.columns:
+            df["monthly_units_adjusted"] = df["monthly_units"] / df["_sibling_count"]
+        elif "estimated_units" in df.columns:
+            df["monthly_units_adjusted"] = df["estimated_units"] / df["_sibling_count"]
+        else:
+            df["monthly_units_adjusted"] = 0.0
+        
+        # Adjust weekly sales if present
+        if "weekly_sales_filled" in df.columns:
+            df["weekly_sales_adjusted"] = df["weekly_sales_filled"] / df["_sibling_count"]
+        
+        if verbose:
+            products_with_siblings = (df["_sibling_count"] > 1).sum()
+            if products_with_siblings > 0:
+                print(f"  Variation deduplication: {products_with_siblings} products share parent ASINs")
+                avg_siblings = df[df["_sibling_count"] > 1]["_sibling_count"].mean()
+                print(f"    Average sibling count: {avg_siblings:.1f}")
+    else:
+        # No parent_asin column - use raw values
+        df["revenue_proxy_adjusted"] = df.get("revenue_proxy", 0)
+        df["monthly_units_adjusted"] = df.get("monthly_units", df.get("estimated_units", 0))
+        df["_sibling_count"] = 1
+        if verbose:
+            print("  Variation deduplication: No parent_asin column, using raw values")
     
     return df
 
@@ -516,6 +654,7 @@ def heal_market_snapshot(
     - Social: review_count, rating, new_offer_count
     - Competitive: competitor_oos_pct, price_gap_vs_competitor
     - AI: thirty_day_risk, thirty_day_growth, predictive_state
+    - Deduplication: revenue_proxy_adjusted, monthly_units_adjusted, _sibling_count
     """
     df = df.copy()
     
@@ -612,6 +751,80 @@ def heal_market_snapshot(
     else:
         df['amazon_bb_share'] = pd.to_numeric(df['amazon_bb_share'], errors='coerce').fillna(0.5)
     
+    # 8b. NEW BUY BOX METRICS (2026-01-21)
+    buybox_numeric_cols = {
+        'bb_stats_amazon_30': 0.5,
+        'bb_stats_amazon_90': 0.5,
+        'bb_stats_top_seller_30': 0.0,
+        'bb_seller_count_30': 0,
+        'bb_top_seller_30': 0.0,
+    }
+    for col, default in buybox_numeric_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    # 8c. BUY BOX BOOLEAN FLAGS - keep as None if unknown
+    buybox_bool_cols = ['buybox_is_amazon', 'buybox_is_fba', 'buybox_is_backorder', 
+                        'buybox_is_unqualified', 'has_amazon_seller']
+    for col in buybox_bool_cols:
+        if col not in df.columns:
+            df[col] = None  # None means "unknown"
+    
+    # 8d. SELLER COUNT (from sellerIds array)
+    if 'seller_count' not in df.columns:
+        # Fallback to new_offer_count if available
+        if 'new_offer_count' in df.columns:
+            df['seller_count'] = df['new_offer_count']
+        else:
+            df['seller_count'] = 1
+    else:
+        df['seller_count'] = pd.to_numeric(df['seller_count'], errors='coerce').fillna(1).astype(int)
+    
+    # 8e. OOS COUNTS (more actionable than %)
+    oos_count_cols = {
+        'oos_count_amazon_30': 0,
+        'oos_count_amazon_90': 0,
+        'oos_pct_30': 0.0,
+        'oos_pct_90': 0.0,
+    }
+    for col, default in oos_count_cols.items():
+        if col not in df.columns:
+            df[col] = default
+        else:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
+    
+    # 8f. VELOCITY (pre-calculated by Keepa)
+    velocity_cols = {'velocity_30d': None, 'velocity_90d': None}
+    for col, default in velocity_cols.items():
+        if col not in df.columns:
+            df[col] = default
+    
+    # 8g. PRODUCT ATTRIBUTES
+    if 'number_of_items' not in df.columns:
+        df['number_of_items'] = 1
+    else:
+        df['number_of_items'] = pd.to_numeric(df['number_of_items'], errors='coerce').fillna(1).clip(lower=1).astype(int)
+    
+    if 'monthly_sold' not in df.columns:
+        df['monthly_sold'] = 0
+    else:
+        df['monthly_sold'] = pd.to_numeric(df['monthly_sold'], errors='coerce').fillna(0).astype(int)
+    
+    if 'is_sns' not in df.columns:
+        df['is_sns'] = False
+    
+    if 'units_source' not in df.columns:
+        df['units_source'] = 'bsr_formula'
+    
+    # 8h. PRICE PER UNIT (for fair comparison across pack sizes)
+    if 'price_per_unit' not in df.columns:
+        if 'price' in df.columns and 'number_of_items' in df.columns:
+            df['price_per_unit'] = df['price'] / df['number_of_items'].clip(lower=1)
+        else:
+            df['price_per_unit'] = df.get('price', 0)
+    
     # 9. UNITS COLUMNS
     units_cols = {
         'monthly_units': 0.0,
@@ -628,6 +841,12 @@ def heal_market_snapshot(
         else:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(default)
     
+    # 10. VARIATION DEDUPLICATION
+    # When products share a parent_asin, they are variations of ONE listing.
+    # They all inherit the parent's BSR, so BSR-derived metrics (revenue, units)
+    # would be counted N times if we just sum. Fix: divide by sibling count.
+    df = apply_variation_deduplication(df, verbose=verbose)
+    
     if verbose:
         cols_created = []
         critical_cols = ['revenue_proxy', 'weekly_sales_filled', 'price', 'bsr', 
@@ -635,7 +854,7 @@ def heal_market_snapshot(
         for col in critical_cols:
             if col in df.columns:
                 non_null = df[col].notna().sum()
-                cols_created.append(f"  ✓ {col}: {non_null}/{len(df)} valid")
+                cols_created.append(f"  [OK] {col}: {non_null}/{len(df)} valid")
         print("\nColumn Status:")
         for status in cols_created:
             print(status)

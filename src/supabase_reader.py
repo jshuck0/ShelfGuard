@@ -386,44 +386,96 @@ def get_market_snapshot_from_cache(
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Build a market snapshot from cached data.
-    
+
     Separates "your" products (matching seed_brand) from competitors.
-    
+
     Args:
         project_asins: All ASINs in the project
         seed_brand: Brand to identify as "yours" (optional)
-        
+
     Returns:
         Tuple of (market_snapshot DataFrame, market_stats dict)
+        Note: Revenue values are converted to MONTHLY for consistency with discovery
     """
     df, stats = load_project_data(project_asins)
-    
+
     if df.empty:
         return df, {"total_revenue": 0, "your_revenue": 0, "competitor_revenue": 0}
-    
-    # Calculate market metrics
-    total_revenue = df["weekly_sales_filled"].sum() if "weekly_sales_filled" in df.columns else 0
-    
+
+    # Convert weekly revenue to monthly for display consistency
+    # Database stores estimated_weekly_revenue, but UI expects monthly
+    WEEKS_PER_MONTH = 4.33
+
+    # Create revenue_proxy column (monthly) from weekly_sales_filled
+    if "weekly_sales_filled" in df.columns:
+        df["revenue_proxy"] = df["weekly_sales_filled"] * WEEKS_PER_MONTH
+    elif "estimated_weekly_revenue" in df.columns:
+        df["revenue_proxy"] = df["estimated_weekly_revenue"] * WEEKS_PER_MONTH
+    else:
+        df["revenue_proxy"] = 0.0
+
+    # ==========================================================================
+    # VARIATION DEDUPLICATION: Prevent revenue overcounting for child variations
+    # ==========================================================================
+    # When products share the same parent_asin, they are variations of ONE listing.
+    # They all inherit the parent's BSR, so revenue would be counted N times if
+    # we just sum all products. Fix: divide revenue by sibling count.
+    #
+    # Example: ALOHA has 22 variations all sharing parent B0FP2N64VD with BSR=25
+    # Without fix: 22 products × $72k each = $1.5M (22x overcounted)
+    # With fix: $72k / 22 per product = $72k total (correct)
+    # ==========================================================================
+
+    if "parent_asin" in df.columns:
+        # Count siblings per parent ASIN (products with same parent)
+        parent_counts = df[df["parent_asin"].notna() & (df["parent_asin"] != "")].groupby("parent_asin").size()
+
+        # Create a sibling count column (default 1 for products without parent)
+        df["_sibling_count"] = df["parent_asin"].map(parent_counts).fillna(1).astype(int)
+        df.loc[df["parent_asin"].isna() | (df["parent_asin"] == ""), "_sibling_count"] = 1
+
+        # Adjust revenue by dividing by sibling count
+        # This ensures variations share the revenue instead of multiplying it
+        df["revenue_proxy_adjusted"] = df["revenue_proxy"] / df["_sibling_count"]
+        
+        # Also adjust units if present (also BSR-derived)
+        if "monthly_units" in df.columns:
+            df["monthly_units_adjusted"] = df["monthly_units"] / df["_sibling_count"]
+        elif "estimated_units" in df.columns:
+            df["monthly_units_adjusted"] = df["estimated_units"] / df["_sibling_count"]
+        else:
+            df["monthly_units_adjusted"] = 0.0
+    else:
+        df["revenue_proxy_adjusted"] = df["revenue_proxy"]
+        df["monthly_units_adjusted"] = df.get("monthly_units", df.get("estimated_units", 0))
+        df["_sibling_count"] = 1
+
+    # Calculate market metrics using ADJUSTED revenue (monthly values)
+    total_revenue = df["revenue_proxy_adjusted"].sum()
+    total_units = df["monthly_units_adjusted"].sum() if "monthly_units_adjusted" in df.columns else 0
+
     market_stats = {
-        "total_revenue": total_revenue,
+        "total_revenue": total_revenue,  # Monthly, deduplicated
+        "total_units": total_units,  # Monthly, deduplicated
         "total_products": len(df),
         "source": stats.get("source", "unknown")
     }
-    
+
     # Split by brand if seed_brand provided
     if seed_brand and "brand" in df.columns:
         df["is_yours"] = df["brand"].str.lower().str.contains(seed_brand.lower(), na=False)
         your_df = df[df["is_yours"]]
         competitor_df = df[~df["is_yours"]]
-        
-        market_stats["your_revenue"] = your_df["weekly_sales_filled"].sum() if not your_df.empty else 0
-        market_stats["competitor_revenue"] = competitor_df["weekly_sales_filled"].sum() if not competitor_df.empty else 0
+
+        # Use adjusted revenue for market share calculations
+        market_stats["your_revenue"] = your_df["revenue_proxy_adjusted"].sum() if not your_df.empty else 0
+        market_stats["competitor_revenue"] = competitor_df["revenue_proxy_adjusted"].sum() if not competitor_df.empty else 0
         market_stats["your_product_count"] = len(your_df)
         market_stats["competitor_product_count"] = len(competitor_df)
-        
+
         if total_revenue > 0:
             market_stats["market_share"] = (market_stats["your_revenue"] / total_revenue) * 100
-    
+
     return df, market_stats
 
 
@@ -511,22 +563,30 @@ def cache_market_snapshot(
             )
             
             # Extract revenue with proper fallback
+            # Priority: weekly_sales_filled (already weekly) > estimated_weekly_revenue (already weekly)
+            # Then fallback to revenue_proxy (MONTHLY - needs conversion)
             revenue_val = _get_first_valid(
                 row_dict,
-                ["weekly_sales_filled", "revenue_proxy", "estimated_weekly_revenue"],
+                ["weekly_sales_filled", "estimated_weekly_revenue"],
                 _safe_float
             )
-            
+
+            # If no weekly value found, check for monthly revenue_proxy and convert
+            if revenue_val is None:
+                monthly_revenue = _safe_float(row_dict.get("revenue_proxy"))
+                if monthly_revenue and monthly_revenue > 0:
+                    revenue_val = monthly_revenue / 4.33  # Convert monthly to weekly
+
             # Extract units with proper fallback
             units_val = _get_first_valid(
                 row_dict,
                 ["estimated_units", "monthly_units"],
                 _safe_int
             )
-            
+
             # If we have price and units but no revenue, calculate it
             if revenue_val is None and price_val and units_val:
-                revenue_val = price_val * units_val / 4  # Weekly from monthly
+                revenue_val = price_val * units_val / 4.33  # Weekly from monthly units
 
             # Extract additional metrics with fallback chains (use row_dict)
             bb_share_val = _get_first_valid(
@@ -579,7 +639,26 @@ def cache_market_snapshot(
                 "parent_asin": str(row_dict.get("parent_asin", "")) if row_dict.get("parent_asin") else None,
                 "main_image": str(row_dict.get("main_image", "")) if row_dict.get("main_image") else None,
                 "source": "discovery",
-                "fetched_at": datetime.now().isoformat()
+                "fetched_at": datetime.now().isoformat(),
+                # === NEW CRITICAL METRICS (2026-01-21) ===
+                "monthly_sold": _safe_int(row_dict.get("monthly_sold")),
+                "number_of_items": _safe_int(row_dict.get("number_of_items")) or 1,
+                "price_per_unit": _safe_float(row_dict.get("price_per_unit")),
+                "buybox_is_amazon": row_dict.get("buybox_is_amazon"),  # Keep as bool/None
+                "buybox_is_fba": row_dict.get("buybox_is_fba"),  # Keep as bool/None
+                "buybox_is_backorder": row_dict.get("buybox_is_backorder", False),
+                "has_amazon_seller": row_dict.get("has_amazon_seller"),  # Keep as bool/None
+                "seller_count": _safe_int(row_dict.get("seller_count")) or 1,
+                "oos_count_amazon_30": _safe_int(row_dict.get("oos_count_amazon_30")),
+                "oos_count_amazon_90": _safe_int(row_dict.get("oos_count_amazon_90")),
+                "oos_pct_30": _safe_float(row_dict.get("oos_pct_30")),
+                "oos_pct_90": _safe_float(row_dict.get("oos_pct_90")),
+                "velocity_30d": _safe_float(row_dict.get("velocity_30d")),
+                "velocity_90d": _safe_float(row_dict.get("velocity_90d")),
+                "bb_seller_count_30": _safe_int(row_dict.get("bb_seller_count_30")),
+                "bb_top_seller_30": _safe_float(row_dict.get("bb_top_seller_30")),
+                "units_source": str(row_dict.get("units_source", "bsr_formula")),
+                "is_sns": row_dict.get("is_sns", False),
             }
 
             # ENHANCEMENT 2.3: Add category metadata if provided (consolidates with accumulator)

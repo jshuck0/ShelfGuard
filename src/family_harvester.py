@@ -374,8 +374,8 @@ def _calculate_quality_score(product: Dict) -> float:
     """
     score = 0.0
     
-    # Review count (0-30 points) - index 16 per Keepa docs
-    review_count = product.get("stats", {}).get("current", [None] * 20)[16] or 0
+    # Review count (0-30 points) - index 17 in Keepa Python lib
+    review_count = product.get("stats", {}).get("current", [None] * 20)[17] or 0
     if review_count > 1000:
         score += 30
     elif review_count > 100:
@@ -385,8 +385,8 @@ def _calculate_quality_score(product: Dict) -> float:
     elif review_count > 0:
         score += 5
 
-    # Rating (0-20 points) - index 17 per Keepa docs
-    rating = product.get("stats", {}).get("current", [None] * 20)[17] or 0
+    # Rating (0-20 points) - index 16 in Keepa Python lib
+    rating = product.get("stats", {}).get("current", [None] * 20)[16] or 0
     if rating > 0:
         rating_stars = rating / 10  # Keepa stores as 45 = 4.5 stars
         score += min(20, rating_stars * 4)
@@ -451,9 +451,9 @@ def _is_valid_child(product: Dict) -> bool:
     stats = product.get("stats", {})
     current = stats.get("current", []) if stats else []
     
-    # Index 16 = review count, Index 17 = rating (per Keepa docs)
-    review_count = current[16] if len(current) > 16 and current[16] else 0
-    rating = current[17] if len(current) > 17 and current[17] else 0
+    # Index 17 = review count, Index 16 = rating (Keepa Python lib)
+    review_count = current[17] if len(current) > 17 and current[17] else 0
+    rating = current[16] if len(current) > 16 and current[16] else 0
     
     csv = product.get("csv", [])
     bsr = 0

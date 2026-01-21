@@ -59,6 +59,11 @@ def detect_trigger_events(
     events.extend(detect_price_power_events(asin, df_historical, df_competitors))
     events.extend(detect_momentum_events(asin, df_historical, lookback_days))
     events.extend(detect_seller_consolidation_events(asin, df_competitors))
+    
+    # === NEW: KEEPA INTELLIGENCE DETECTORS (2026-01-21) ===
+    events.extend(detect_amazon_supply_instability(asin, df_competitors))
+    events.extend(detect_backorder_crisis(asin, df_historical))
+    events.extend(detect_subscription_opportunity(asin, df_historical))
 
     # Sort by severity (highest first)
     events = sorted(events, key=lambda e: e.severity, reverse=True)
@@ -712,3 +717,150 @@ def get_top_triggers(
 ) -> List[TriggerEvent]:
     """Get top N triggers by severity."""
     return sorted(events, key=lambda e: e.severity, reverse=True)[:limit]
+
+
+# ========================================
+# NEW DETECTORS: KEEPA INTELLIGENCE (2026-01-21)
+# ========================================
+
+def detect_amazon_supply_instability(
+    asin: str,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect Amazon 1P supply instability using new Keepa metrics.
+    
+    Triggers when Amazon has gone OOS 3+ times in 30 days.
+    This is a HIGH-VALUE conquest opportunity.
+    
+    Uses:
+    - oos_count_amazon_30: Number of Amazon OOS events in 30 days
+    - buybox_is_amazon: Whether Amazon owns the Buy Box
+    - has_amazon_seller: Whether Amazon is a seller on the listing
+    """
+    events = []
+    
+    if df_competitors.empty:
+        return events
+    
+    # Check for Amazon OOS data in competitor listings
+    oos_col = 'oos_count_amazon_30'
+    amazon_bb_col = 'buybox_is_amazon'
+    has_amazon_col = 'has_amazon_seller'
+    
+    for _, row in df_competitors.iterrows():
+        comp_asin = row.get('asin', '')
+        if comp_asin == asin:
+            continue  # Skip self
+        
+        oos_count = row.get(oos_col, 0) or 0
+        amazon_owns_bb = row.get(amazon_bb_col, False)
+        has_amazon = row.get(has_amazon_col, False)
+        
+        # Amazon supply instability detected
+        if oos_count >= 3 and (amazon_owns_bb or has_amazon):
+            # Higher severity for more OOS events
+            if oos_count >= 7:
+                severity = 10  # Critical opportunity
+            elif oos_count >= 5:
+                severity = 9
+            else:
+                severity = 8
+            
+            events.append(TriggerEvent(
+                event_type="amazon_supply_unstable",
+                severity=severity,
+                detected_at=datetime.now(),
+                metric_name="oos_count_amazon_30",
+                baseline_value=0.0,  # Expected 0 OOS
+                current_value=float(oos_count),
+                delta_pct=float(oos_count) * 100,  # Each OOS = 100% signal strength
+                affected_asin=asin,
+                related_asin=comp_asin
+            ))
+    
+    return events
+
+
+def detect_backorder_crisis(
+    asin: str,
+    df_historical: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect backorder crisis using new Keepa metrics.
+    
+    Triggers when product is backordered - this is URGENT.
+    
+    Uses:
+    - buybox_is_backorder: Boolean flag from Keepa
+    """
+    events = []
+    
+    if df_historical.empty:
+        return events
+    
+    # Check most recent data point for backorder status
+    if 'buybox_is_backorder' in df_historical.columns:
+        latest = df_historical.iloc[-1] if len(df_historical) > 0 else None
+        
+        if latest is not None and latest.get('buybox_is_backorder', False):
+            events.append(TriggerEvent(
+                event_type="backorder_crisis",
+                severity=10,  # Maximum severity - this is URGENT
+                detected_at=datetime.now(),
+                metric_name="buybox_is_backorder",
+                baseline_value=0.0,  # Not backordered
+                current_value=1.0,  # Backordered
+                delta_pct=100.0,  # Full crisis
+                affected_asin=asin,
+                related_asin=None
+            ))
+    
+    return events
+
+
+def detect_subscription_opportunity(
+    asin: str,
+    df_historical: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect Subscribe & Save opportunity using new Keepa metrics.
+    
+    Triggers when product is S&S eligible and has strong fundamentals.
+    
+    Uses:
+    - is_sns: Boolean flag from Keepa
+    - revenue/rank metrics for validation
+    """
+    events = []
+    
+    if df_historical.empty:
+        return events
+    
+    # Check if product is S&S eligible
+    if 'is_sns' in df_historical.columns:
+        latest = df_historical.iloc[-1] if len(df_historical) > 0 else None
+        
+        if latest is not None and latest.get('is_sns', False):
+            # Check if product has good fundamentals (worth pushing S&S)
+            revenue = latest.get('weekly_sales_filled', latest.get('revenue_proxy', 0)) or 0
+            rank = latest.get('sales_rank_filled', latest.get('sales_rank', 999999)) or 999999
+            
+            # Only trigger for products worth the effort
+            if revenue > 2000 or rank < 1000:
+                # Estimate subscription opportunity (5-10% conversion)
+                sns_opportunity = revenue * 0.08 * 4.33  # 8% * monthly
+                
+                events.append(TriggerEvent(
+                    event_type="subscription_opportunity",
+                    severity=5,  # Lower severity - opportunity, not urgent
+                    detected_at=datetime.now(),
+                    metric_name="is_sns",
+                    baseline_value=0.0,
+                    current_value=sns_opportunity,  # Estimated $ opportunity
+                    delta_pct=8.0,  # 8% conversion estimate
+                    affected_asin=asin,
+                    related_asin=None
+                ))
+    
+    return events

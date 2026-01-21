@@ -49,8 +49,8 @@ IDX_AMAZON = 0
 IDX_NEW_FBA = 10
 IDX_SALES_RANK = 3
 IDX_BUY_BOX = 18
-IDX_COUNT_REVIEWS = 16  # Review count
-IDX_RATING = 17         # Rating (stored as rating*10, e.g., 45 = 4.5 stars)
+IDX_RATING = 16         # Rating (Keepa Python lib: csv[16] = rating*10)
+IDX_COUNT_REVIEWS = 17  # Review count (Keepa Python lib: csv[17] = review count)
 
 
 def keepa_minutes_to_unix(keepa_minutes: int) -> int:

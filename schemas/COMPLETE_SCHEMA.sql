@@ -515,6 +515,48 @@ ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS competitor_oos_pct NUMERI
 ALTER TABLE historical_metrics ADD COLUMN IF NOT EXISTS filled_price NUMERIC(10, 2);
 ALTER TABLE historical_metrics ADD COLUMN IF NOT EXISTS sales_rank_filled INTEGER;
 
+-- ========================================
+-- PART 2D: NEW KEEPA METRICS (2026-01-21)
+-- ========================================
+-- Critical metrics from full Keepa API audit
+
+-- Amazon's monthly sold estimate (more accurate than BSR formula)
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS monthly_sold INTEGER;
+
+-- Pack size for per-unit price normalization
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS number_of_items INTEGER DEFAULT 1;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS price_per_unit NUMERIC(10, 2);
+
+-- Buy Box ownership flags
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS buybox_is_amazon BOOLEAN;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS buybox_is_fba BOOLEAN;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS buybox_is_backorder BOOLEAN DEFAULT FALSE;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS has_amazon_seller BOOLEAN;
+
+-- OOS event counts (more actionable than %)
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS oos_count_amazon_30 INTEGER DEFAULT 0;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS oos_count_amazon_90 INTEGER DEFAULT 0;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS oos_pct_30 NUMERIC(5, 4) DEFAULT 0;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS oos_pct_90 NUMERIC(5, 4) DEFAULT 0;
+
+-- Pre-calculated velocity from Keepa
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS velocity_30d NUMERIC(7, 2);
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS velocity_90d NUMERIC(7, 2);
+
+-- Buy Box competition metrics
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS bb_seller_count_30 INTEGER DEFAULT 0;
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS bb_top_seller_30 NUMERIC(5, 4);
+
+-- Units source tracking
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS units_source TEXT DEFAULT 'bsr_formula';
+
+-- Subscribe & Save eligibility
+ALTER TABLE product_snapshots ADD COLUMN IF NOT EXISTS is_sns BOOLEAN DEFAULT FALSE;
+
+-- Create index for velocity-based queries
+CREATE INDEX IF NOT EXISTS idx_snapshots_velocity ON product_snapshots(velocity_30d DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_snapshots_monthly_sold ON product_snapshots(monthly_sold DESC NULLS LAST);
+
 
 -- ========================================
 -- PART 3: HELPER FUNCTIONS & VIEWS

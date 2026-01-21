@@ -492,19 +492,23 @@ def render_discovery_ui() -> None:
 
     with tab1:
         # Donut chart showing revenue distribution
-        # Clean data: remove rows with NaN revenue_proxy
+        # Use revenue_proxy_adjusted to account for variation deduplication
+        # This prevents variations from appearing as separate products with inflated revenue
         pie_data = market_snapshot.head(20).copy()
-        pie_data = pie_data.dropna(subset=["revenue_proxy", "title"])
-        pie_data = pie_data[pie_data["revenue_proxy"] > 0]  # Only show products with revenue
+        
+        # Use adjusted revenue if available (for variation deduplication)
+        revenue_col = "revenue_proxy_adjusted" if "revenue_proxy_adjusted" in pie_data.columns else "revenue_proxy"
+        pie_data = pie_data.dropna(subset=[revenue_col, "title"])
+        pie_data = pie_data[pie_data[revenue_col] > 0]  # Only show products with revenue
         
         if pie_data.empty:
             st.warning("⚠️ No valid revenue data for pie chart")
         else:
             fig = px.pie(
                 pie_data,
-                values="revenue_proxy",
+                values=revenue_col,
                 names="title",
-                title="Revenue Distribution (Top 20 ASINs)",
+                title="Revenue Distribution (Top 20 ASINs)" + (" (deduplicated)" if revenue_col == "revenue_proxy_adjusted" else ""),
                 hole=0.4
             )
             fig.update_layout(height=500)
@@ -1079,8 +1083,11 @@ def render_user_dashboard() -> None:
                 
                 if not df_current.empty:
                     # Calculate basic metrics from the weekly data
-                    total_rev_curr = df_current["weekly_sales_filled"].sum() if "weekly_sales_filled" in df_current.columns else 0
-                    total_units = df_current["estimated_units"].sum() if "estimated_units" in df_current.columns else 0
+                    # Use adjusted values for aggregations to account for variation deduplication
+                    rev_col = "weekly_sales_adjusted" if "weekly_sales_adjusted" in df_current.columns else "weekly_sales_filled"
+                    units_col = "estimated_units_adjusted" if "estimated_units_adjusted" in df_current.columns else "estimated_units"
+                    total_rev_curr = df_current[rev_col].sum() if rev_col in df_current.columns else 0
+                    total_units = df_current[units_col].sum() if units_col in df_current.columns else 0
                     avg_price = df_current["filled_price"].mean() if "filled_price" in df_current.columns else 0
                     avg_bsr = df_current["sales_rank_filled"].mean() if "sales_rank_filled" in df_current.columns else 0
                     num_products = df_current["asin"].nunique()
@@ -1134,7 +1141,9 @@ def render_user_dashboard() -> None:
                         st.markdown("---")
                         st.markdown("### 📈 Weekly Revenue Trend")
                         
-                        weekly_rev = df_weekly.groupby(df_weekly["week_start"].dt.date)["weekly_sales_filled"].sum().reset_index()
+                        # Use adjusted values for trend to account for variation deduplication
+                        trend_rev_col = "weekly_sales_adjusted" if "weekly_sales_adjusted" in df_weekly.columns else "weekly_sales_filled"
+                        weekly_rev = df_weekly.groupby(df_weekly["week_start"].dt.date)[trend_rev_col].sum().reset_index()
                         weekly_rev.columns = ["Week", "Revenue"]
                         weekly_rev = weekly_rev.sort_values("Week")
                         
@@ -1157,12 +1166,16 @@ def render_user_dashboard() -> None:
     tab1, tab2, tab3 = st.tabs(["📈 Market Share", "💰 Price vs BSR", "📋 Top 20 ASINs"])
     
     with tab1:
-        if not market_snapshot.empty and "revenue_proxy" in market_snapshot.columns:
+        # Use adjusted revenue for pie charts to account for variation deduplication
+        revenue_col = "revenue_proxy_adjusted" if "revenue_proxy_adjusted" in market_snapshot.columns else "revenue_proxy"
+        if not market_snapshot.empty and revenue_col in market_snapshot.columns:
+            pie_data = market_snapshot.head(20).copy()
+            pie_data = pie_data[pie_data[revenue_col] > 0]  # Filter out zero revenue
             fig = px.pie(
-                market_snapshot.head(20),
-                values="revenue_proxy",
-                names="title" if "title" in market_snapshot.columns else "asin",
-                title="Revenue Distribution (Top 20 ASINs)",
+                pie_data,
+                values=revenue_col,
+                names="title" if "title" in pie_data.columns else "asin",
+                title="Revenue Distribution (Top 20 ASINs)" + (" (deduplicated)" if revenue_col == "revenue_proxy_adjusted" else ""),
                 hole=0.4
             )
             fig.update_layout(height=500)

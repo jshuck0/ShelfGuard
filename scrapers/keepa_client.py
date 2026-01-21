@@ -15,8 +15,8 @@ IDX_NEW_FBM = 7
 IDX_BUY_BOX = 18
 IDX_COUNT_NEW = 11
 IDX_COUNT_USED = 12
-IDX_COUNT_REVIEWS = 16
-IDX_RATING = 17
+IDX_RATING = 16          # Keepa Python lib: csv[16] = rating (stored as rating*10)
+IDX_COUNT_REVIEWS = 17   # Keepa Python lib: csv[17] = review count
 
 SERIES_MAP = {
     IDX_AMAZON: ("amazon_price", "price"),
@@ -149,6 +149,49 @@ def extract_weekly_facts(product, window_start=None):
     pkg_weight = product.get("packageWeight", 0)
     dims = [product.get("packageHeight", 0), product.get("packageLength", 0), product.get("packageWidth", 0)]
     pkg_vol_cf = np.prod(dims) * 3.53147e-8 if all(dims) else 0.05
+    
+    # === NEW CRITICAL METRICS (2026-01-21) ===
+    # Amazon's actual monthly sold estimate (much better than BSR formula!)
+    monthly_sold = product.get("monthlySold", 0) or 0
+    
+    # Pack size for per-unit normalization
+    number_of_items = product.get("numberOfItems", 1) or 1
+    
+    # Buy Box ownership flags
+    buybox_is_amazon = product.get("buyBoxIsAmazon", None)
+    buybox_is_fba = product.get("buyBoxIsFBA", None)
+    buybox_is_backorder = product.get("buyBoxIsBackorder", False) or False
+    buybox_is_unqualified = product.get("buyBoxIsUnqualified", False) or False
+    
+    # Seller IDs array - for true competitor count
+    seller_ids_raw = product.get("sellerIds", []) or []
+    seller_count = len(seller_ids_raw) if seller_ids_raw else 0
+    has_amazon_seller = AMAZON_RETAIL_ID in seller_ids_raw if seller_ids_raw else False
+    
+    # Stats object for pre-calculated metrics
+    stats = product.get("stats", {}) or {}
+    
+    # OOS counts (more useful than just percentage)
+    oos_count_amazon_30 = stats.get("outOfStockCountAmazon30", 0) or 0
+    oos_count_amazon_90 = stats.get("outOfStockCountAmazon90", 0) or 0
+    oos_pct_30 = stats.get("outOfStockPercentage30", 0) or 0
+    oos_pct_90 = stats.get("outOfStockPercentage90", 0) or 0
+    
+    # Buy Box stats from Keepa (backup to our calculation)
+    bb_stats_amazon_30 = stats.get("buyBoxStatsAmazon30", None)
+    bb_stats_amazon_90 = stats.get("buyBoxStatsAmazon90", None)
+    bb_stats_top_seller_30 = stats.get("buyBoxStatsTopSeller30", None)
+    bb_stats_seller_count_30 = stats.get("buyBoxStatsSellerCount30", None)
+    
+    # Velocity deltas (pre-calculated by Keepa)
+    delta_pct_30 = stats.get("deltaPercent30", [])
+    delta_pct_90 = stats.get("deltaPercent90", [])
+    # BSR is at index 3
+    velocity_30d = delta_pct_30[3] if delta_pct_30 and len(delta_pct_30) > 3 and delta_pct_30[3] is not None else None
+    velocity_90d = delta_pct_90[3] if delta_pct_90 and len(delta_pct_90) > 3 and delta_pct_90[3] is not None else None
+    
+    # Subscribe & Save eligibility
+    is_sns = product.get("isSNS", False) or False
 
     csv_data = product.get("csv", {})
     limit_ts = to_week_start(pd.Timestamp(window_start or "2023-01-01"))
@@ -200,6 +243,7 @@ def extract_weekly_facts(product, window_start=None):
     all_weeks = pd.date_range(start=limit_ts, end=grid_end, freq="7D")
     out = out.set_index("week_start").reindex(all_weeks).rename_axis("week_start").reset_index()
 
+    # Core metadata (inserted at start)
     meta = [
         ("asin", asin), ("parent_asin", p_asin), ("title", title), 
         ("brand", brand), ("manufacturer", manufacturer), 
@@ -208,6 +252,29 @@ def extract_weekly_facts(product, window_start=None):
         ("package_vol_cf", pkg_vol_cf)
     ]
     for c, val in meta: out.insert(0, c, val)
+    
+    # === NEW CRITICAL METRICS - Added as columns (2026-01-21) ===
+    # These are product-level (not time-series), so same value for all weeks
+    out["monthly_sold"] = monthly_sold
+    out["number_of_items"] = number_of_items
+    out["buybox_is_amazon"] = buybox_is_amazon
+    out["buybox_is_fba"] = buybox_is_fba
+    out["buybox_is_backorder"] = buybox_is_backorder
+    out["buybox_is_unqualified"] = buybox_is_unqualified
+    out["seller_count"] = seller_count
+    out["has_amazon_seller"] = has_amazon_seller
+    out["oos_count_amazon_30"] = oos_count_amazon_30
+    out["oos_count_amazon_90"] = oos_count_amazon_90
+    out["oos_pct_30"] = oos_pct_30 / 100.0 if oos_pct_30 > 1 else oos_pct_30  # Normalize
+    out["oos_pct_90"] = oos_pct_90 / 100.0 if oos_pct_90 > 1 else oos_pct_90  # Normalize
+    out["bb_stats_amazon_30"] = bb_stats_amazon_30 / 100.0 if bb_stats_amazon_30 and bb_stats_amazon_30 > 1 else bb_stats_amazon_30
+    out["bb_stats_amazon_90"] = bb_stats_amazon_90 / 100.0 if bb_stats_amazon_90 and bb_stats_amazon_90 > 1 else bb_stats_amazon_90
+    out["bb_stats_top_seller_30"] = bb_stats_top_seller_30 / 100.0 if bb_stats_top_seller_30 and bb_stats_top_seller_30 > 1 else bb_stats_top_seller_30
+    out["bb_stats_seller_count_30"] = bb_stats_seller_count_30
+    out["velocity_30d"] = velocity_30d
+    out["velocity_90d"] = velocity_90d
+    out["is_sns"] = is_sns
+    
     return out
 
 def build_keepa_weekly_table(products, window_start=None):
@@ -253,12 +320,34 @@ def build_keepa_weekly_table(products, window_start=None):
     asin_mean_bsr = df.groupby("asin")["sales_rank_filled"].transform("mean")
     df["sales_rank_filled"] = df["sales_rank_filled"].fillna(asin_mean_bsr).fillna(100000)
 
-    # CALIBRATED FOR GROCERY VELOCITY
-    monthly_units = (145000.0 * (df["sales_rank_filled"].clip(lower=1) ** -0.9))
+    # === UNITS ESTIMATION: Prefer Amazon's monthlySold over BSR formula ===
+    # monthlySold is Amazon's actual estimate (when available) - much more accurate!
+    # Fallback to BSR formula when monthlySold is not available
+    
+    # BSR-based estimate (CALIBRATED FOR GROCERY VELOCITY)
+    bsr_monthly_units = (145000.0 * (df["sales_rank_filled"].clip(lower=1) ** -0.9))
+    
+    # Use monthlySold if available and > 0, otherwise use BSR formula
+    if "monthly_sold" in df.columns:
+        # Prefer Amazon's estimate, fallback to BSR formula
+        df["monthly_units"] = df["monthly_sold"].where(
+            df["monthly_sold"] > 0, 
+            bsr_monthly_units
+        )
+        df["units_source"] = np.where(df["monthly_sold"] > 0, "amazon_monthly_sold", "bsr_formula")
+    else:
+        df["monthly_units"] = bsr_monthly_units
+        df["units_source"] = "bsr_formula"
 
     # SCALE TO WEEKLY BUCKET
-    df["estimated_units"] = monthly_units * (7 / 30)
+    df["estimated_units"] = df["monthly_units"] * (7 / 30)
     df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
+    
+    # Per-unit price (for fair comparison across pack sizes)
+    if "number_of_items" in df.columns:
+        df["price_per_unit"] = df["filled_price"] / df["number_of_items"].clip(lower=1)
+    else:
+        df["price_per_unit"] = df["filled_price"]
     
     # === DATA HEALER INTEGRATION ===
     # Apply comprehensive gap-filling for ALL metrics before data reaches AI

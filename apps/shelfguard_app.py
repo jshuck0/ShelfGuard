@@ -89,6 +89,175 @@ if OPENAI_SYNC_AVAILABLE:
 _METRICS_PATTERN = re.compile(r'\$[\d,]+|\d+\.\d+%|\d+ products')
 
 
+# ========================================
+# VISUALIZATION HELPERS
+# ========================================
+
+def generate_mini_sparkline(values: list, width: int = 60, height: int = 20, color: str = "#007bff") -> str:
+    """
+    Generate an inline SVG sparkline from a list of values.
+    
+    Returns base64-encoded SVG for embedding in HTML.
+    
+    Args:
+        values: List of numeric values (e.g., prices or ranks over time)
+        width: SVG width in pixels
+        height: SVG height in pixels
+        color: Line color (hex or CSS color name)
+    
+    Returns:
+        HTML img tag with embedded SVG sparkline
+    """
+    if not values or len(values) < 2:
+        return ""
+    
+    # Filter out None/NaN values
+    clean_values = [v for v in values if v is not None and not (isinstance(v, float) and pd.isna(v))]
+    if len(clean_values) < 2:
+        return ""
+    
+    # Normalize values to fit in the SVG
+    min_val = min(clean_values)
+    max_val = max(clean_values)
+    value_range = max_val - min_val if max_val != min_val else 1
+    
+    # Generate path points
+    points = []
+    for i, val in enumerate(clean_values):
+        x = (i / (len(clean_values) - 1)) * width
+        y = height - ((val - min_val) / value_range) * (height - 4) - 2  # 2px padding
+        points.append(f"{x:.1f},{y:.1f}")
+    
+    path_d = "M" + " L".join(points)
+    
+    # Determine trend color (green if trending up, red if down)
+    if clean_values[-1] < clean_values[0]:
+        trend_color = "#28a745"  # Green - good for price (lower), or rank (lower is better)
+    elif clean_values[-1] > clean_values[0]:
+        trend_color = "#dc3545"  # Red - price up or rank worse
+    else:
+        trend_color = color
+    
+    svg = f'''<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+        <path d="{path_d}" fill="none" stroke="{trend_color}" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>'''
+    
+    import base64
+    encoded = base64.b64encode(svg.encode()).decode()
+    return f'<img src="data:image/svg+xml;base64,{encoded}" style="vertical-align: middle; margin-left: 4px;"/>'
+
+
+def get_velocity_badge(velocity_30d: float, velocity_90d: float = None) -> str:
+    """
+    Generate HTML badge showing velocity trend with directional indicator.
+    
+    Args:
+        velocity_30d: 30-day velocity change (positive = accelerating, negative = declining)
+        velocity_90d: Optional 90-day velocity for context
+    
+    Returns:
+        HTML span with velocity badge
+    """
+    if velocity_30d is None or pd.isna(velocity_30d):
+        return ""
+    
+    # Determine trend direction and color
+    if velocity_30d >= 0.15:  # 15%+ acceleration
+        arrow = "↑↑"
+        label = "HOT"
+        bg_color = "#28a745"
+        text_color = "#fff"
+    elif velocity_30d >= 0.05:  # 5%+ growth
+        arrow = "↑"
+        label = "RISING"
+        bg_color = "#d4edda"
+        text_color = "#155724"
+    elif velocity_30d <= -0.15:  # 15%+ decline
+        arrow = "↓↓"
+        label = "COLD"
+        bg_color = "#dc3545"
+        text_color = "#fff"
+    elif velocity_30d <= -0.05:  # 5%+ decline
+        arrow = "↓"
+        label = "FALLING"
+        bg_color = "#f8d7da"
+        text_color = "#721c24"
+    else:  # Stable (-5% to +5%)
+        arrow = "→"
+        label = "STABLE"
+        bg_color = "#e9ecef"
+        text_color = "#495057"
+    
+    pct = f"{velocity_30d*100:+.0f}%"
+    
+    return f'''<span style="
+        font-size: 9px; 
+        background: {bg_color}; 
+        color: {text_color}; 
+        padding: 2px 6px; 
+        border-radius: 3px; 
+        margin-left: 6px;
+        font-weight: 600;
+    ">{arrow} {label} ({pct})</span>'''
+
+
+def format_trigger_timeline(triggers: list, max_events: int = 5) -> str:
+    """
+    Format trigger events as a compact timeline HTML.
+    
+    Args:
+        triggers: List of TriggerEvent objects
+        max_events: Maximum events to display
+    
+    Returns:
+        HTML string with trigger timeline
+    """
+    if not triggers:
+        return ""
+    
+    events_html = []
+    for t in triggers[:max_events]:
+        # Severity-based styling
+        if t.severity >= 8:
+            severity_color = "#dc3545"  # Critical
+            severity_icon = "🔴"
+        elif t.severity >= 6:
+            severity_color = "#ffc107"  # Warning
+            severity_icon = "🟡"
+        else:
+            severity_color = "#28a745"  # Opportunity
+            severity_icon = "🟢"
+        
+        # Event nature styling
+        nature_badge = ""
+        if hasattr(t, 'nature'):
+            if t.nature == "THREAT":
+                nature_badge = '<span style="font-size: 8px; color: #dc3545;">THREAT</span>'
+            elif t.nature == "OPPORTUNITY":
+                nature_badge = '<span style="font-size: 8px; color: #28a745;">OPP</span>'
+        
+        delta_str = f"{t.delta_pct:+.1f}%" if hasattr(t, 'delta_pct') and t.delta_pct else ""
+        
+        events_html.append(f'''
+            <div style="font-size: 10px; padding: 4px 0; border-bottom: 1px solid #eee;">
+                <span style="color: {severity_color};">{severity_icon}</span>
+                <strong>{t.event_type}</strong>: {t.metric_name} 
+                <span style="color: #666;">{delta_str}</span>
+                {nature_badge}
+            </div>
+        ''')
+    
+    if len(triggers) > max_events:
+        events_html.append(f'<div style="font-size: 9px; color: #999; padding-top: 4px;">+{len(triggers) - max_events} more events</div>')
+    
+    return f'''
+        <div style="background: #f8f9fa; border-radius: 6px; padding: 8px; margin-top: 8px;">
+            <div style="font-size: 10px; font-weight: 600; color: #333; margin-bottom: 4px;">📅 Recent Market Events</div>
+            {''.join(events_html)}
+        </div>
+    '''
+
+
 def get_product_strategy(row: dict, revenue: float = 0, use_triangulation: bool = True, strategic_bias: str = "Balanced Defense",
                          enable_triggers: bool = False, enable_network: bool = False,
                          competitors_df: pd.DataFrame = None) -> dict:
@@ -1027,13 +1196,19 @@ with main_tab1:
                         st.metric("Avg Sellers/Listing", f"{avg_offer_count:.1f}")
                         
                         # Compare your portfolio average to category
-                        if 'new_offer_count' in portfolio_df.columns:
+                        # Prefer seller_count (from sellerIds) over new_offer_count
+                        if 'seller_count' in portfolio_df.columns and not portfolio_df['seller_count'].isna().all():
+                            your_avg_offers = portfolio_df['seller_count'].mean()
+                        elif 'new_offer_count' in portfolio_df.columns:
                             your_avg_offers = portfolio_df['new_offer_count'].mean()
-                            if your_avg_offers and your_avg_offers > 0:
-                                offer_diff_pct = ((your_avg_offers / avg_offer_count) - 1) * 100
-                                # Lower seller count is better (less competition)
-                                offer_indicator = "🟢" if offer_diff_pct < -20 else "🟡" if offer_diff_pct < 20 else "🔴"
-                                st.caption(f"{offer_indicator} Your avg: {your_avg_offers:.1f} ({offer_diff_pct:+.1f}%)")
+                        else:
+                            your_avg_offers = None
+                            
+                        if your_avg_offers and your_avg_offers > 0:
+                            offer_diff_pct = ((your_avg_offers / avg_offer_count) - 1) * 100
+                            # Lower seller count is better (less competition)
+                            offer_indicator = "🟢" if offer_diff_pct < -20 else "🟡" if offer_diff_pct < 20 else "🔴"
+                            st.caption(f"{offer_indicator} Your avg: {your_avg_offers:.1f} ({offer_diff_pct:+.1f}%)")
 
                 # Additional network stats
                 st.markdown("---")
@@ -1377,6 +1552,39 @@ with main_tab1:
                             opp_type = str(p.get('opportunity_type', '')).replace('_', ' ').title()
                             top_growth_lines += f"    - {p['asin']}: ${p['thirty_day_growth']:.0f}/mo upside ({opp_type}) - {title_short}\n"
             
+            # Extract new intelligence signals from enriched data
+            amazon_1p_count = 0
+            backorder_count = 0
+            amazon_unstable_count = 0
+            sns_count = 0
+            subscribe_opps = 0
+            amazon_conquest_opps = 0
+            
+            if not enriched_portfolio_df.empty:
+                if 'amazon_1p_competitor' in enriched_portfolio_df.columns:
+                    amazon_1p_count = enriched_portfolio_df['amazon_1p_competitor'].sum()
+                if 'buybox_is_backorder' in enriched_portfolio_df.columns:
+                    backorder_count = enriched_portfolio_df['buybox_is_backorder'].fillna(False).sum()
+                if 'amazon_unstable' in enriched_portfolio_df.columns:
+                    amazon_unstable_count = enriched_portfolio_df['amazon_unstable'].sum()
+                if 'sns_eligible' in enriched_portfolio_df.columns:
+                    sns_count = enriched_portfolio_df['sns_eligible'].sum()
+                if 'opportunity_type' in enriched_portfolio_df.columns:
+                    subscribe_opps = (enriched_portfolio_df['opportunity_type'] == 'SUBSCRIBE').sum()
+                if 'predictive_state' in enriched_portfolio_df.columns:
+                    amazon_conquest_opps = ((enriched_portfolio_df['predictive_state'] == 'EXPLOIT') & (enriched_portfolio_df.get('amazon_unstable', False) == True)).sum()
+            
+            # Build intelligence signals section
+            intel_signals = ""
+            if amazon_1p_count > 0:
+                intel_signals += f"\n    - Amazon 1P Competition: {amazon_1p_count} products facing Amazon as competitor"
+            if backorder_count > 0:
+                intel_signals += f"\n    - SUPPLY CRISIS: {backorder_count} products BACKORDERED (urgent action needed)"
+            if amazon_unstable_count > 0:
+                intel_signals += f"\n    - Amazon OOS Opportunity: {amazon_unstable_count} products have Amazon supply unstable (conquest target)"
+            if sns_count > 0:
+                intel_signals += f"\n    - Subscribe & Save: {sns_count} products eligible for subscription push"
+            
             # Build summary for LLM showing brand performance, risk, and growth opportunities
             portfolio_summary = f"""
     BRAND PERFORMANCE ANALYSIS:
@@ -1401,6 +1609,8 @@ with main_tab1:
     - Price Lift Opportunities: {price_lift_count} products
     - Conquest Opportunities: {conquest_count} products (competitors vulnerable)
     - Strategic Focus: {strategic_bias}
+
+    INTELLIGENCE SIGNALS:{intel_signals if intel_signals else " (No special signals detected)"}
     {top_risk_lines}{top_growth_lines}
     NOTE: Risk is distributed across {defend_count} products, not concentrated in 1-2 products.
     """
@@ -1428,16 +1638,30 @@ with main_tab1:
                 # Fallback to rule-based brief (Brand vs Market + Predictive Intelligence)
                 brief_parts = []
                 
+                # URGENT: Backorder/Supply crisis alerts (highest priority)
+                if backorder_count > 0:
+                    brief_parts.append(f"**URGENT: {backorder_count} products BACKORDERED** — supply chain action required immediately.")
+                
                 # Risk alerts
                 if risk_pct > 15:
                     brief_parts.append(f"**{f_money(thirty_day_risk)} at risk** over next 30 days ({risk_pct:.0f}% of revenue) — {defend_count} products need defensive action.")
                 
-                # Growth opportunities
+                # Growth opportunities (prioritize Amazon conquest)
                 if thirty_day_growth > 0:
-                    if conquest_count > 0:
+                    if amazon_unstable_count > 0:
+                        brief_parts.append(f"**{f_money(thirty_day_growth)} conquest opportunity** — Amazon supply unstable on {amazon_unstable_count} products. Attack now!")
+                    elif conquest_count > 0:
                         brief_parts.append(f"**{f_money(thirty_day_growth)} growth opportunity** identified — {conquest_count} competitors vulnerable to conquest.")
                     elif price_lift_count > 0:
                         brief_parts.append(f"**{f_money(thirty_day_growth)} upside** via price optimization across {price_lift_count} products.")
+                
+                # Amazon 1P competition warning
+                if amazon_1p_count > 0:
+                    brief_parts.append(f"**Amazon 1P competition** detected on {amazon_1p_count} products — differentiate on brand value.")
+                
+                # S&S opportunity
+                if sns_count > 0 and subscribe_opps > 0:
+                    brief_parts.append(f"**{sns_count} products S&S eligible** — push subscription messaging for recurring revenue.")
                 
                 # Market position
                 if portfolio_product_count > 0 and your_market_share < 30:
@@ -2183,46 +2407,86 @@ with main_tab1:
                 st.markdown("### 🥊 Competitive Landscape")
             
             # Calculate competitive metrics (with safe fallbacks)
-            # FIXED: Use new_offer_count for "sellers per SKU", not competitor products
+            # FIXED: Use seller_count (from sellerIds) - more accurate than new_offer_count
             try:
-                # Sellers per SKU = average new_offer_count across your products
-                if 'new_offer_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['new_offer_count'].isna().all():
+                # Sellers per SKU = average seller_count across your products
+                # Prefer seller_count (from Keepa's sellerIds array) over new_offer_count
+                if 'seller_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['seller_count'].isna().all():
+                    avg_sellers_per_sku = float(enriched_portfolio_df['seller_count'].mean())
+                elif 'new_offer_count' in enriched_portfolio_df.columns and not enriched_portfolio_df['new_offer_count'].isna().all():
                     avg_sellers_per_sku = float(enriched_portfolio_df['new_offer_count'].mean())
                 else:
                     avg_sellers_per_sku = 1  # Default: at least 1 seller (you)
             except:
                 avg_sellers_per_sku = 1
             
-            # FIXED: Calculate actual price gap from your avg price vs competitor avg price
+            # FIXED: Calculate price gap with pack size normalization (use price_per_unit when available)
+            price_gap_normalized = False
             try:
-                price_col = 'buy_box_price' if 'buy_box_price' in enriched_portfolio_df.columns else 'price' if 'price' in enriched_portfolio_df.columns else None
-                if price_col and price_col in market_snapshot.columns:
-                    # Your average price
-                    your_avg_price = enriched_portfolio_df[price_col].mean() if price_col in enriched_portfolio_df.columns else 0
-                    # Competitor average price (non-your-brand products)
-                    competitor_prices = market_snapshot.loc[~market_snapshot['is_your_brand'], price_col] if 'is_your_brand' in market_snapshot.columns else market_snapshot[price_col]
-                    competitor_avg_price = competitor_prices.mean() if len(competitor_prices) > 0 else 0
-                    # Gap = your price - competitor price
-                    avg_price_gap = your_avg_price - competitor_avg_price if competitor_avg_price > 0 else 0
+                # Prefer price_per_unit for fair comparison across pack sizes
+                if 'price_per_unit' in enriched_portfolio_df.columns and 'price_per_unit' in market_snapshot.columns:
+                    your_ppu = enriched_portfolio_df['price_per_unit'].dropna()
+                    if len(your_ppu) > 0 and your_ppu.mean() > 0:
+                        your_avg_price = your_ppu.mean()
+                        # Competitor average (non-your-brand)
+                        if 'is_your_brand' in market_snapshot.columns:
+                            competitor_ppu = market_snapshot.loc[~market_snapshot['is_your_brand'], 'price_per_unit'].dropna()
+                        else:
+                            competitor_ppu = market_snapshot['price_per_unit'].dropna()
+                        competitor_avg_price = competitor_ppu.mean() if len(competitor_ppu) > 0 else 0
+                        avg_price_gap = your_avg_price - competitor_avg_price if competitor_avg_price > 0 else 0
+                        price_gap_normalized = True
+                    else:
+                        avg_price_gap = 0
                 else:
-                    avg_price_gap = 0
+                    # Fallback to raw price
+                    price_col = 'buy_box_price' if 'buy_box_price' in enriched_portfolio_df.columns else 'filled_price' if 'filled_price' in enriched_portfolio_df.columns else None
+                    if price_col and price_col in market_snapshot.columns:
+                        your_avg_price = enriched_portfolio_df[price_col].mean() if price_col in enriched_portfolio_df.columns else 0
+                        competitor_prices = market_snapshot.loc[~market_snapshot['is_your_brand'], price_col] if 'is_your_brand' in market_snapshot.columns else market_snapshot[price_col]
+                        competitor_avg_price = competitor_prices.mean() if len(competitor_prices) > 0 else 0
+                        avg_price_gap = your_avg_price - competitor_avg_price if competitor_avg_price > 0 else 0
+                    else:
+                        avg_price_gap = 0
             except:
                 avg_price_gap = 0
             
-            # FIXED: Use actual OOS data from Keepa (outOfStockPercentage90)
+            # FIXED: Use actual OOS data from Keepa (outOfStockPercentage90) with data availability flag
+            oos_data_available = False
             try:
                 if 'outOfStockPercentage90' in market_snapshot.columns and 'is_your_brand' in market_snapshot.columns:
                     # Competitor OOS = average OOS of non-your-brand products
                     competitor_oos_data = market_snapshot.loc[~market_snapshot['is_your_brand'], 'outOfStockPercentage90']
-                    competitor_oos_pct = float(competitor_oos_data.mean()) if len(competitor_oos_data) > 0 else 0
-                    if competitor_oos_pct > 1:  # Normalize if percentage
-                        competitor_oos_pct = competitor_oos_pct / 100
+                    # Check if we have actual data (not all NaN or 0)
+                    valid_oos_data = competitor_oos_data.dropna()
+                    if len(valid_oos_data) > 0 and valid_oos_data.sum() > 0:
+                        competitor_oos_pct = float(valid_oos_data.mean())
+                        if competitor_oos_pct > 1:  # Normalize if percentage
+                            competitor_oos_pct = competitor_oos_pct / 100
+                        oos_data_available = True
+                    else:
+                        competitor_oos_pct = None  # No real data
+                elif 'oos_pct_90' in market_snapshot.columns and 'is_your_brand' in market_snapshot.columns:
+                    # Try new metric name
+                    competitor_oos_data = market_snapshot.loc[~market_snapshot['is_your_brand'], 'oos_pct_90']
+                    valid_oos_data = competitor_oos_data.dropna()
+                    if len(valid_oos_data) > 0:
+                        competitor_oos_pct = float(valid_oos_data.mean())
+                        oos_data_available = True
+                    else:
+                        competitor_oos_pct = None
                 elif 'competitor_oos_pct' in enriched_portfolio_df.columns:
-                    competitor_oos_pct = float(enriched_portfolio_df['competitor_oos_pct'].mean())
+                    val = enriched_portfolio_df['competitor_oos_pct'].mean()
+                    if pd.notna(val) and val > 0:
+                        competitor_oos_pct = float(val)
+                        oos_data_available = True
+                    else:
+                        competitor_oos_pct = None
                 else:
-                    competitor_oos_pct = 0
+                    competitor_oos_pct = None
             except:
-                competitor_oos_pct = 0
+                competitor_oos_pct = None
+                oos_data_available = False
             
             # Market position
             position_text = "Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"
@@ -2236,8 +2500,8 @@ with main_tab1:
                 <div style="font-size: 12px; color: #666; line-height: 1.6;">
                     <div><strong>Competitor Products:</strong> {competitor_product_count} in market</div>
                     <div><strong>Avg Sellers/SKU:</strong> {avg_sellers_per_sku:.0f} (your products)</div>
-                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs competitor avg</div>
-                    <div><strong>Competitor OOS:</strong> {competitor_oos_pct*100:.1f}% (opportunity)</div>
+                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs competitor avg{" (per unit)" if price_gap_normalized else ""}</div>
+                    <div><strong>Competitor OOS:</strong> {f"{competitor_oos_pct*100:.1f}% (opportunity)" if competitor_oos_pct is not None else "<span style='color:#999'>N/A (no data)</span>"}</div>
                     <div><strong>Market Size:</strong> ${total_market_revenue:,.0f}/mo total</div>
                 </div>
             </div>
@@ -2388,6 +2652,210 @@ with main_tab1:
             # Fallback if no enriched data available
             st.info("📊 Competitive intelligence and root cause analysis will appear here once portfolio data is loaded.")
         
+        # === COMPETITOR PRICE COMPARISON TABLE ===
+        st.markdown("---")
+        st.markdown("### 💰 Competitor Price Intelligence")
+        
+        try:
+            # Get market data - combine brand and competitor products
+            market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+            
+            if not market_df.empty and len(market_df) > 3:
+                # Prepare price comparison data
+                price_col = 'price_per_unit' if 'price_per_unit' in market_df.columns else 'buy_box_price' if 'buy_box_price' in market_df.columns else 'filled_price'
+                rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
+                
+                # Get top competitors by revenue (exclude our brand)
+                target_brand = st.session_state.get('active_brand', '')
+                if target_brand:
+                    competitors = market_df[market_df['brand'].str.lower() != target_brand.lower()].copy()
+                else:
+                    competitors = market_df.copy()
+                
+                if not competitors.empty and len(competitors) >= 3:
+                    # Sort by revenue and get top 10
+                    top_competitors = competitors.nlargest(10, rev_col) if rev_col in competitors.columns else competitors.head(10)
+                    
+                    # Build comparison table
+                    comp_data = []
+                    for _, row in top_competitors.iterrows():
+                        price = row.get(price_col, row.get('buy_box_price', 0)) or 0
+                        pack_size = row.get('number_of_items', 1) or 1
+                        price_per_unit = price / pack_size if pack_size > 1 else price
+                        revenue = row.get(rev_col, 0) or 0
+                        rank = row.get('sales_rank_filled', row.get('sales_rank', 0)) or 0
+                        seller_count = row.get('seller_count', row.get('new_offer_count', 0)) or 0
+                        is_amazon = row.get('buybox_is_amazon', False)
+                        oos_30 = row.get('oos_count_amazon_30', 0) or 0
+                        velocity = row.get('velocity_30d', 0) or 0
+                        
+                        # Price comparison vs median
+                        median_price = competitors[price_col].median() if price_col in competitors.columns else 0
+                        price_gap = ((price - median_price) / median_price * 100) if median_price > 0 else 0
+                        
+                        # Velocity badge
+                        if velocity >= 0.10:
+                            vel_badge = "🔥 Hot"
+                        elif velocity >= 0.05:
+                            vel_badge = "↑ Rising"
+                        elif velocity <= -0.10:
+                            vel_badge = "❄️ Cold"
+                        elif velocity <= -0.05:
+                            vel_badge = "↓ Falling"
+                        else:
+                            vel_badge = "→ Stable"
+                        
+                        comp_data.append({
+                            'Brand': row.get('brand', 'Unknown')[:15],
+                            'Product': str(row.get('title', row.get('asin', '')))[:30] + '...',
+                            'Price': f"${price:.2f}",
+                            'Per Unit': f"${price_per_unit:.2f}" if pack_size > 1 else "-",
+                            'vs Median': f"{price_gap:+.0f}%",
+                            'BSR': f"#{int(rank):,}" if rank > 0 else "-",
+                            'Sellers': int(seller_count),
+                            'Trend': vel_badge,
+                            'Amz': '✓' if is_amazon else '',
+                            'OOS30': int(oos_30)
+                        })
+                    
+                    if comp_data:
+                        comp_df = pd.DataFrame(comp_data)
+                        
+                        # Style the dataframe
+                        def color_price_gap(val):
+                            if '+' in str(val):
+                                return 'color: #dc3545'  # Red for premium
+                            elif '-' in str(val):
+                                return 'color: #28a745'  # Green for discount
+                            return ''
+                        
+                        styled_df = comp_df.style.applymap(
+                            color_price_gap, 
+                            subset=['vs Median']
+                        )
+                        
+                        st.dataframe(styled_df, hide_index=True, use_container_width=True)
+                        
+                        # Add insight summary
+                        avg_competitor_price = competitors[price_col].mean() if price_col in competitors.columns else 0
+                        our_avg_price = market_df[market_df['brand'].str.lower() == target_brand.lower()][price_col].mean() if target_brand and price_col in market_df.columns else 0
+                        
+                        if our_avg_price > 0 and avg_competitor_price > 0:
+                            gap_pct = ((our_avg_price - avg_competitor_price) / avg_competitor_price) * 100
+                            if gap_pct > 10:
+                                st.info(f"💰 **Premium Position:** Your avg price is {gap_pct:.0f}% above competitors. Strong brand positioning supports this premium.")
+                            elif gap_pct < -10:
+                                st.warning(f"⚠️ **Discount Position:** Your avg price is {abs(gap_pct):.0f}% below competitors. Consider testing price increases.")
+                            else:
+                                st.success(f"✅ **Competitive Parity:** Your pricing is aligned with market (within 10% of average).")
+                else:
+                    st.info("📊 Limited competitor data available. More data will appear as market analysis completes.")
+            else:
+                st.info("📊 Competitor data will appear once market snapshot is loaded.")
+        except Exception as e:
+            st.warning(f"⚠️ Could not load competitor pricing data: {str(e)[:50]}")
+        
+        # === MARKET TRIGGER EVENT TIMELINE ===
+        st.markdown("---")
+        st.markdown("### 📅 Market Event Timeline")
+        
+        try:
+            # Get historical data and detect trigger events across the portfolio
+            df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
+            market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+            
+            if not df_weekly.empty and 'asin' in df_weekly.columns:
+                from src.trigger_detection import detect_trigger_events
+                
+                # Aggregate trigger events across top products
+                all_triggers = []
+                target_brand = st.session_state.get('active_brand', '')
+                
+                # Get top revenue products for trigger detection
+                if target_brand and 'brand' in df_weekly.columns:
+                    brand_asins = df_weekly[df_weekly['brand'].str.lower() == target_brand.lower()]['asin'].unique()[:10]
+                else:
+                    brand_asins = df_weekly['asin'].unique()[:10]
+                
+                for asin in brand_asins:
+                    asin_history = df_weekly[df_weekly['asin'] == asin]
+                    if not asin_history.empty and len(asin_history) >= 3:
+                        try:
+                            triggers = detect_trigger_events(
+                                asin=asin,
+                                df_historical=asin_history,
+                                df_competitors=market_df,
+                                lookback_days=30
+                            )
+                            # Tag each trigger with its ASIN
+                            for t in triggers:
+                                t.asin = asin
+                            all_triggers.extend(triggers)
+                        except Exception:
+                            pass  # Skip failed detections silently
+                
+                if all_triggers:
+                    # Sort all triggers by severity and take top 15
+                    all_triggers = sorted(all_triggers, key=lambda e: e.severity, reverse=True)[:15]
+                    
+                    # Display timeline
+                    timeline_col1, timeline_col2 = st.columns([2, 1])
+                    
+                    with timeline_col1:
+                        # Group by event type
+                        threat_events = [t for t in all_triggers if hasattr(t, 'nature') and t.nature == 'THREAT']
+                        opportunity_events = [t for t in all_triggers if hasattr(t, 'nature') and t.nature == 'OPPORTUNITY']
+                        other_events = [t for t in all_triggers if not hasattr(t, 'nature') or t.nature not in ['THREAT', 'OPPORTUNITY']]
+                        
+                        if threat_events:
+                            st.markdown("#### 🔴 Threats Detected")
+                            for t in threat_events[:5]:
+                                severity_bar = "█" * min(t.severity, 10) + "░" * (10 - min(t.severity, 10))
+                                delta_str = f"{t.delta_pct:+.1f}%" if hasattr(t, 'delta_pct') and t.delta_pct else ""
+                                asin_short = t.asin[:10] if hasattr(t, 'asin') else ""
+                                st.markdown(f"""
+                                    <div style="background: #fff5f5; border-left: 3px solid #dc3545; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px;">
+                                        <div style="font-size: 12px; font-weight: 600; color: #dc3545;">{t.event_type}</div>
+                                        <div style="font-size: 11px; color: #666;">{t.metric_name} {delta_str}</div>
+                                        <div style="font-size: 10px; color: #999; font-family: monospace;">{asin_short} | Severity: <span style="color: #dc3545;">{severity_bar}</span></div>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                        
+                        if opportunity_events:
+                            st.markdown("#### 🟢 Opportunities Detected")
+                            for t in opportunity_events[:5]:
+                                severity_bar = "█" * min(t.severity, 10) + "░" * (10 - min(t.severity, 10))
+                                delta_str = f"{t.delta_pct:+.1f}%" if hasattr(t, 'delta_pct') and t.delta_pct else ""
+                                asin_short = t.asin[:10] if hasattr(t, 'asin') else ""
+                                st.markdown(f"""
+                                    <div style="background: #f0fff4; border-left: 3px solid #28a745; padding: 8px 12px; margin-bottom: 8px; border-radius: 4px;">
+                                        <div style="font-size: 12px; font-weight: 600; color: #155724;">{t.event_type}</div>
+                                        <div style="font-size: 11px; color: #666;">{t.metric_name} {delta_str}</div>
+                                        <div style="font-size: 10px; color: #999; font-family: monospace;">{asin_short} | Impact: <span style="color: #28a745;">{severity_bar}</span></div>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                    
+                    with timeline_col2:
+                        # Summary stats
+                        st.markdown("#### 📊 Event Summary")
+                        st.metric("Total Events", len(all_triggers))
+                        st.metric("Threats", len(threat_events), delta=f"-{len(threat_events)}" if threat_events else None, delta_color="inverse")
+                        st.metric("Opportunities", len(opportunity_events), delta=f"+{len(opportunity_events)}" if opportunity_events else None)
+                        
+                        # Average severity
+                        if all_triggers:
+                            avg_severity = sum(t.severity for t in all_triggers) / len(all_triggers)
+                            severity_label = "Critical" if avg_severity >= 7 else "Moderate" if avg_severity >= 5 else "Low"
+                            st.markdown(f"**Avg Severity:** {avg_severity:.1f}/10 ({severity_label})")
+                else:
+                    st.info("📊 No significant market events detected in the past 30 days. Your market position is stable.")
+            else:
+                st.info("📊 Trigger event timeline will appear once historical data is loaded.")
+        except ImportError:
+            st.info("📊 Trigger detection module not available.")
+        except Exception as e:
+            st.warning(f"⚠️ Could not load trigger events: {str(e)[:50]}")
+        
         # --- AI ACTION QUEUE (Outside of columns - full width) ---
         tab1, tab2 = st.tabs(["🎯 AI Action Queue", "🖼️ Visual Audit"])
 
@@ -2478,7 +2946,31 @@ with main_tab1:
                     # KEY METRICS FOR DISPLAY (Rank, Buy Box, Sellers)
                     display_rank = int(product.get('sales_rank_filled', product.get('sales_rank', 0)) or 0)
                     display_bb_share = float(product.get('amazon_bb_share', 0.5) or 0.5)
-                    display_seller_count = int(product.get('new_offer_count', competitor_count) or competitor_count or 0)
+                    # Prefer seller_count (from sellerIds) over new_offer_count
+                    display_seller_count = int(product.get('seller_count', product.get('new_offer_count', competitor_count)) or competitor_count or 0)
+                    
+                    # VELOCITY METRICS FOR TREND BADGES
+                    velocity_30d = product.get('velocity_30d', product.get('velocity_trend_30d', 0)) or 0
+                    velocity_90d = product.get('velocity_90d', product.get('velocity_trend_90d', 0)) or 0
+                    velocity_badge_html = get_velocity_badge(velocity_30d, velocity_90d)
+                    
+                    # SPARKLINE DATA (get historical prices/ranks for this ASIN)
+                    price_sparkline = ""
+                    rank_sparkline = ""
+                    if 'df_weekly' in st.session_state and not st.session_state['df_weekly'].empty:
+                        asin_history = st.session_state['df_weekly'][st.session_state['df_weekly']['asin'] == asin]
+                        if not asin_history.empty and len(asin_history) >= 3:
+                            # Price sparkline (last 8 weeks)
+                            price_col = 'buy_box_price' if 'buy_box_price' in asin_history.columns else 'filled_price'
+                            if price_col in asin_history.columns:
+                                recent_prices = asin_history.sort_values('week_start').tail(8)[price_col].tolist()
+                                price_sparkline = generate_mini_sparkline(recent_prices, width=50, height=16, color="#007bff")
+                            # Rank sparkline (inverted - lower is better)
+                            rank_col = 'sales_rank_filled' if 'sales_rank_filled' in asin_history.columns else 'sales_rank'
+                            if rank_col in asin_history.columns:
+                                recent_ranks = asin_history.sort_values('week_start').tail(8)[rank_col].tolist()
+                                # For rank, flip so lower = better shows as "up" trend
+                                rank_sparkline = generate_mini_sparkline(recent_ranks, width=50, height=16, color="#6c757d")
                     
                     # Use strategic color if available, otherwise use emoji-based logic
                     if "strategic_color" in strategy and strategy["strategic_color"]:
@@ -2503,12 +2995,34 @@ with main_tab1:
                         card_opacity = "0.5" if is_completed else "1.0"
                         card_bg = "#f0f0f0" if is_completed else "white"
                         
-                        # Build model certainty badge (based on 90-day/36-month backfill depth)
+                        # Build TIERED model certainty badge with data quality context
                         confidence_badge = ""
                         if model_certainty > 0:
                             cert_pct = int(model_certainty * 100)
-                            cert_color = "#28a745" if model_certainty >= 0.75 else "#ffc107" if model_certainty >= 0.5 else "#dc3545"
-                            confidence_badge = f'<span style="font-size: 9px; color: {cert_color}; margin-left: 8px;">({cert_pct}% {data_quality})</span>'
+                            # Determine tier and color
+                            if model_certainty >= 0.80:
+                                cert_tier = "HIGH"
+                                cert_color = "#28a745"  # Green
+                            elif model_certainty >= 0.60:
+                                cert_tier = "GOOD"
+                                cert_color = "#17a2b8"  # Blue
+                            elif model_certainty >= 0.45:
+                                cert_tier = "MED"
+                                cert_color = "#ffc107"  # Yellow
+                            else:
+                                cert_tier = "LOW"
+                                cert_color = "#dc3545"  # Red
+                            
+                            # Check units_source for data quality context
+                            units_source = product.get('units_source', '')
+                            if units_source == 'amazon_monthly_sold':
+                                data_source_badge = '<span style="font-size: 8px; background: #d4edda; color: #155724; padding: 1px 4px; border-radius: 3px; margin-left: 4px;">Amazon Data</span>'
+                            elif units_source == 'bsr_formula':
+                                data_source_badge = '<span style="font-size: 8px; background: #fff3cd; color: #856404; padding: 1px 4px; border-radius: 3px; margin-left: 4px;">Est.</span>'
+                            else:
+                                data_source_badge = ""
+                            
+                            confidence_badge = f'<span style="font-size: 9px; color: {cert_color}; margin-left: 8px;">{cert_tier} ({cert_pct}%){data_source_badge}</span>'
                         
                         # === PREDICTIVE AI RECOMMENDATION (from unified engine) ===
                         import html
@@ -2630,7 +3144,7 @@ with main_tab1:
 <span style="font-size: 9px; color: #999;">{source_badge}{pred_state_badge}</span>
 </div>
 {('<div style="background: ' + urgency_color + '; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-bottom: 8px; display: inline-block;">' + urgency_badge + '</div>') if urgency_badge else ''}
-<div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}</div>
+<div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}{velocity_badge_html}</div>
 <div style="display: flex; align-items: baseline; gap: 10px; margin: 4px 0;">
 <span style="font-size: 22px; color: {'#dc3545' if is_actual_risk else '#b8860b'}; font-weight: 700;">{f_money(thirty_day_risk)}</span>
 <span style="font-size: 14px; color: #666;">+</span>
@@ -2646,8 +3160,8 @@ with main_tab1:
 {growth_section}
 {('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(outcome_metrics) + '</div>') if outcome_metrics else ''}
 <div style="font-size: 10px; color: #555; margin-top: 8px; padding: 4px 0; border-top: 1px solid #eee;">
-    <span style="font-weight: 600;">Rank:</span> #{display_rank:,} • 
-    <span style="font-weight: 600;">Buy Box:</span> {display_bb_share*100:.0f}% • 
+    <span style="font-weight: 600;">Rank:</span> #{display_rank:,}{rank_sparkline} • 
+    <span style="font-weight: 600;">Price:</span> ${current_price:.2f}{price_sparkline} • 
     <span style="font-weight: 600;">Sellers:</span> {display_seller_count}
 </div>
 <div style="font-size: 10px; color: #999; margin-top: 4px; font-family: monospace;">{escaped_asin}</div>

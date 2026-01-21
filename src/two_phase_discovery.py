@@ -91,6 +91,108 @@ def _safe_numeric(val, default=0):
         return default
 
 
+# ===========================================================================
+# VARIATION DEDUPLICATION: Prevent revenue overcounting for child variations
+# ===========================================================================
+# When products share the same parent_asin, they are variations of ONE listing.
+# They all inherit the parent's BSR, so revenue would be counted N times if
+# we just sum all products. Fix: divide revenue by sibling count.
+#
+# Example: ALOHA has 22 variations all sharing parent B0FP2N64VD with BSR=25
+# Without fix: 22 products × $72k each = $1.5M (22x overcounted)
+# With fix: $72k / 22 per product = $72k total (correct)
+# ===========================================================================
+
+def _calculate_adjusted_revenue(products: list, revenue_key: str = "revenue_proxy") -> float:
+    """
+    Calculate total revenue with variation deduplication.
+    
+    Products that share a parent_asin are variations of the same listing.
+    They share the same BSR/revenue, so we divide by sibling count.
+    
+    Args:
+        products: List of product dicts with 'parent_asin' and revenue_key
+        revenue_key: Key for revenue value (default 'revenue_proxy')
+    
+    Returns:
+        Adjusted total revenue (float)
+    """
+    if not products:
+        return 0.0
+    
+    # Count siblings per parent_asin
+    parent_counts = {}
+    for p in products:
+        parent = p.get("parent_asin", "")
+        if parent:
+            parent_counts[parent] = parent_counts.get(parent, 0) + 1
+    
+    # Sum revenue with adjustment
+    total = 0.0
+    for p in products:
+        revenue = p.get(revenue_key, 0) or 0
+        parent = p.get("parent_asin", "")
+        if parent and parent in parent_counts:
+            # Divide revenue by number of siblings to avoid overcounting
+            total += revenue / parent_counts[parent]
+        else:
+            # No parent - count full revenue
+            total += revenue
+    
+    return total
+
+
+def _apply_variation_adjustment_to_df(df: pd.DataFrame, revenue_col: str = "revenue_proxy") -> pd.DataFrame:
+    """
+    Apply variation deduplication to a DataFrame for all BSR-derived metrics.
+    
+    When products share a parent_asin, they are variations of ONE listing.
+    They all inherit the parent's BSR, so all BSR-derived metrics (revenue, units)
+    would be counted N times if we just sum. Fix: divide by sibling count.
+    
+    Args:
+        df: DataFrame with 'parent_asin' and revenue/units columns
+        revenue_col: Name of revenue column to adjust
+    
+    Returns:
+        DataFrame with adjusted columns and '_sibling_count' added
+    """
+    if df.empty:
+        df["revenue_proxy_adjusted"] = 0.0
+        df["monthly_units_adjusted"] = 0.0
+        df["_sibling_count"] = 1
+        return df
+    
+    if "parent_asin" in df.columns:
+        # Count siblings per parent ASIN (products with same parent)
+        parent_counts = df[df["parent_asin"].notna() & (df["parent_asin"] != "")].groupby("parent_asin").size()
+        
+        # Create sibling count column (default 1 for products without parent)
+        df["_sibling_count"] = df["parent_asin"].map(parent_counts).fillna(1).astype(int)
+        df.loc[df["parent_asin"].isna() | (df["parent_asin"] == ""), "_sibling_count"] = 1
+        
+        # Adjust revenue by dividing by sibling count
+        df["revenue_proxy_adjusted"] = df[revenue_col] / df["_sibling_count"]
+        
+        # Also adjust units if present (also BSR-derived)
+        if "monthly_units" in df.columns:
+            df["monthly_units_adjusted"] = df["monthly_units"] / df["_sibling_count"]
+        else:
+            df["monthly_units_adjusted"] = 0.0
+            
+        # Adjust weekly sales if present (for weekly data)
+        if "weekly_sales_filled" in df.columns:
+            df["weekly_sales_adjusted"] = df["weekly_sales_filled"] / df["_sibling_count"]
+        if "estimated_units" in df.columns:
+            df["estimated_units_adjusted"] = df["estimated_units"] / df["_sibling_count"]
+    else:
+        df["revenue_proxy_adjusted"] = df[revenue_col]
+        df["monthly_units_adjusted"] = df.get("monthly_units", 0)
+        df["_sibling_count"] = 1
+    
+    return df
+
+
 # ========================================
 # FIX 1.3: DATABASE CACHE FOR API CALLS
 # ========================================
@@ -312,7 +414,7 @@ def _check_category_cache(category_id: int, max_age_hours: int = 12) -> Optional
 
         # Check for recent snapshots in this category
         result = supabase.table("product_snapshots").select(
-            "asin, title, brand, sales_rank, buy_box_price, estimated_weekly_revenue, "
+            "asin, title, brand, parent_asin, sales_rank, buy_box_price, estimated_weekly_revenue, "
             "estimated_units, review_count, rating, main_image, category_id"
         ).eq("category_id", category_id).gte(
             "fetched_at", cutoff_time
@@ -339,12 +441,19 @@ def _check_category_cache(category_id: int, max_age_hours: int = 12) -> Optional
             # Add data_weeks for AI confidence (cached data = assume 4 weeks)
             df['data_weeks'] = 4
             
+            # Apply variation deduplication to prevent revenue overcounting
+            if "revenue_proxy" in df.columns:
+                df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
+                adjusted_revenue = df["revenue_proxy_adjusted"].sum()
+            else:
+                adjusted_revenue = 0
+            
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": df["revenue_proxy"].sum() if "revenue_proxy" in df.columns else 0,
+                "total_category_revenue": adjusted_revenue,
                 "category_id": category_id,
                 "validated_products": len(df),
-                "validated_revenue": df["revenue_proxy"].sum() if "revenue_proxy" in df.columns else 0,
+                "validated_revenue": adjusted_revenue,
                 "source": "cache",
                 "df_weekly": pd.DataFrame()  # No weekly data from cache
             }
@@ -1015,13 +1124,61 @@ def phase2_category_market_mapping(
                                 new_offer_count = _safe_csv_value(csv[11] if csv and len(csv) > 11 else None, 1)
                                 new_offer_count = max(1, new_offer_count)
                                 
-                                # Review Count (index 16 per Keepa docs)
-                                review_count = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+                                # Review Count (index 17 in Keepa Python lib)
+                                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
 
-                                # Rating (index 17 per Keepa docs) - stored as 10x (45 = 4.5 stars)
-                                rating_raw = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
+                                # Rating (index 16 in Keepa Python lib) - stored as 10x (45 = 4.5 stars)
+                                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
                                 rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
+
+                                # Parent ASIN - critical for variation deduplication
+                                parent_asin = product.get("parentAsin", "")
                                 
+                                # === NEW CRITICAL METRICS (2026-01-21) ===
+                                # Amazon's actual monthly sold estimate
+                                monthly_sold = _safe_numeric(product.get("monthlySold"), 0)
+                                
+                                # Pack size for per-unit normalization
+                                number_of_items = _safe_numeric(product.get("numberOfItems"), 1)
+                                number_of_items = max(1, int(number_of_items))
+                                
+                                # Buy Box ownership flags
+                                buybox_is_amazon = product.get("buyBoxIsAmazon", None)
+                                buybox_is_fba = product.get("buyBoxIsFBA", None)
+                                buybox_is_backorder = product.get("buyBoxIsBackorder", False) or False
+                                
+                                # Seller IDs for true seller count
+                                seller_ids = product.get("sellerIds", []) or []
+                                seller_count = len(seller_ids)
+                                has_amazon_seller = "ATVPDKIKX0DER" in seller_ids if seller_ids else False
+                                
+                                # OOS counts (more actionable than %)
+                                oos_count_30 = _safe_numeric(stats.get("outOfStockCountAmazon30") if stats else None, 0)
+                                oos_count_90 = _safe_numeric(stats.get("outOfStockCountAmazon90") if stats else None, 0)
+                                
+                                # Pre-calculated velocity from Keepa
+                                delta_pct_30 = stats.get("deltaPercent30", []) if stats else []
+                                delta_pct_90 = stats.get("deltaPercent90", []) if stats else []
+                                velocity_30d = delta_pct_30[3] if delta_pct_30 and len(delta_pct_30) > 3 else None
+                                velocity_90d = delta_pct_90[3] if delta_pct_90 and len(delta_pct_90) > 3 else None
+                                
+                                # Buy Box seller count and top seller share
+                                bb_seller_count_30 = _safe_numeric(stats.get("buyBoxStatsSellerCount30") if stats else None, 0)
+                                bb_top_seller_30 = _safe_numeric(stats.get("buyBoxStatsTopSeller30") if stats else None, 0)
+                                if bb_top_seller_30 > 1:
+                                    bb_top_seller_30 = bb_top_seller_30 / 100.0
+                                
+                                # Subscribe & Save
+                                is_sns = product.get("isSNS", False) or False
+                                
+                                # Use monthlySold if available, otherwise keep BSR-based estimate
+                                if monthly_sold > 0:
+                                    monthly_units = monthly_sold
+                                    revenue = monthly_units * price
+                                    units_source = "amazon_monthly_sold"
+                                else:
+                                    units_source = "bsr_formula"
+
                                 brand_products.append({
                                     "asin": asin,
                                     "title": title,
@@ -1031,13 +1188,31 @@ def phase2_category_market_mapping(
                                     "revenue_proxy": revenue,
                                     "bsr": bsr,
                                     "main_image": main_image,
+                                    "parent_asin": parent_asin,  # For variation deduplication
                                     "_is_target_brand": True,
-                                    # Competitive metrics (NEW)
+                                    # Competitive metrics
                                     "outOfStockPercentage90": oos_90,
-                                    "amazon_bb_share": amazon_bb_share,  # Buy Box ownership
+                                    "amazon_bb_share": amazon_bb_share,
                                     "new_offer_count": new_offer_count,
                                     "review_count": review_count,
                                     "rating": rating,
+                                    # NEW CRITICAL METRICS (2026-01-21)
+                                    "monthly_sold": monthly_sold,
+                                    "number_of_items": number_of_items,
+                                    "price_per_unit": price / number_of_items if number_of_items > 0 else price,
+                                    "buybox_is_amazon": buybox_is_amazon,
+                                    "buybox_is_fba": buybox_is_fba,
+                                    "buybox_is_backorder": buybox_is_backorder,
+                                    "seller_count": seller_count,
+                                    "has_amazon_seller": has_amazon_seller,
+                                    "oos_count_amazon_30": int(oos_count_30),
+                                    "oos_count_amazon_90": int(oos_count_90),
+                                    "velocity_30d": velocity_30d,
+                                    "velocity_90d": velocity_90d,
+                                    "bb_seller_count_30": int(bb_seller_count_30),
+                                    "bb_top_seller_30": bb_top_seller_30,
+                                    "is_sns": is_sns,
+                                    "units_source": units_source,
                                 })
                                 brand_asins_fetched.add(asin)
                         
@@ -1346,36 +1521,102 @@ def phase2_category_market_mapping(
                         new_offer_count = _safe_numeric(current_stats.get("COUNT_NEW"), 1)
                 new_offer_count = max(1, int(new_offer_count))  # At least 1 seller
                 
-                # Review Count (index 16 per Keepa docs)
-                review_count = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
+                # Review Count (index 17 in Keepa Python lib)
+                review_count = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
                 if review_count <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
                         review_count = _safe_numeric(current_stats.get("COUNT_REVIEWS"), 0)
 
-                # Rating (index 17 per Keepa docs) - Keepa stores as 10x
-                rating_raw = _safe_csv_value(csv[17] if csv and len(csv) > 17 else None, 0)
+                # Rating (index 16 in Keepa Python lib) - Keepa stores as 10x
+                rating_raw = _safe_csv_value(csv[16] if csv and len(csv) > 16 else None, 0)
                 if rating_raw <= 0 and stats and "current" in stats:
                     current_stats = stats.get("current", {})
                     if isinstance(current_stats, dict):
                         rating_raw = _safe_numeric(current_stats.get("RATING"), 0)
                 rating = rating_raw / 10.0 if rating_raw > 0 else 0.0
 
+                # Parent ASIN - critical for variation deduplication
+                # When multiple products share a parent, they share BSR and revenue should not be double-counted
+                parent_asin = product.get("parentAsin", "")
+                
+                # === NEW CRITICAL METRICS (2026-01-21) ===
+                # Amazon's actual monthly sold estimate
+                monthly_sold = _safe_numeric(product.get("monthlySold"), 0)
+                
+                # Pack size for per-unit normalization
+                number_of_items = _safe_numeric(product.get("numberOfItems"), 1)
+                number_of_items = max(1, int(number_of_items))
+                
+                # Buy Box ownership flags
+                buybox_is_amazon = product.get("buyBoxIsAmazon", None)
+                buybox_is_fba = product.get("buyBoxIsFBA", None)
+                buybox_is_backorder = product.get("buyBoxIsBackorder", False) or False
+                
+                # Seller IDs for true seller count
+                seller_ids = product.get("sellerIds", []) or []
+                seller_count = len(seller_ids)
+                has_amazon_seller = "ATVPDKIKX0DER" in seller_ids if seller_ids else False
+                
+                # OOS counts (more actionable than %)
+                oos_count_30 = _safe_numeric(stats.get("outOfStockCountAmazon30") if stats else None, 0)
+                oos_count_90 = _safe_numeric(stats.get("outOfStockCountAmazon90") if stats else None, 0)
+                
+                # Pre-calculated velocity from Keepa
+                delta_pct_30 = stats.get("deltaPercent30", []) if stats else []
+                delta_pct_90 = stats.get("deltaPercent90", []) if stats else []
+                velocity_30d = delta_pct_30[3] if delta_pct_30 and len(delta_pct_30) > 3 else None
+                velocity_90d = delta_pct_90[3] if delta_pct_90 and len(delta_pct_90) > 3 else None
+                
+                # Buy Box seller count and top seller share
+                bb_seller_count_30 = _safe_numeric(stats.get("buyBoxStatsSellerCount30") if stats else None, 0)
+                bb_top_seller_30 = _safe_numeric(stats.get("buyBoxStatsTopSeller30") if stats else None, 0)
+                if bb_top_seller_30 > 1:
+                    bb_top_seller_30 = bb_top_seller_30 / 100.0
+                
+                # Subscribe & Save
+                is_sns = product.get("isSNS", False) or False
+                
+                # Use monthlySold if available, otherwise keep BSR-based estimate
+                units_source = "bsr_formula"
+                if monthly_sold > 0:
+                    monthly_units = monthly_sold
+                    revenue = monthly_units * price
+                    units_source = "amazon_monthly_sold"
+
                 product_data = {
                     "asin": product.get("asin"),
                     "title": title,
-                    "brand": brand,  # Add brand column
+                    "brand": brand,
                     "price": price,
                     "monthly_units": monthly_units,
                     "revenue_proxy": revenue,
                     "bsr": bsr,
-                    "main_image": main_image,  # Add image for Visual Audit
-                    # Competitive metrics (NEW)
+                    "main_image": main_image,
+                    "parent_asin": parent_asin,
+                    # Competitive metrics
                     "outOfStockPercentage90": oos_90,
-                    "amazon_bb_share": amazon_bb_share,  # Buy Box ownership from Keepa stats
+                    "amazon_bb_share": amazon_bb_share,
                     "new_offer_count": new_offer_count,
                     "review_count": review_count,
                     "rating": rating,
+                    # NEW CRITICAL METRICS (2026-01-21)
+                    "monthly_sold": monthly_sold,
+                    "number_of_items": number_of_items,
+                    "price_per_unit": price / number_of_items if number_of_items > 0 else price,
+                    "buybox_is_amazon": buybox_is_amazon,
+                    "buybox_is_fba": buybox_is_fba,
+                    "buybox_is_backorder": buybox_is_backorder,
+                    "seller_count": seller_count,
+                    "has_amazon_seller": has_amazon_seller,
+                    "oos_count_amazon_30": int(oos_count_30),
+                    "oos_count_amazon_90": int(oos_count_90),
+                    "velocity_30d": velocity_30d,
+                    "velocity_90d": velocity_90d,
+                    "bb_seller_count_30": int(bb_seller_count_30),
+                    "bb_top_seller_30": bb_top_seller_30,
+                    "is_sns": is_sns,
+                    "units_source": units_source,
                 }
 
                 # Track all valid products
@@ -1543,17 +1784,20 @@ def phase2_category_market_mapping(
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
+            # Apply variation deduplication
+            df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
+            adjusted_revenue = df["revenue_proxy_adjusted"].sum()
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": df["revenue_proxy"].sum(),
+                "total_category_revenue": adjusted_revenue,
                 "category_id": category_id,
                 "effective_category_id": effective_category_id,
                 "effective_category_path": effective_category_path,
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
-                "validated_revenue": df["revenue_proxy"].sum(),
+                "validated_revenue": adjusted_revenue,
                 "df_weekly": pd.DataFrame(),
                 "target_brand": target_brand,
                 "brand_product_count": brand_product_count,
@@ -1573,17 +1817,20 @@ def phase2_category_market_mapping(
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
+            # Apply variation deduplication
+            df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
+            adjusted_revenue = df["revenue_proxy_adjusted"].sum()
             df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": df["revenue_proxy"].sum(),
+                "total_category_revenue": adjusted_revenue,
                 "category_id": category_id,
                 "effective_category_id": effective_category_id,
                 "effective_category_path": effective_category_path,
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
-                "validated_revenue": df["revenue_proxy"].sum(),
+                "validated_revenue": adjusted_revenue,
                 "df_weekly": pd.DataFrame(),
                 "target_brand": target_brand,
                 "brand_product_count": brand_product_count,
@@ -1700,19 +1947,23 @@ def phase2_category_market_mapping(
         if 'weeks_count' in df.columns:
             df['data_weeks'] = df['weeks_count']
         
+        # Apply variation deduplication to prevent revenue overcounting
+        df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
+        adjusted_revenue = df["revenue_proxy_adjusted"].sum()
+        
         # Calculate market stats
         brand_product_count = len(brand_products) if target_brand else 0
         competitor_count = len(df) - brand_product_count
         
         market_stats = {
             "total_products": len(df),
-            "total_category_revenue": df["revenue_proxy"].sum(),
+            "total_category_revenue": adjusted_revenue,
             "category_id": category_id,
             "effective_category_id": effective_category_id,
             "effective_category_path": effective_category_path,
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
-            "validated_revenue": df["revenue_proxy"].sum(),
+            "validated_revenue": adjusted_revenue,
             "df_weekly": df_weekly,
             "time_period": "90 days (weekly aggregated)",
             "target_brand": target_brand,
@@ -1725,12 +1976,12 @@ def phase2_category_market_mapping(
                 f"✅ **Market Snapshot Complete**\n\n"
                 f"**{target_brand}**: {brand_product_count} products | "
                 f"**Competitors**: {competitor_count} products\n\n"
-                f"Total Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
+                f"Total Monthly Revenue: **${adjusted_revenue:,.0f}**"
             )
         else:
             st.success(
                 f"✅ **Market Snapshot Built from 90 Days of Historical Data**\n\n"
-                f"Products: **{len(df)}** | Monthly Revenue: **${df['revenue_proxy'].sum():,.0f}**"
+                f"Products: **{len(df)}** | Monthly Revenue: **${adjusted_revenue:,.0f}**"
             )
         
         return df, market_stats
@@ -1744,6 +1995,9 @@ def phase2_category_market_mapping(
         df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
         df["revenue_proxy"] = df["monthly_units"] * df["price"]
         df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
+        # Apply variation deduplication
+        df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
+        adjusted_revenue = df["revenue_proxy_adjusted"].sum()
         df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
         
         brand_product_count = len(brand_products) if target_brand else 0
@@ -1751,13 +2005,13 @@ def phase2_category_market_mapping(
         
         market_stats = {
             "total_products": len(df),
-            "total_category_revenue": df["revenue_proxy"].sum(),
+            "total_category_revenue": adjusted_revenue,
             "category_id": category_id,
             "effective_category_id": effective_category_id,
             "effective_category_path": effective_category_path,
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
-            "validated_revenue": df["revenue_proxy"].sum(),
+            "validated_revenue": adjusted_revenue,
             "df_weekly": pd.DataFrame(),
             "target_brand": target_brand,
             "brand_product_count": brand_product_count,

@@ -91,6 +91,53 @@ def _safe_numeric(val, default=0):
         return default
 
 
+def _scalarize_df_columns(df: pd.DataFrame, columns: list = None) -> pd.DataFrame:
+    """
+    Scalarize list/array values in DataFrame columns to prevent comparison errors.
+    
+    Some Keepa metrics are returned as lists (e.g., sellerIds). When aggregated or 
+    used directly, these cause "'>' not supported between instances of 'list' and 'int'" errors.
+    
+    Args:
+        df: DataFrame to process
+        columns: List of column names to scalarize. If None, process all numeric-intended columns.
+    
+    Returns:
+        DataFrame with scalar values in specified columns
+    """
+    if df.empty:
+        return df
+    
+    # Default columns that should be numeric
+    if columns is None:
+        columns = ['bsr', 'price', 'monthly_units', 'revenue_proxy', 'review_count', 
+                   'rating', 'new_offer_count', 'amazon_bb_share', 'sales_rank', 
+                   'filled_price', 'sales_rank_filled']
+    
+    def scalarize_value(val):
+        """Convert list/array to scalar."""
+        if val is None:
+            return 0
+        if isinstance(val, (list, tuple)):
+            return val[-1] if len(val) > 0 else 0
+        if hasattr(val, '__iter__') and not isinstance(val, (str, bytes)):
+            try:
+                arr = list(val)
+                return arr[-1] if len(arr) > 0 else 0
+            except (TypeError, IndexError):
+                return 0
+        return val
+    
+    for col in columns:
+        if col in df.columns:
+            # Apply scalarization to all values - some rows may have lists even if first doesn't
+            df[col] = df[col].apply(scalarize_value)
+            # Ensure column is numeric after scalarization
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    return df
+
+
 # ===========================================================================
 # VARIATION DEDUPLICATION: Prevent revenue overcounting for child variations
 # ===========================================================================
@@ -1781,6 +1828,7 @@ def phase2_category_market_mapping(
             st.warning("⚠️ Could not fetch historical data - falling back to current estimates")
             # Fallback to old method if historical fetch fails
             df = pd.DataFrame(unique_products)
+            df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
@@ -1814,6 +1862,7 @@ def phase2_category_market_mapping(
         if df_weekly.empty:
             st.warning("⚠️ Could not build weekly table - falling back to current estimates")
             df = pd.DataFrame(unique_products)
+            df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
             df["revenue_proxy"] = df["monthly_units"] * df["price"]
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
@@ -2014,6 +2063,7 @@ def phase2_category_market_mapping(
         df = pd.DataFrame(unique_products)
         if df.empty:
             return df, {}
+        df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
         df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
         df["revenue_proxy"] = df["monthly_units"] * df["price"]
         df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence

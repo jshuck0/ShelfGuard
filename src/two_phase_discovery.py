@@ -1717,7 +1717,7 @@ def phase2_category_market_mapping(
             if len(all_products) >= 100:
                 st.success(
                     f"✅ **Fetched {len(all_products)} ASINs**\n\n"
-                    f"Total estimated revenue: **${cumulative_revenue:,.0f}**"
+                    f"Raw revenue estimate: **${cumulative_revenue:,.0f}** _(before variation deduplication)_"
                 )
                 break
 
@@ -1725,7 +1725,7 @@ def phase2_category_market_mapping(
             st.caption(
                 f"Page {page}: Fetched {len(all_products)} valid products | "
                 f"Batch revenue: ${batch_revenue:,.0f} | "
-                f"Cumulative: ${cumulative_revenue:,.0f}"
+                f"Cumulative (raw): ${cumulative_revenue:,.0f}"
             )
             
             # Rate limit protection between pages
@@ -2047,12 +2047,14 @@ def phase2_category_market_mapping(
                 f"✅ **Market Snapshot Complete**\n\n"
                 f"**{target_brand}**: {brand_product_count} products | "
                 f"**Competitors**: {competitor_count} products\n\n"
-                f"Total Monthly Revenue: **${adjusted_revenue:,.0f}**"
+                f"**Est. Monthly Revenue: ${adjusted_revenue:,.0f}**\n"
+                f"_(Projected from avg weekly sales over last 90 days)_"
             )
         else:
             st.success(
-                f"✅ **Market Snapshot Built from 90 Days of Historical Data**\n\n"
-                f"Products: **{len(df)}** | Monthly Revenue: **${adjusted_revenue:,.0f}**"
+                f"✅ **Market Snapshot Complete**\n\n"
+                f"Products: **{len(df)}** | Est. Monthly Revenue: **${adjusted_revenue:,.0f}**\n"
+                f"_(Projected from avg weekly sales over last 90 days)_"
             )
         
         return df, market_stats

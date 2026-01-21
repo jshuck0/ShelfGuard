@@ -1253,12 +1253,18 @@ with main_tab1:
             else:
                 market_df['revenue_proxy'] = 0.0
         
-        # Portfolio (Your Brand) metrics
-        portfolio_revenue = portfolio_df['revenue_proxy'].sum()
+        # === FIX: Use ADJUSTED revenue (variation-deduplicated) to match Market Discovery ===
+        # revenue_proxy_adjusted accounts for sibling variations sharing the same parent ASIN
+        # Without this, variations would be counted multiple times, inflating revenue estimates
+        
+        # Portfolio (Your Brand) metrics - use adjusted if available
+        portfolio_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in portfolio_df.columns else 'revenue_proxy'
+        portfolio_revenue = portfolio_df[portfolio_rev_col].sum() if portfolio_rev_col in portfolio_df.columns else 0
         portfolio_product_count = len(portfolio_df)
 
-        # Market (Total Category) metrics
-        total_market_revenue = market_df['revenue_proxy'].sum()
+        # Market (Total Category) metrics - use adjusted if available
+        market_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
+        total_market_revenue = market_df[market_rev_col].sum() if market_rev_col in market_df.columns else 0
         total_market_products = len(market_df)
 
         # Competitor metrics
@@ -1822,19 +1828,19 @@ with main_tab1:
         """, unsafe_allow_html=True)
         
         # === EXECUTIVE SUMMARY: TOP 3 ACTIONS ===
-        # FIXED: Include ALL products with meaningful risk (not just DEFEND/REPLENISH states)
-        # HARVEST products with risk = optimization opportunities, still need action
+        # FIX: Always show up to 3 actions, dynamically pulling from risk + growth pools
+        # Even when no "risk" exists, show growth opportunities
         top_actions = []
         if 'thirty_day_risk' in enriched_portfolio_df.columns and 'thirty_day_growth' in enriched_portfolio_df.columns:
-            # Get top risk products - ANY product with meaningful risk (>$100)
+            # Get top risk products - ANY product with meaningful risk (>$50, lowered threshold)
             # Includes HARVEST (optimization), DEFEND (defense), REPLENISH (inventory)
             risk_products = enriched_portfolio_df[
-                (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 100)  # Meaningful risk
+                (enriched_portfolio_df['thirty_day_risk'].fillna(0) > 50)  # Lowered from $100
             ].copy()
             
-            # Get top growth products (>$100 opportunity)
+            # Get top growth products (>$50 opportunity, lowered threshold)
             growth_products = enriched_portfolio_df[
-                (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 100)
+                (enriched_portfolio_df['thirty_day_growth'].fillna(0) > 50)  # Lowered from $100
             ].copy()
             
             # Sort by risk/growth value
@@ -1843,10 +1849,21 @@ with main_tab1:
             if not growth_products.empty:
                 growth_products = growth_products.sort_values('thirty_day_growth', ascending=False)
             
-            # Build top 3 actions (prioritize risk, then growth)
-            # FIXED: Take up to 2 risk products and 1 growth, or 3 risk if no growth
+            # Build up to 3 actions dynamically
+            # Priority: 1 risk (if exists) → 2 growth → fill remaining with risk OR growth
             action_count = 0
-            max_risk_items = 3 if growth_products.empty else 2
+            asins_shown = set()
+            
+            # Calculate how many of each type to show based on availability
+            has_meaningful_risk = len(risk_products) > 0
+            has_meaningful_growth = len(growth_products) > 0
+            
+            if has_meaningful_risk and has_meaningful_growth:
+                max_risk_items = 1  # Show 1 risk, then 2 growth
+            elif has_meaningful_risk:
+                max_risk_items = 3  # Only risk available
+            else:
+                max_risk_items = 0  # Only growth available
             for _, row in risk_products.head(max_risk_items).iterrows():
                 if action_count >= 3:
                     break
@@ -1920,14 +1937,17 @@ with main_tab1:
                 })
                 action_count += 1
             
-            # Add top growth opportunity if we have space
-            # CRITICAL FIX: Exclude ASINs already in risk actions to avoid contradictory recommendations
-            # (same product can't have both "price UP" and "price DOWN" actions)
+            # Add growth opportunities to fill remaining slots (up to 3 total actions)
+            # FIX: Show MULTIPLE growth actions, not just one
+            # CRITICAL: Exclude ASINs already in risk actions to avoid contradictory recommendations
             asins_already_shown = {a['asin'] for a in top_actions}
             
             if action_count < 3 and not growth_products.empty:
-                # Find first growth product NOT already in risk actions
+                # Add up to (3 - action_count) growth opportunities
                 for _, row in growth_products.iterrows():
+                    if action_count >= 3:
+                        break  # We have 3 actions now
+                    
                     asin = row.get('asin', '')
                     if asin in asins_already_shown:
                         continue  # Skip - already shown as risk action
@@ -1940,18 +1960,22 @@ with main_tab1:
                     data_quality = row.get('data_quality', 'MEDIUM')
                     model_certainty = row.get('model_certainty', 0.75) or 0.75
                     
-                    if opp_type == "PRICE_POWER":
+                    # Build action based on opportunity type
+                    if opp_type == "PRICE_POWER" or opp_type == "PRICE_LIFT":
                         suggested_price = current_price * 1.04 if current_price > 0 else 0
                         action = f"Test price increase ${current_price:.2f} → ${suggested_price:.2f} (+4%)" if current_price > 0 else f"Test 4% price increase (rank #{rank})"
                         why = f"Rank #{rank} = top 0.1% of category. Pricing power opportunity."
                     elif opp_type == "CONQUEST":
                         action = "Capture competitor customers"
                         why = "Competitors out of stock. Pricing opportunity."
+                    elif opp_type == "SUBSCRIBE":
+                        action = "Push Subscribe & Save enrollment"
+                        why = "S&S eligible product. Convert one-time buyers to subscribers."
                     else:
                         action = "Optimize pricing/spend"
                         why = f"${growth:,.0f} growth opportunity identified"
                     
-                    # Calculate confidence for growth (use actual model certainty)
+                    # Calculate confidence for growth
                     confidence_pct = int(model_certainty * 100)
                     if data_quality == "HIGH":
                         confidence_text = f"{confidence_pct}% (12+ months data)"
@@ -1972,8 +1996,9 @@ with main_tab1:
                         'confidence': confidence_text,
                         'type': 'growth'
                     })
+                    asins_already_shown.add(asin)  # Track this ASIN
                     action_count += 1
-                    break  # Only add one growth action
+                    # NO break - continue adding growth actions until we have 3
         
         # Render Executive Summary
         if top_actions:
@@ -2096,6 +2121,24 @@ with main_tab1:
                     st.success("No products require immediate attention")
     
         # Render the AI brief (full width, no regenerate button)
+        # FIX: Convert markdown to HTML to prevent font rendering issues
+        import re
+        def markdown_to_html(text):
+            """Convert basic markdown to HTML for proper rendering."""
+            if not text:
+                return text
+            # Convert **bold** to <strong>
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+            # Convert *italic* to <em>
+            text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
+            # Convert $ amounts to prevent LaTeX rendering (escape dollar signs)
+            # Actually, $ is fine in HTML - no change needed there
+            # Convert newlines to <br>
+            text = text.replace('\n', '<br>')
+            return text
+        
+        ai_brief_html = markdown_to_html(ai_brief) if ai_brief else "Analyzing..."
+        
         st.markdown(f"""
         <div style="background: white; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; 
                     margin-bottom: 20px; border-left: 5px solid {status_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.08);">
@@ -2108,13 +2151,15 @@ with main_tab1:
                 </div>
                 <div style="text-align: right;">
                     <div style="font-size: 28px; font-weight: 700; color: #00704A;">{f_money(total_rev_curr)}</div>
-                    <div style="font-size: 11px; color: #666;">Monthly Revenue (90-day avg)</div>
+                    <div style="font-size: 11px; color: #666;">Est. Monthly Revenue</div>
+                    <div style="font-size: 10px; color: #999; margin-top: 2px;">Based on last 90 days of sales data</div>
+                    <div style="font-size: 9px; color: #bbb; margin-top: 1px;">Total Market: {f_money(total_market_revenue)}</div>
                 </div>
             </div>
             <div style="background: #f8f9fa; padding: 14px; border-radius: 6px; margin-top: 10px;">
                 <div style="font-size: 11px; color: #00704A; font-weight: 600; margin-bottom: 6px;">{brief_source}</div>
-                <div style="font-size: 14px; color: #333; line-height: 1.5;">
-                    {ai_brief}
+                <div style="font-size: 14px; color: #333; line-height: 1.6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+                    {ai_brief_html}
                 </div>
             </div>
         </div>
@@ -2133,8 +2178,9 @@ with main_tab1:
             # Display custom metric showing BRAND revenue (not total market)
             st.markdown(f"""
                 <div class="custom-metric-container">
-                    <div class="custom-metric-label">{target_brand} Portfolio Revenue</div>
+                    <div class="custom-metric-label">{target_brand} Est. Monthly Revenue</div>
                     <div class="custom-metric-value">{f_money(portfolio_revenue)}</div>
+                    <div style="font-size: 10px; color: #888; margin-top: -4px; margin-bottom: 6px;">Projected from last 90 days</div>
                     <div class="benchmark-row" style="flex-wrap: wrap; gap: 6px;">
                         <span class="benchmark-badge benchmark-{share_class}">{share_icon} {your_market_share:.1f}% Market Share</span>
                         <span class="benchmark-badge benchmark-neu">📊 {portfolio_product_count} Your ASINs</span>
@@ -2145,14 +2191,40 @@ with main_tab1:
     
         # TILE 2: Defense Score
         with c2:
-            # ACTION B: Defense Score (Predictive-Based)
-            # FIXED: Defense Score = 100 - risk_pct (directly reflects portfolio health)
-            # No more hardcoded 98 - score varies meaningfully based on actual risk
+            # ACTION B: Defense Score (Predictive-Based + Competitive Pressure)
+            # FIXED: Defense Score now includes competitive pressure signals, not just risk_pct
+            # A perfect 100 should be rare - only for products with no risk AND no competitive pressure
             
-            # Defense = 100% minus percentage of portfolio at risk
-            # risk_pct is already calculated as (total_risk / revenue * 100)
-            # A portfolio with 15% at risk has defense score of 85
-            defense_score = max(0, min(100, 100 - risk_pct))
+            # Start with risk-based score
+            base_defense = 100 - risk_pct
+            
+            # === COMPETITIVE PRESSURE PENALTIES ===
+            # These prevent a false 100 when competitive pressure exists
+            
+            # 1. Buy Box instability penalty: 50% BB ownership = -20 points (max -40 for 0% BB)
+            avg_bb_share = enriched_portfolio_df['amazon_bb_share'].mean() if 'amazon_bb_share' in enriched_portfolio_df.columns else 0.5
+            if pd.isna(avg_bb_share):
+                avg_bb_share = 0.5
+            bb_penalty = (1 - avg_bb_share) * 40
+            
+            # 2. Seller competition penalty: Many sellers = trench war (max -20 for 25+ sellers)
+            avg_sellers = enriched_portfolio_df['seller_count'].mean() if 'seller_count' in enriched_portfolio_df.columns else \
+                         (enriched_portfolio_df['new_offer_count'].mean() if 'new_offer_count' in enriched_portfolio_df.columns else 1)
+            if pd.isna(avg_sellers):
+                avg_sellers = 1
+            seller_penalty = min(20, avg_sellers * 0.75)
+            
+            # 3. Amazon 1P competitor penalty: If Amazon is selling your products, that's pressure
+            has_amazon_competitor = False
+            if 'has_amazon_seller' in enriched_portfolio_df.columns:
+                has_amazon_competitor = enriched_portfolio_df['has_amazon_seller'].any()
+            elif 'buybox_is_amazon' in enriched_portfolio_df.columns:
+                has_amazon_competitor = enriched_portfolio_df['buybox_is_amazon'].any()
+            amazon_penalty = 8 if has_amazon_competitor else 0
+            
+            # Calculate defense score with all penalties
+            defense_score = base_defense - bb_penalty - seller_penalty - amazon_penalty
+            defense_score = max(0, min(100, defense_score))
             
             # Apply floor based on severity to prevent unrealistic scores
             # If we have critical status, cap at 60 max; if elevated, cap at 80 max
@@ -2401,10 +2473,8 @@ with main_tab1:
         # === COMPETITIVE INTELLIGENCE & ROOT CAUSE ANALYSIS ===
         # Only show if we have enriched portfolio data
         if not enriched_portfolio_df.empty and len(enriched_portfolio_df) > 0:
-            comp_col1, comp_col2 = st.columns(2)
-            
-            with comp_col1:
-                st.markdown("### 🥊 Competitive Landscape")
+            # FIX: Calculate metrics FIRST, then render in columns side-by-side
+            # This ensures both columns have content at the same level
             
             # Calculate competitive metrics (with safe fallbacks)
             # FIXED: Use seller_count (from sellerIds) - more accurate than new_offer_count
@@ -2492,67 +2562,72 @@ with main_tab1:
             position_text = "Market Leader" if your_market_share > 50 else "Strong Challenger" if your_market_share > 20 else "Niche Player"
             position_color = "#28a745" if your_market_share > 50 else "#ffc107" if your_market_share > 20 else "#dc3545"
             
-            st.markdown(f"""
-            <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
-                <div style="font-size: 14px; font-weight: 600; color: {position_color}; margin-bottom: 12px;">
-                    Market Position: {position_text} ({your_market_share:.1f}% share)
-                </div>
-                <div style="font-size: 12px; color: #666; line-height: 1.6;">
-                    <div><strong>Competitor Products:</strong> {competitor_product_count} in market</div>
-                    <div><strong>Avg Sellers/SKU:</strong> {avg_sellers_per_sku:.0f} (your products)</div>
-                    <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs competitor avg{" (per unit)" if price_gap_normalized else ""}</div>
-                    <div><strong>Competitor OOS:</strong> {f"{competitor_oos_pct*100:.1f}% (opportunity)" if competitor_oos_pct is not None else "<span style='color:#999'>N/A (no data)</span>"}</div>
-                    <div><strong>Market Size:</strong> ${total_market_revenue:,.0f}/mo total</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Calculate risk components for Root Cause section
+            try:
+                total_price_risk = float(enriched_portfolio_df['price_erosion_risk'].sum()) if 'price_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_erosion_risk'].isna().all() else 0
+            except:
+                total_price_risk = 0
             
-            # Competitive threats
-            if avg_sellers_per_sku > 5:
-                st.warning(f"⚠️ **High Competition:** Average {avg_sellers_per_sku:.0f} sellers per SKU. Monitor Buy Box.")
-            if avg_price_gap > 2:
-                st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above competitors. Test price increases on top SKUs.")
-            elif avg_price_gap < -1:
-                st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below competitors. Consider raising prices.")
+            try:
+                total_share_risk = float(enriched_portfolio_df['share_erosion_risk'].sum()) if 'share_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['share_erosion_risk'].isna().all() else 0
+            except:
+                total_share_risk = 0
+            
+            try:
+                total_stockout_risk = float(enriched_portfolio_df['stockout_risk'].sum()) if 'stockout_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['stockout_risk'].isna().all() else 0
+            except:
+                total_stockout_risk = 0
+            
+            total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
+            
+            # Calculate growth components
+            try:
+                price_power_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'PRICE_POWER']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+            except:
+                price_power_growth = 0
+            try:
+                conquest_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'CONQUEST']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+            except:
+                conquest_growth = 0
+            try:
+                review_moat_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'REVIEW_MOAT']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
+            except:
+                review_moat_growth = 0
+            
+            total_growth_components = price_power_growth + conquest_growth + review_moat_growth
+            
+            # FIX: Create columns AFTER calculating all metrics, render BOTH sections side-by-side
+            comp_col1, comp_col2 = st.columns(2)
+            
+            with comp_col1:
+                st.markdown("### 🥊 Competitive Landscape")
+                st.markdown(f"""
+                <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px; min-height: 200px;">
+                    <div style="font-size: 14px; font-weight: 600; color: {position_color}; margin-bottom: 12px;">
+                        Market Position: {position_text} ({your_market_share:.1f}% share)
+                    </div>
+                    <div style="font-size: 12px; color: #666; line-height: 1.6;">
+                        <div><strong>Competitor Products:</strong> {competitor_product_count} in market</div>
+                        <div><strong>Avg Sellers/SKU:</strong> {avg_sellers_per_sku:.0f} (your products)</div>
+                        <div><strong>Price Gap:</strong> ${avg_price_gap:+.2f} vs competitor avg{" (per unit)" if price_gap_normalized else ""}</div>
+                        <div><strong>Competitor OOS:</strong> {f"{competitor_oos_pct*100:.1f}% (opportunity)" if competitor_oos_pct is not None else "<span style='color:#999'>N/A (no data)</span>"}</div>
+                        <div><strong>Market Size:</strong> ${total_market_revenue:,.0f}/mo total</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Competitive insights
+                if avg_sellers_per_sku > 5:
+                    st.warning(f"⚠️ **High Competition:** Average {avg_sellers_per_sku:.0f} sellers per SKU. Monitor Buy Box.")
+                if avg_price_gap > 2:
+                    st.info(f"💡 **Pricing Power:** You're ${avg_price_gap:.2f} above competitors. Test price increases on top SKUs.")
+                elif avg_price_gap < -1:
+                    st.warning(f"⚠️ **Price Pressure:** You're ${abs(avg_price_gap):.2f} below competitors. Consider raising prices.")
             
             with comp_col2:
                 st.markdown("### 🔍 Root Cause Analysis")
                 
-                # Break down risk by component (with safe fallbacks)
-                try:
-                    total_price_risk = float(enriched_portfolio_df['price_erosion_risk'].sum()) if 'price_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['price_erosion_risk'].isna().all() else 0
-                except:
-                    total_price_risk = 0
-                
-                try:
-                    total_share_risk = float(enriched_portfolio_df['share_erosion_risk'].sum()) if 'share_erosion_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['share_erosion_risk'].isna().all() else 0
-                except:
-                    total_share_risk = 0
-                
-                try:
-                    total_stockout_risk = float(enriched_portfolio_df['stockout_risk'].sum()) if 'stockout_risk' in enriched_portfolio_df.columns and not enriched_portfolio_df['stockout_risk'].isna().all() else 0
-                except:
-                    total_stockout_risk = 0
-                
-                # Calculate risk percentages
-                total_risk_components = total_price_risk + total_share_risk + total_stockout_risk
-                
-                # Break down growth by opportunity type
-                try:
-                    price_power_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'PRICE_POWER']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
-                except:
-                    price_power_growth = 0
-                try:
-                    conquest_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'CONQUEST']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
-                except:
-                    conquest_growth = 0
-                try:
-                    review_moat_growth = float(enriched_portfolio_df[enriched_portfolio_df['opportunity_type'] == 'REVIEW_MOAT']['thirty_day_growth'].sum()) if 'opportunity_type' in enriched_portfolio_df.columns else 0
-                except:
-                    review_moat_growth = 0
-                
-                total_growth_components = price_power_growth + conquest_growth + review_moat_growth
-                
+                # Risk/Growth components already calculated above
                 # Decide whether to show RISK breakdown or GROWTH breakdown
                 if total_risk_components > 100:  # Show risk breakdown if meaningful risk exists
                     price_pct = (total_price_risk / total_risk_components) * 100
@@ -2661,6 +2736,23 @@ with main_tab1:
             market_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
             
             if not market_df.empty and len(market_df) > 3:
+                # FIX: Heal competitor prices before display
+                # Calculate category median from products with valid prices
+                price_cols = ['price_per_unit', 'buy_box_price', 'filled_price', 'price']
+                category_median = 0.0
+                for col in price_cols:
+                    if col in market_df.columns:
+                        valid_prices = pd.to_numeric(market_df[col], errors='coerce')
+                        valid_prices = valid_prices[valid_prices > 1.0]  # Exclude $0 and errors
+                        if len(valid_prices) > 0:
+                            category_median = float(valid_prices.median())
+                            break
+                
+                # Heal $0 prices with category median for display
+                for col in ['price_per_unit', 'buy_box_price', 'filled_price']:
+                    if col in market_df.columns and category_median > 0:
+                        market_df.loc[pd.to_numeric(market_df[col], errors='coerce') <= 0, col] = category_median
+                
                 # Prepare price comparison data
                 price_col = 'price_per_unit' if 'price_per_unit' in market_df.columns else 'buy_box_price' if 'buy_box_price' in market_df.columns else 'filled_price'
                 rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
@@ -2676,10 +2768,18 @@ with main_tab1:
                     # Sort by revenue and get top 10
                     top_competitors = competitors.nlargest(10, rev_col) if rev_col in competitors.columns else competitors.head(10)
                     
+                    # Calculate median for price comparison (use healed data)
+                    median_price = competitors[price_col].median() if price_col in competitors.columns else category_median
+                    if median_price <= 0:
+                        median_price = category_median  # Fallback
+                    
                     # Build comparison table
                     comp_data = []
                     for _, row in top_competitors.iterrows():
                         price = row.get(price_col, row.get('buy_box_price', 0)) or 0
+                        # If still 0, use category median
+                        if price <= 0:
+                            price = category_median
                         pack_size = row.get('number_of_items', 1) or 1
                         price_per_unit = price / pack_size if pack_size > 1 else price
                         revenue = row.get(rev_col, 0) or 0
@@ -2688,9 +2788,9 @@ with main_tab1:
                         is_amazon = row.get('buybox_is_amazon', False)
                         oos_30 = row.get('oos_count_amazon_30', 0) or 0
                         velocity = row.get('velocity_30d', 0) or 0
+                        price_source = row.get('price_source', 'original')
                         
                         # Price comparison vs median
-                        median_price = competitors[price_col].median() if price_col in competitors.columns else 0
                         price_gap = ((price - median_price) / median_price * 100) if median_price > 0 else 0
                         
                         # Velocity badge
@@ -2705,17 +2805,20 @@ with main_tab1:
                         else:
                             vel_badge = "→ Stable"
                         
+                        # Mark healed prices
+                        price_display = f"${price:.2f}" if price_source == 'original' else f"~${price:.2f}"
+                        
                         comp_data.append({
                             'Brand': row.get('brand', 'Unknown')[:15],
                             'Product': str(row.get('title', row.get('asin', '')))[:30] + '...',
-                            'Price': f"${price:.2f}",
+                            'Price': price_display,
                             'Per Unit': f"${price_per_unit:.2f}" if pack_size > 1 else "-",
                             'vs Median': f"{price_gap:+.0f}%",
                             'BSR': f"#{int(rank):,}" if rank > 0 else "-",
-                            'Sellers': int(seller_count),
+                            'Sellers': int(seller_count) if seller_count > 0 else 1,
                             'Trend': vel_badge,
                             'Amz': '✓' if is_amazon else '',
-                            'OOS30': int(oos_30)
+                            'OOS30': int(oos_30) if oos_30 > 0 else '-'  # Show '-' for 0 OOS (likely no data)
                         })
                     
                     if comp_data:
@@ -3074,7 +3177,18 @@ with main_tab1:
                             pred_state_badge = ""
                         
                         # Escape cost of inaction for HTML - use 120 chars to show full reason
-                        escaped_cost = html.escape(cost_of_inaction[:120]) + "..." if len(cost_of_inaction) > 120 else html.escape(cost_of_inaction)
+                        # FIX: Build proper cost/value message with dollar amount
+                        if cost_of_inaction and len(cost_of_inaction) > 5:
+                            escaped_cost = html.escape(cost_of_inaction[:120]) + ("..." if len(cost_of_inaction) > 120 else "")
+                        elif is_actual_risk and thirty_day_risk > 0:
+                            # Build risk explanation
+                            escaped_cost = f"${thirty_day_risk:,.0f} at risk if no action taken in 30 days"
+                        elif thirty_day_growth > 0:
+                            # Build growth explanation
+                            escaped_cost = f"${thirty_day_growth:,.0f} potential revenue from optimization"
+                        else:
+                            # Fallback to revenue-based estimate
+                            escaped_cost = f"${rev:,.0f}/mo revenue - monitor for optimization opportunities"
                         
                         # Determine time sensitivity/urgency
                         urgency_badge = ""
@@ -3138,19 +3252,19 @@ with main_tab1:
                         # Determine primary metric display (show Risk if defensive, Growth if offensive)
                         total_opportunity = thirty_day_risk + thirty_day_growth
                         
-                        st.markdown(f"""<div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08); opacity: {card_opacity};">
+                        st.markdown(f"""<div style="background: {card_bg}; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; border-left: 4px solid {color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08); opacity: {card_opacity}; min-height: 350px;">
 <div style="font-size: 11px; color: {color}; font-weight: 600; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
 <span>#{i+1} PRIORITY{confidence_badge}</span>
 <span style="font-size: 9px; color: #999;">{source_badge}{pred_state_badge}</span>
 </div>
 {('<div style="background: ' + urgency_color + '; color: white; padding: 4px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-bottom: 8px; display: inline-block;">' + urgency_badge + '</div>') if urgency_badge else ''}
 <div style="font-size: 13px; color: #1a1a1a; font-weight: 600; margin: 6px 0 2px 0;">{problem_category}{velocity_badge_html}</div>
-<div style="display: flex; align-items: baseline; gap: 10px; margin: 4px 0;">
-<span style="font-size: 22px; color: {'#dc3545' if is_actual_risk else '#b8860b'}; font-weight: 700;">{f_money(thirty_day_risk)}</span>
-<span style="font-size: 14px; color: #666;">+</span>
-<span style="font-size: 22px; color: #28a745; font-weight: 700;">{f_money(thirty_day_growth)}</span>
+<div style="display: flex; align-items: baseline; gap: 8px; margin: 4px 0;">
+<span style="font-size: 20px; color: {'#dc3545' if is_actual_risk else '#b8860b'}; font-weight: 700;">{f_money(thirty_day_risk)}</span>
+<span style="font-size: 12px; color: #666;">+</span>
+<span style="font-size: 20px; color: #28a745; font-weight: 700;">{f_money(thirty_day_growth)}</span>
 </div>
-<div style="font-size: 11px; color: #666; margin-top: 2px;">{'30-Day Risk + Growth' if is_actual_risk else '30-Day Opportunity + Growth'} = {f_money(total_opportunity)}</div>
+<div style="font-size: 10px; color: #666; margin-top: 2px;">{'30-Day Risk' if is_actual_risk else '30-Day Opportunity'} + Growth = <strong>{f_money(total_opportunity)}</strong></div>
 {reasoning_preview}
 {signals_preview}
 <div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">
@@ -3377,7 +3491,7 @@ with main_tab1:
                     "Product": st.column_config.TextColumn("Product", width="large"),  # FIX #1: Wider product column
                     "State": st.column_config.TextColumn("AI State", width="small", help="AI Strategic Classification: Fortress, Harvest, Trench War, Distress, Terminal"),
                     "Action": st.column_config.TextColumn("Recommended Action", width="large"),  # FIX #2: Clearer header
-                    "Revenue": st.column_config.NumberColumn("Mo. Rev", format="$%.0f", width="small", help="Monthly revenue (90-day avg)"),
+                    "Revenue": st.column_config.NumberColumn("Mo. Rev", format="$%.0f", width="small", help="Estimated monthly revenue based on last 90 days of sales data"),
                     "Risk": st.column_config.NumberColumn("Risk", format="$%.0f", width="small", help="Predicted 30-day revenue at risk if no action"),
                     "Growth": st.column_config.NumberColumn("Growth", format="$%.0f", width="small", help="Predicted 30-day revenue from growth opportunities"),
                     "Certainty": st.column_config.ProgressColumn(

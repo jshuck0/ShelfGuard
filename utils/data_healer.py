@@ -704,19 +704,57 @@ def heal_market_snapshot(
     df = ensure_revenue_proxy(df, verbose=verbose)
     
     # 2. PRICE COLUMNS (dashboard expects multiple price columns)
+    # FIX: Heal $0 prices with category median to prevent blank competitor tables
     price_sources = ['price', 'buy_box_price', 'filled_price', 'amazon_price', 'new_price']
+    
+    # First, find valid prices from any source column
     price_value = None
     for col in price_sources:
         if col in df.columns and df[col].notna().any():
             price_value = pd.to_numeric(df[col], errors='coerce')
             break
     
-    # Ensure all price columns exist
+    # Calculate category median price from products that have valid prices (>$1)
+    # This will be used to fill $0 prices so competitor tables show real data
+    category_median_price = 0.0
+    for col in price_sources:
+        if col in df.columns:
+            valid_prices = pd.to_numeric(df[col], errors='coerce')
+            valid_prices = valid_prices[valid_prices > 1.0]  # Exclude $0 and <$1 (likely errors)
+            if len(valid_prices) > 0:
+                category_median_price = float(valid_prices.median())
+                break
+    
+    if verbose and category_median_price > 0:
+        print(f"  Category median price for healing: ${category_median_price:.2f}")
+    
+    # Ensure all price columns exist and heal $0 prices
     for col in ['price', 'buy_box_price', 'filled_price']:
         if col not in df.columns:
-            df[col] = price_value if price_value is not None else 0.0
+            df[col] = price_value if price_value is not None else category_median_price
         else:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Fill NaN with 0 first, then heal $0 prices with category median
+            df[col] = df[col].fillna(0)
+            if category_median_price > 0:
+                # Mark products that needed price healing
+                needs_healing = df[col] <= 0
+                if needs_healing.any():
+                    df.loc[needs_healing, col] = category_median_price
+                    if 'price_source' not in df.columns:
+                        df['price_source'] = 'original'
+                    df.loc[needs_healing, 'price_source'] = 'category_median'
+                    if verbose:
+                        healed_count = needs_healing.sum()
+                        print(f"  Healed {healed_count} products with $0 {col} → ${category_median_price:.2f}")
+    
+    # Also heal price_per_unit if it exists
+    if 'price_per_unit' in df.columns:
+        df['price_per_unit'] = pd.to_numeric(df['price_per_unit'], errors='coerce').fillna(0)
+        needs_healing = df['price_per_unit'] <= 0
+        if needs_healing.any() and category_median_price > 0:
+            pack_size = df['number_of_items'] if 'number_of_items' in df.columns else 1
+            df.loc[needs_healing, 'price_per_unit'] = category_median_price / pack_size.clip(lower=1)
     
     # 3. BSR/RANK COLUMNS
     bsr_sources = ['bsr', 'sales_rank', 'sales_rank_filled']

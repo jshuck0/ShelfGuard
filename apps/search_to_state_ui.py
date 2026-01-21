@@ -480,10 +480,16 @@ def render_discovery_ui() -> None:
 
     with col4:
         time_period = stats.get("time_period", "current")
+        # Calculate date range for clarity
+        from datetime import datetime, timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        date_range = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+        
         st.metric(
-            "Monthly Revenue (90-day avg)" if "90" in time_period else "Monthly Revenue Est.",
+            "Est. Monthly Revenue (All Brands)",
             f"${stats['total_revenue_proxy']:,.0f}",
-            delta=f"Based on {time_period}" if time_period != "current" else None
+            delta=f"Based on {date_range}" if "90" in time_period else "Current snapshot"
         )
 
     # Visualizations

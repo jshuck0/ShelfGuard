@@ -2658,7 +2658,7 @@ with main_tab1:
                     stockout_pct = (total_stockout_risk / total_risk_components) * 100
                     
                     st.markdown(f"""
-                    <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="background: white; border: 1px solid #e0e0e0; padding: 16px; border-radius: 8px; margin-bottom: 12px; min-height: 200px;">
                         <div style="font-size: 14px; font-weight: 600; color: #dc3545; margin-bottom: 12px;">
                             ⚠️ Portfolio Risk: ${thirty_day_risk:,.0f} ({risk_pct:.1f}% of revenue)
                         </div>
@@ -2699,7 +2699,7 @@ with main_tab1:
                     rm_pct = (review_moat_growth / total_growth_components) * 100 if total_growth_components > 0 else 0
                     
                     st.markdown(f"""
-                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px; min-height: 200px;">
                         <div style="font-size: 14px; font-weight: 600; color: #155724; margin-bottom: 12px;">
                             💰 Growth Opportunity: ${thirty_day_growth:,.0f} ({growth_pct:.1f}% potential)
                         </div>
@@ -2736,7 +2736,7 @@ with main_tab1:
                 
                 else:  # Portfolio is healthy with no significant risk or growth
                     st.markdown(f"""
-                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px;">
+                    <div style="background: white; border: 1px solid #d4edda; padding: 16px; border-radius: 8px; margin-bottom: 12px; min-height: 200px;">
                         <div style="font-size: 14px; font-weight: 600; color: #155724; margin-bottom: 8px;">
                             ✅ Portfolio Health: Optimized
                         </div>
@@ -2780,10 +2780,16 @@ with main_tab1:
                 price_col = 'price_per_unit' if 'price_per_unit' in market_df.columns else 'buy_box_price' if 'buy_box_price' in market_df.columns else 'filled_price'
                 rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
                 
-                # Get top competitors by revenue (exclude our brand)
+                # Get top competitors by revenue (exclude our brand - using both brand field and title matching)
                 target_brand = st.session_state.get('active_brand', '')
                 if target_brand:
-                    competitors = market_df[market_df['brand'].str.lower() != target_brand.lower()].copy()
+                    target_brand_lower = target_brand.lower().strip()
+                    # Exclude by brand field (case-insensitive, contains match)
+                    brand_match = market_df['brand'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False)
+                    # Also exclude by title field (backup - catches products where brand field is missing/different)
+                    title_match = market_df['title'].str.lower().str.contains(target_brand_lower, case=False, na=False, regex=False) if 'title' in market_df.columns else False
+                    # Competitor = NOT brand match AND NOT title match
+                    competitors = market_df[~brand_match & ~title_match].copy()
                 else:
                     competitors = market_df.copy()
                 
@@ -3071,7 +3077,22 @@ with main_tab1:
                     
                     # KEY METRICS FOR DISPLAY (Rank, Buy Box, Sellers)
                     display_rank = int(product.get('sales_rank_filled', product.get('sales_rank', 0)) or 0)
-                    display_bb_share = float(product.get('amazon_bb_share', 0.5) or 0.5)
+                    
+                    # Buy Box share - try multiple columns with fallback to None (not 50%)
+                    # We don't want to show 50% as default when we don't actually have data
+                    bb_share_raw = None
+                    for bb_col in ['amazon_bb_share', 'buybox_share', 'bb_share', 'buyBoxPercentage']:
+                        if bb_col in product and product.get(bb_col) is not None:
+                            try:
+                                val = float(product.get(bb_col, 0))
+                                if val > 0:  # Only use if we have actual data
+                                    bb_share_raw = val
+                                    break
+                            except:
+                                pass
+                    
+                    display_bb_share = bb_share_raw  # Keep as None if no data (will show "N/A" instead of fake 50%)
+                    
                     # Prefer seller_count (from sellerIds) over new_offer_count
                     display_seller_count = int(product.get('seller_count', product.get('new_offer_count', competitor_count)) or competitor_count or 0)
                     
@@ -3209,9 +3230,16 @@ with main_tab1:
                         elif thirty_day_growth > 0:
                             # Build growth explanation
                             escaped_cost = f"${thirty_day_growth:,.0f} potential revenue from optimization"
+                        elif optimization_value > 0:
+                            # Use optimization_value directly if available
+                            escaped_cost = f"${optimization_value:,.0f} potential upside from pricing/positioning optimization"
+                        elif rev > 0:
+                            # Fallback to revenue-based estimate (5% of monthly revenue)
+                            est_opportunity = rev * 0.05  # 5% of monthly revenue as conservative estimate
+                            escaped_cost = f"${est_opportunity:,.0f} estimated opportunity (5% of {f_money(rev)}/mo revenue)"
                         else:
-                            # Fallback to revenue-based estimate
-                            escaped_cost = f"${rev:,.0f}/mo revenue - monitor for optimization opportunities"
+                            # No data - hide the optimization section for this card
+                            escaped_cost = ""
                         
                         # Determine time sensitivity/urgency
                         urgency_badge = ""
@@ -3293,7 +3321,7 @@ with main_tab1:
 <div style="font-size: 11px; color: #1a1a1a; margin-top: 8px; padding: 8px; background: #e7f3ff; border-radius: 4px; border-left: 3px solid #007bff;">
 <strong>🎯 Action:</strong> {html.escape(specific_action)}
 </div>
-{f'<div style="font-size: 10px; color: #856404; margin-top: 6px; padding: 6px; background: #fff3cd; border-radius: 4px; border-left: 2px solid #ffc107;"><strong>💰 Optimization Value:</strong> {escaped_cost}</div>' if is_optimization else f'<div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;"><strong>⚡ Cost of Inaction:</strong> {escaped_cost}</div>'}
+{f'<div style="font-size: 10px; color: #856404; margin-top: 6px; padding: 6px; background: #fff3cd; border-radius: 4px; border-left: 2px solid #ffc107;"><strong>💰 Optimization Value:</strong> {escaped_cost}</div>' if is_optimization and escaped_cost else f'<div style="font-size: 10px; color: #c9302c; margin-top: 6px; padding: 6px; background: #fff5f5; border-radius: 4px; border-left: 2px solid #dc3545;"><strong>⚡ Cost of Inaction:</strong> {escaped_cost}</div>' if escaped_cost else ''}
 {growth_section}
 {('<div style="font-size: 10px; color: #155724; margin-top: 6px; padding: 6px; background: #d4edda; border-radius: 4px; border-left: 2px solid #28a745;">' + html.escape(outcome_metrics) + '</div>') if outcome_metrics else ''}
 <div style="font-size: 10px; color: #555; margin-top: 8px; padding: 4px 0; border-top: 1px solid #eee;">

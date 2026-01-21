@@ -3363,12 +3363,25 @@ with main_tab1:
                     asin = product.get('asin', '')
                     title = product.get('title', asin)[:40] + "..." if len(product.get('title', asin)) > 40 else product.get('title', asin)
 
-                    # === UNIFIED AI ENGINE (Strategic + Predictive in one call) ===
-                    # Enable triggers, network intelligence, AND competitive intelligence
+                    # === USE PRE-CALCULATED VALUES FROM ENRICHED DF ===
+                    # This ensures portfolio cards show EXACT SAME values as topline alpha
+                    # The enriched_portfolio_df already has thirty_day_risk, thirty_day_growth, etc.
+                    
+                    # Get pre-calculated predictive values (SAME SOURCE as topline)
+                    actual_risk = float(product.get('thirty_day_risk', 0) or 0)
+                    thirty_day_growth = float(product.get('thirty_day_growth', 0) or 0)
+                    optimization_value = float(product.get('optimization_value', 0) or 0)
+                    predictive_state = product.get('predictive_state', 'HOLD')
+                    opportunity_type = product.get('opportunity_type', '')
+                    model_certainty = float(product.get('model_certainty', 0.5) or 0.5)
+                    
+                    # Determine if this is an optimization opportunity vs actual risk
+                    is_actual_risk = predictive_state in ["DEFEND", "REPLENISH"] or actual_risk > 100
+                    thirty_day_risk = actual_risk if is_actual_risk else optimization_value
+                    
+                    # Get strategic info via get_product_strategy (for actions, not values)
                     bias = st.session_state.get('strategic_bias_value', '⚖️ Balanced Defense')
                     bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
-                    
-                    # Get market snapshot for competitive intelligence
                     market_df = st.session_state.get('active_project_market_snapshot', display_df)
                     
                     strategy = get_product_strategy(
@@ -3376,40 +3389,29 @@ with main_tab1:
                         revenue=rev, 
                         use_triangulation=TRIANGULATION_ENABLED, 
                         strategic_bias=bias_clean,
-                        enable_triggers=True,   # Enable trigger event detection
-                        enable_network=True,    # Enable network intelligence
-                        competitors_df=market_df  # Pass market data for competitive intelligence
+                        enable_triggers=True,
+                        enable_network=True,
+                        competitors_df=market_df
                     )
                     
-                    # Strategic outputs
+                    # Strategic outputs (for actions/recommendations)
                     problem_category = strategy["problem_category"]
                     ad_action = strategy["ad_action"]
                     ecom_action = strategy["ecom_action"]
                     strategic_state = strategy.get("strategic_state", "")
-                    confidence_score = strategy.get("confidence_score", 0)
+                    confidence_score = strategy.get("confidence_score", model_certainty)
                     recommended_plan = strategy.get("recommended_plan", "")
                     signals_detected = strategy.get("signals_detected", [])
                     
-                    # Predictive outputs (now included in unified response)
-                    # IMPORTANT: Keep risk and optimization_value separate for correct display
-                    actual_risk = strategy.get("thirty_day_risk", 0)  # Only real threats
-                    optimization_value = strategy.get("optimization_value", 0)  # Upside for stable products
-                    predictive_state = strategy.get("predictive_state", "HOLD")
+                    # Alert info from strategy
                     predictive_emoji = strategy.get("predictive_emoji", "✅")
                     cost_of_inaction = strategy.get("cost_of_inaction", "")
-                    model_certainty = strategy.get("model_certainty", confidence_score)
                     ai_recommendation = strategy.get("ai_recommendation", "")
                     alert_type = strategy.get("alert_type", "")
                     alert_urgency = strategy.get("alert_urgency", "")
                     data_quality = strategy.get("data_quality", "MEDIUM")
                     
-                    # Determine if this is an optimization opportunity vs actual risk
-                    is_actual_risk = predictive_state in ["DEFEND", "REPLENISH"] or actual_risk > 100
-                    # For display: use actual_risk for risky products, optimization_value for stable ones
-                    thirty_day_risk = actual_risk if is_actual_risk else optimization_value
-                    
-                    # Growth Intelligence outputs (offensive layer)
-                    thirty_day_growth = strategy.get("thirty_day_growth", 0)
+                    # Growth details from strategy
                     price_lift_opportunity = strategy.get("price_lift_opportunity", 0)
                     conquest_opportunity = strategy.get("conquest_opportunity", 0)
                     expansion_recommendation = strategy.get("expansion_recommendation", "")

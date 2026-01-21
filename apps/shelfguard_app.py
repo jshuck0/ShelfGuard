@@ -672,9 +672,10 @@ strategic_bias = st.sidebar.radio(
 # Clean strategic bias string (remove emoji for internal use)
 strategic_bias_clean = strategic_bias.split(' ', 1)[1] if ' ' in strategic_bias else strategic_bias
 
-# Store in session state for use throughout the app (including discovery path)
-st.session_state['strategic_bias'] = strategic_bias
-st.session_state['strategic_bias_clean'] = strategic_bias_clean
+# Store cleaned version in session state for use throughout the app (including discovery path)
+# Note: We use '_value' suffix because 'strategic_bias' is a widget key managed by Streamlit
+st.session_state['strategic_bias_value'] = strategic_bias
+st.session_state['strategic_bias_clean_value'] = strategic_bias_clean
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"🎚️ AI Engine: **{strategic_bias_clean}**")
@@ -1506,8 +1507,8 @@ with main_tab1:
         asin_list = portfolio_data['asin'].tolist() if 'asin' in portfolio_data.columns else []
         
         # Retrieve strategic_bias from session state (set in sidebar)
-        strategic_bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
-        strategic_bias_clean = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+        strategic_bias = st.session_state.get('strategic_bias_value', '⚖️ Balanced Defense')
+        strategic_bias_clean = st.session_state.get('strategic_bias_clean_value', 'Balanced Defense')
         
         data_cache_hash = hashlib.md5(
             f"{sorted(asin_list)[:20]}|{total_rev_curr:.0f}|{len(portfolio_data)}|{strategic_bias_clean}".encode(),
@@ -1609,7 +1610,7 @@ with main_tab1:
                 intel_signals += f"\n    - Subscribe & Save: {sns_count} products eligible for subscription push"
             
             # Retrieve strategic_bias for portfolio summary
-            strategic_bias_for_summary = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+            strategic_bias_for_summary = st.session_state.get('strategic_bias_clean_value', 'Balanced Defense')
             
             # Build summary for LLM showing brand performance, risk, and growth opportunities
             portfolio_summary = f"""
@@ -1651,7 +1652,7 @@ with main_tab1:
             # Try LLM-powered brief first (cached by data hash, not date)
             # If force refresh, use a unique hash to bypass cache
             # Include strategic_bias in cache key so brief updates when strategy changes
-            strategic_bias_clean = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+            strategic_bias_clean = st.session_state.get('strategic_bias_clean_value', 'Balanced Defense')
             cache_key = portfolio_hash + f"|{strategic_bias_clean}" + ("_refresh" if st.session_state.force_refresh_brief else "")
             llm_brief = generate_ai_brief(portfolio_summary, cache_key, strategic_bias_clean)
 
@@ -3011,7 +3012,7 @@ with main_tab1:
 
                     # === UNIFIED AI ENGINE (Strategic + Predictive in one call) ===
                     # Enable triggers, network intelligence, AND competitive intelligence
-                    bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
+                    bias = st.session_state.get('strategic_bias_value', '⚖️ Balanced Defense')
                     bias_clean = bias.split(' ', 1)[1] if ' ' in bias else bias
                     
                     # Get market snapshot for competitive intelligence

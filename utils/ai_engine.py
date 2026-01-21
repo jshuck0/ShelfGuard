@@ -3359,7 +3359,8 @@ async def generate_portfolio_brief(
     portfolio_summary: str,
     client: Optional[AsyncOpenAI] = None,
     model: Optional[str] = None,
-    timeout: float = 10.0
+    timeout: float = 10.0,
+    strategic_bias: str = "Balanced Defense"
 ) -> Optional[str]:
     """
     Generate an LLM-powered strategic brief for the entire portfolio.
@@ -3372,6 +3373,7 @@ async def generate_portfolio_brief(
         client: Optional AsyncOpenAI client (will create if not provided)
         model: Optional model name (defaults to gpt-4o-mini)
         timeout: Request timeout in seconds
+        strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         
     Returns:
         Strategic brief string, or None if LLM unavailable
@@ -3386,6 +3388,9 @@ async def generate_portfolio_brief(
     if model is None:
         model = _get_model_name()
     
+    # Get strategic bias instructions
+    bias_instructions = _get_strategic_bias_instructions(strategic_bias)
+    
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
@@ -3393,7 +3398,9 @@ async def generate_portfolio_brief(
                 messages=[
                     {
                         "role": "system",
-                        "content": """You are ShelfGuard's AI strategist analyzing Amazon portfolio health. Generate a clear, actionable executive brief.
+                        "content": f"""You are ShelfGuard's AI strategist analyzing Amazon portfolio health. Generate a clear, actionable executive brief.
+
+{bias_instructions}
 
 ## ANALYSIS FRAMEWORK
 
@@ -3513,7 +3520,8 @@ Generate an executive strategic brief. Focus on the highest-impact actions. If R
 def generate_portfolio_brief_sync(
     portfolio_summary: str,
     client: Optional[AsyncOpenAI] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    strategic_bias: str = "Balanced Defense"
 ) -> Optional[str]:
     """
     Synchronous wrapper for generate_portfolio_brief.
@@ -3525,6 +3533,7 @@ def generate_portfolio_brief_sync(
         portfolio_summary: Portfolio metrics summary string
         client: Optional AsyncOpenAI client (will create if not provided)
         model: Optional model name (defaults to gpt-4o-mini)
+        strategic_bias: User's strategic focus (Profit/Balanced/Growth)
         
     Returns:
         Strategic brief string, or None if LLM unavailable
@@ -3533,7 +3542,7 @@ def generate_portfolio_brief_sync(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(
-            generate_portfolio_brief(portfolio_summary, client, model)
+            generate_portfolio_brief(portfolio_summary, client, model, strategic_bias=strategic_bias)
         )
         loop.close()
         return result

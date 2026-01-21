@@ -517,15 +517,20 @@ def _hash_portfolio_data(portfolio_summary: str) -> str:
     return hashlib.md5(metrics_str.encode(), usedforsecurity=False).hexdigest()
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
+def generate_ai_brief(portfolio_summary: str, data_hash: str, strategic_bias: str = "Balanced Defense") -> str:
     """
     Generate an LLM-powered strategic brief for the portfolio.
     
     NOW USES THE SAME AI ENGINE as product-level classification
     for consistency across all AI outputs.
 
-    Cached by data_hash (portfolio metrics), not by date, to avoid
+    Cached by data_hash (portfolio metrics + strategic_bias), not by date, to avoid
     unnecessary API calls when only the date range changes.
+
+    Args:
+        portfolio_summary: Portfolio metrics summary string
+        data_hash: Cache key (includes strategic_bias)
+        strategic_bias: User's strategic focus (Profit/Balanced/Growth)
 
     Performance: Cached results reduce API calls and latency.
     """
@@ -534,7 +539,9 @@ def generate_ai_brief(portfolio_summary: str, data_hash: str) -> str:
     if generate_portfolio_brief_sync is None:
         return None
     
-    return generate_portfolio_brief_sync(portfolio_summary)
+    # Pass strategic_bias to the brief generator
+    # Note: generate_portfolio_brief_sync will incorporate strategic_bias into the prompt
+    return generate_portfolio_brief_sync(portfolio_summary, client=None, model=None, strategic_bias=strategic_bias)
 
 
 @st.cache_data(ttl=300, show_spinner=False)  # Cache for 5 minutes
@@ -664,6 +671,10 @@ strategic_bias = st.sidebar.radio(
 
 # Clean strategic bias string (remove emoji for internal use)
 strategic_bias_clean = strategic_bias.split(' ', 1)[1] if ' ' in strategic_bias else strategic_bias
+
+# Store in session state for use throughout the app (including discovery path)
+st.session_state['strategic_bias'] = strategic_bias
+st.session_state['strategic_bias_clean'] = strategic_bias_clean
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"🎚️ AI Engine: **{strategic_bias_clean}**")
@@ -1489,11 +1500,17 @@ with main_tab1:
         # Calculate ALL predictive metrics in ONE vectorized pass
         # CACHED: Avoids redundant computation on sidebar interactions
         
-        # Create data hash for cache key (based on ASIN list + revenue totals)
+        # Create data hash for cache key (based on ASIN list + revenue totals + strategic bias)
+        # Include strategic_bias in cache key so changes trigger recalculation
         portfolio_data = res["data"]
         asin_list = portfolio_data['asin'].tolist() if 'asin' in portfolio_data.columns else []
+        
+        # Retrieve strategic_bias from session state (set in sidebar)
+        strategic_bias = st.session_state.get('strategic_bias', '⚖️ Balanced Defense')
+        strategic_bias_clean = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+        
         data_cache_hash = hashlib.md5(
-            f"{sorted(asin_list)[:20]}|{total_rev_curr:.0f}|{len(portfolio_data)}".encode(),
+            f"{sorted(asin_list)[:20]}|{total_rev_curr:.0f}|{len(portfolio_data)}|{strategic_bias_clean}".encode(),
             usedforsecurity=False
         ).hexdigest()
         
@@ -1501,7 +1518,7 @@ with main_tab1:
         early_predictive_risk = _cached_portfolio_intelligence(
             data_cache_hash,
             total_rev_curr,
-            strategic_bias,
+            strategic_bias_clean,  # Use cleaned version for internal calculations
             portfolio_data
         )
         
@@ -1591,6 +1608,9 @@ with main_tab1:
             if sns_count > 0:
                 intel_signals += f"\n    - Subscribe & Save: {sns_count} products eligible for subscription push"
             
+            # Retrieve strategic_bias for portfolio summary
+            strategic_bias_for_summary = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+            
             # Build summary for LLM showing brand performance, risk, and growth opportunities
             portfolio_summary = f"""
     BRAND PERFORMANCE ANALYSIS:
@@ -1614,7 +1634,7 @@ with main_tab1:
     - Opportunity Alpha (Risk + Growth): {f_money(opportunity_alpha)}
     - Price Lift Opportunities: {price_lift_count} products
     - Conquest Opportunities: {conquest_count} products (competitors vulnerable)
-    - Strategic Focus: {strategic_bias}
+    - Strategic Focus: {strategic_bias_for_summary}
 
     INTELLIGENCE SIGNALS:{intel_signals if intel_signals else " (No special signals detected)"}
     {top_risk_lines}{top_growth_lines}
@@ -1630,8 +1650,10 @@ with main_tab1:
 
             # Try LLM-powered brief first (cached by data hash, not date)
             # If force refresh, use a unique hash to bypass cache
-            cache_key = portfolio_hash + ("_refresh" if st.session_state.force_refresh_brief else "")
-            llm_brief = generate_ai_brief(portfolio_summary, cache_key)
+            # Include strategic_bias in cache key so brief updates when strategy changes
+            strategic_bias_clean = st.session_state.get('strategic_bias_clean', 'Balanced Defense')
+            cache_key = portfolio_hash + f"|{strategic_bias_clean}" + ("_refresh" if st.session_state.force_refresh_brief else "")
+            llm_brief = generate_ai_brief(portfolio_summary, cache_key, strategic_bias_clean)
 
             # Reset force refresh flag after use
             if st.session_state.force_refresh_brief:

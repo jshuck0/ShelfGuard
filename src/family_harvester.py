@@ -884,24 +884,27 @@ def harvest_to_seed_dataframe(
         return pd.DataFrame()
     
     # Build DataFrame in phase1_seed_discovery format
+    # IMPORTANT: For Phase 1, show only ONE representative ASIN per family
+    # This prevents duplicate listings (e.g., 24 identical Hoka Bondi entries)
     records = []
     for family in result.families:
-        for asin in family.all_asins:
-            records.append({
-                "asin": asin,
-                "title": family.parent_title,
-                "brand": family.parent_brand,
-                "category_id": family.category_id,
-                "leaf_category_id": family.leaf_category_id or family.category_id,
-                "category_tree_ids": family.category_tree_ids if family.category_tree_ids else [family.category_id],
-                "category_tree_names": family.category_path.split(" > ") if family.category_path else [],
-                "category_path": family.category_path,
-                "price": 0,  # Will be filled in Phase 2
-                "bsr": family.parent_bsr,
-                "parent_asin": family.parent_asin,
-                "family_size": family.family_size,
-                "family_title": family.parent_title  # For UI display
-            })
-    
+        # Use parent ASIN as the representative for this family
+        # Don't loop through all child variations - that creates duplicates
+        records.append({
+            "asin": family.parent_asin,  # Single representative ASIN
+            "title": family.parent_title,
+            "brand": family.parent_brand,
+            "category_id": family.category_id,
+            "leaf_category_id": family.leaf_category_id or family.category_id,
+            "category_tree_ids": family.category_tree_ids if family.category_tree_ids else [family.category_id],
+            "category_tree_names": family.category_path.split(" > ") if family.category_path else [],
+            "category_path": family.category_path,
+            "price": 0,  # Will be filled in Phase 2
+            "bsr": family.parent_bsr,
+            "parent_asin": family.parent_asin,
+            "family_size": family.family_size,  # Shows how many variations exist
+            "family_title": family.parent_title  # For UI display
+        })
+
     df = pd.DataFrame(records)
     return df.drop_duplicates(subset=["asin"]).reset_index(drop=True)

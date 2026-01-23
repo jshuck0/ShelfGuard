@@ -537,12 +537,13 @@ def discover_seed_families(
         raise ValueError("KEEPA_API_KEY not found")
     
     # Build Product Finder query
+    # Use singleVariation=True to get one representative per parent family
+    # This prevents getting 50 variations of the same shoe model
     query_json = {
         "title": keyword,
-        "perPage": max(50, limit * 3),  # Fetch extra to account for filtering & deduplication
+        "perPage": max(50, limit * 2),  # Fetch 2x for safety (Keepa deduplicates for us now)
         "page": 0,
-        # NOTE: Removed singleVariation=True - it was too restrictive (only returned 1 result)
-        # Instead, we'll fetch more products and deduplicate by parent_asin ourselves
+        "singleVariation": True,  # CRITICAL: Only one variation per parent family
         "current_SALES_gte": 1,
         "current_SALES_lte": 200000,  # Filter out dead products
         "sort": [["current_SALES", "asc"]]  # Best sellers first
@@ -923,7 +924,9 @@ def harvest_product_families(
         f"🎯 Harvested {stats['total_asins']} ASINs across "
         f"{stats['total_families']} product families"
     )
-    
+
+    st.write(f"**DEBUG:** harvest_product_families returning {len(final_families)} families, {len(final_asins)} total ASINs")
+
     return HarvestResult(
         asins=final_asins,
         families=final_families,
@@ -969,7 +972,9 @@ def harvest_to_seed_dataframe(
     
     if not result.families:
         return pd.DataFrame()
-    
+
+    st.write(f"**DEBUG:** harvest_to_seed_dataframe received {len(result.families)} families from harvest_product_families")
+
     # Build DataFrame in phase1_seed_discovery format
     # IMPORTANT: For Phase 1, show only ONE representative ASIN per family
     # This prevents duplicate listings (e.g., 24 identical Hoka Bondi entries)
@@ -994,4 +999,13 @@ def harvest_to_seed_dataframe(
         })
 
     df = pd.DataFrame(records)
-    return df.drop_duplicates(subset=["asin"]).reset_index(drop=True)
+
+    # Debug: Show what we're returning
+    st.write(f"**DEBUG:** Created DataFrame with {len(df)} rows from {len(result.families)} families")
+    if len(df) > 0:
+        st.write(f"**DEBUG:** Sample ASINs: {df['asin'].tolist()[:5]}")
+
+    final_df = df.drop_duplicates(subset=["asin"]).reset_index(drop=True)
+    st.write(f"**DEBUG:** After drop_duplicates: {len(final_df)} rows")
+
+    return final_df

@@ -2891,21 +2891,25 @@ with main_tab1:
                             price = category_median
                         
                         # Pack size and per-unit calculation
-                        pack_size = int(row.get('number_of_items', 1) or 1)
+                        pack_size_raw = row.get('number_of_items', 1)
+                        pack_size = int(pack_size_raw) if pd.notna(pack_size_raw) and pack_size_raw else 1
                         if pack_size < 1:
                             pack_size = 1
                         price_per_unit = price / pack_size
-                        
+
                         revenue = float(row.get(rev_col, 0) or 0)
-                        
+
                         # FIX: Try multiple rank columns
                         rank = 0
                         for rcol in ['sales_rank_filled', 'sales_rank', 'bsr']:
-                            if rcol in row and pd.notna(row.get(rcol)) and float(row.get(rcol) or 0) > 0:
-                                rank = int(float(row.get(rcol)))
-                                break
-                        
-                        seller_count = int(row.get('seller_count', row.get('new_offer_count', 0)) or 0)
+                            if rcol in row and pd.notna(row.get(rcol)):
+                                rank_val = row.get(rcol)
+                                if rank_val and float(rank_val) > 0:
+                                    rank = int(float(rank_val))
+                                    break
+
+                        seller_count_raw = row.get('seller_count', row.get('new_offer_count', 0)) or 0
+                        seller_count = int(seller_count_raw) if pd.notna(seller_count_raw) else 0
                         
                         # FIX: Try multiple amazon seller columns
                         is_amazon = row.get('buybox_is_amazon', False) or row.get('has_amazon_seller', False) or row.get('amazon_bb_share', 0) > 0.5

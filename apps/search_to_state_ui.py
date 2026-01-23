@@ -207,6 +207,8 @@ def render_discovery_ui() -> None:
                     del st.session_state["discovery_market_snapshot"]
                 if "discovery_stats" in st.session_state:
                     del st.session_state["discovery_stats"]
+                if "seed_debug_trail" in st.session_state:
+                    del st.session_state["seed_debug_trail"]
 
                 with st.spinner(f"🔍 Searching for '{search_keyword}'..."):
                     try:
@@ -502,6 +504,17 @@ def render_discovery_ui() -> None:
     
     st.markdown("---")
     st.markdown(f"### 📊 Market Snapshot: **{stats['query']}**")
+
+    # Display seed ASIN debug trail if available
+    if "seed_debug_trail" in st.session_state and st.session_state["seed_debug_trail"]:
+        with st.expander("🔍 Seed ASIN Debug Trail", expanded=True):
+            for msg in st.session_state["seed_debug_trail"]:
+                if "❌" in msg:
+                    st.error(msg)
+                elif "✅" in msg:
+                    st.success(msg)
+                else:
+                    st.write(msg)
 
     col1, col2, col3, col4 = st.columns(4)
 

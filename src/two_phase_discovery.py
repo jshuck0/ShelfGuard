@@ -1989,6 +1989,12 @@ def phase2_category_market_mapping(
         
         st.caption(f"📈 Built weekly table with {len(df_weekly)} rows across {df_weekly['asin'].nunique()} ASINs")
 
+        # Initialize seed debug tracking
+        if seed_asin:
+            st.session_state["seed_debug_trail"] = []
+            st.session_state["seed_debug_trail"].append(f"Starting seed ASIN tracking: {seed_asin}")
+            st.session_state["seed_debug_trail"].append(f"Weekly table has {df_weekly['asin'].nunique()} unique ASINs")
+
         # CRITICAL FIX: If seed ASIN was filtered out (no historical data), add it back
         # This happens with new products or products with sparse data
         if seed_asin and seed_asin not in df_weekly['asin'].values:
@@ -2020,6 +2026,7 @@ def phase2_category_market_mapping(
                 # Add the row to df_weekly
                 df_weekly = pd.concat([df_weekly, pd.DataFrame([seed_row])], ignore_index=True)
                 st.success(f"✅ Added seed ASIN {seed_asin} to weekly table")
+                st.session_state["seed_debug_trail"].append(f"✅ Added seed ASIN to df_weekly (now {len(df_weekly)} rows, {df_weekly['asin'].nunique()} unique ASINs)")
 
         # ========== AGGREGATE WEEKLY DATA INTO SNAPSHOT ==========
         # For each ASIN, calculate:
@@ -2065,11 +2072,15 @@ def phase2_category_market_mapping(
         # Debug: Check if seed ASIN survived aggregation
         if seed_asin:
             if seed_asin in asin_summary['asin'].values:
-                st.caption(f"✅ Seed ASIN {seed_asin} present in asin_summary ({len(asin_summary)} products)")
+                msg = f"✅ Checkpoint 1: Seed ASIN in asin_summary ({len(asin_summary)} products)"
+                st.caption(msg)
+                st.session_state["seed_debug_trail"].append(msg)
             else:
-                st.error(f"❌ Seed ASIN {seed_asin} LOST during aggregation! Had {len(df_weekly)} rows, got {len(asin_summary)} products")
-                st.write(f"**DEBUG:** df_weekly ASINs with seed: {seed_asin in df_weekly['asin'].values}")
-                st.write(f"**DEBUG:** asin_summary ASINs: {asin_summary['asin'].tolist()[:10]}")
+                msg = f"❌ LOST at aggregation: {len(df_weekly)} rows → {len(asin_summary)} products (seed missing)"
+                st.error(msg)
+                st.session_state["seed_debug_trail"].append(msg)
+                st.session_state["seed_debug_trail"].append(f"   df_weekly has seed: {seed_asin in df_weekly['asin'].values}")
+                st.session_state["seed_debug_trail"].append(f"   asin_summary first 10: {asin_summary['asin'].tolist()[:10]}")
 
         # Merge week counts
         asin_summary = asin_summary.merge(weeks_per_asin, on="asin", how="left")
@@ -2166,9 +2177,13 @@ def phase2_category_market_mapping(
         # Debug: Check if seed ASIN survived variation adjustment
         if seed_asin:
             if seed_asin in df['asin'].values:
-                st.caption(f"✅ Seed ASIN {seed_asin} present in final df ({len(df)} products)")
+                msg = f"✅ Checkpoint 2: Seed ASIN in final df ({len(df)} products)"
+                st.caption(msg)
+                st.session_state["seed_debug_trail"].append(msg)
             else:
-                st.error(f"❌ Seed ASIN {seed_asin} LOST during variation adjustment!")
+                msg = f"❌ LOST during variation adjustment"
+                st.error(msg)
+                st.session_state["seed_debug_trail"].append(msg)
 
         # Calculate market stats
         brand_product_count = len(brand_products) if target_brand else 0

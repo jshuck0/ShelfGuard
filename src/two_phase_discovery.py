@@ -1998,22 +1998,28 @@ def phase2_category_market_mapping(
             seed_product = next((p for p in unique_products if p.get("asin") == seed_asin), None)
 
             if seed_product:
-                # Create a minimal weekly row for the seed ASIN using current values
+                # Create a seed row matching df_weekly schema
                 current_week = pd.Timestamp.now().normalize() - pd.Timedelta(days=pd.Timestamp.now().weekday())
-                seed_row = {
+
+                # Start with all columns from df_weekly, filled with NaN
+                seed_row = {col: np.nan for col in df_weekly.columns}
+
+                # Override with known values
+                seed_row.update({
                     "week_start": current_week,
                     "asin": seed_asin,
                     "title": seed_product.get("title", ""),
                     "brand": seed_product.get("brand", ""),
                     "filled_price": seed_product.get("price", 0),
                     "sales_rank_filled": seed_product.get("bsr", 50000),
-                    "weekly_sales_filled": seed_product.get("revenue_proxy", 0),
-                    "estimated_units": seed_product.get("monthly_units", 0),
+                    "weekly_sales_filled": seed_product.get("revenue_proxy", 0) / 4.33,  # Monthly → weekly
+                    "estimated_units": seed_product.get("monthly_units", 0) / 4.33,  # Monthly → weekly
                     "main_image": seed_product.get("main_image", "")
-                }
+                })
+
                 # Add the row to df_weekly
                 df_weekly = pd.concat([df_weekly, pd.DataFrame([seed_row])], ignore_index=True)
-                st.success(f"✅ Added seed ASIN {seed_asin} to weekly table with current values")
+                st.success(f"✅ Added seed ASIN {seed_asin} to weekly table")
 
         # ========== AGGREGATE WEEKLY DATA INTO SNAPSHOT ==========
         # For each ASIN, calculate:
@@ -2055,7 +2061,16 @@ def phase2_category_market_mapping(
         agg_dict = {k: v for k, v in agg_dict.items() if k in df_weekly.columns}
         
         asin_summary = df_weekly.groupby("asin").agg(agg_dict).reset_index()
-        
+
+        # Debug: Check if seed ASIN survived aggregation
+        if seed_asin:
+            if seed_asin in asin_summary['asin'].values:
+                st.caption(f"✅ Seed ASIN {seed_asin} present in asin_summary ({len(asin_summary)} products)")
+            else:
+                st.error(f"❌ Seed ASIN {seed_asin} LOST during aggregation! Had {len(df_weekly)} rows, got {len(asin_summary)} products")
+                st.write(f"**DEBUG:** df_weekly ASINs with seed: {seed_asin in df_weekly['asin'].values}")
+                st.write(f"**DEBUG:** asin_summary ASINs: {asin_summary['asin'].tolist()[:10]}")
+
         # Merge week counts
         asin_summary = asin_summary.merge(weeks_per_asin, on="asin", how="left")
         
@@ -2147,7 +2162,14 @@ def phase2_category_market_mapping(
         # Apply variation deduplication to prevent revenue overcounting
         df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
         adjusted_revenue = df["revenue_proxy_adjusted"].sum()
-        
+
+        # Debug: Check if seed ASIN survived variation adjustment
+        if seed_asin:
+            if seed_asin in df['asin'].values:
+                st.caption(f"✅ Seed ASIN {seed_asin} present in final df ({len(df)} products)")
+            else:
+                st.error(f"❌ Seed ASIN {seed_asin} LOST during variation adjustment!")
+
         # Calculate market stats
         brand_product_count = len(brand_products) if target_brand else 0
         competitor_count = len(df) - brand_product_count

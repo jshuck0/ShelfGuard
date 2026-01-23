@@ -567,38 +567,41 @@ def discover_seed_families(
         st.warning(f"No products found for '{keyword}'")
         return []
 
-    # Limit to requested amount
-    original_count = len(seed_asins)
-    seed_asins = seed_asins[:limit]
-
-    st.write(f"**DEBUG:** Limiting {original_count} ASINs to {len(seed_asins)} (requested {limit})")
+    # DON'T limit here - we need to process all ASINs and then deduplicate by parent
+    # Otherwise we might get 25 ASINs that all have the same parent → only 1 unique family
     st.info(f"📦 Found {len(seed_asins)} seed products, fetching details...")
     
     # Fetch full product details
     products = _fetch_product_details(seed_asins, api_key, domain)
-    
+
+    st.write(f"**DEBUG:** Fetched {len(products)} product details from Keepa")
+
     # Build ProductFamily objects
     # Key insight: Product Finder returns CHILD products (with data), not parent ASINs
     # Each child has a parentAsin field pointing to its parent (which has no data)
     families = []
     skipped_parents = 0
     
-    for product in products:
+    for idx, product in enumerate(products):
         asin = product.get("asin", "")
         title = product.get("title", "Unknown")
         brand = product.get("brand", "Unknown")
-        
+
         # Check if this is a variation parent (productType=5)
         # These have NO usable data (no price, no BSR) - skip them entirely
         is_var_parent = _is_variation_parent(product)
         has_data = _has_usable_data(product)
-        
+
         if is_var_parent:
             skipped_parents += 1
+            if idx < 5:  # Only show first 5 to avoid spam
+                st.caption(f"⏭️ Skipping variation parent: {title[:50]}")
             continue  # Skip variation parents - they have no data
-        
+
         if not has_data:
             skipped_parents += 1
+            if idx < 5:  # Only show first 5
+                st.caption(f"⏭️ Skipping (no data): {title[:50]}")
             continue  # Skip products with no usable data
         
         # Extract category (full tree for progressive fallback)
@@ -621,6 +624,9 @@ def discover_seed_families(
         # Check if this product is itself a child (has a different parentAsin)
         parent_asin_from_product = product.get("parentAsin")
         is_child_of_another = parent_asin_from_product and parent_asin_from_product != asin
+
+        if idx < 5:  # Debug first 5 products
+            st.caption(f"✅ Processing: {brand} - {title[:40]} (BSR: {bsr}, Parent: {parent_asin_from_product or 'none'})")
         
         # Extract any embedded variations (siblings)
         embedded_children = _extract_variation_asins(product)
@@ -664,19 +670,29 @@ def discover_seed_families(
     if skipped_parents > 0:
         st.caption(f"ℹ️ Filtered out {skipped_parents} products (no price/BSR data)")
 
+    st.write(f"**DEBUG:** Built {len(families)} families before deduplication")
+
     # DEDUPLICATION: Group by parent_asin to avoid duplicate families
     # Since we removed singleVariation=True, we might get multiple children of same parent
     seen_parents = {}
     unique_families = []
+    duplicate_count = 0
     for family in families:
         if family.parent_asin not in seen_parents:
             seen_parents[family.parent_asin] = family
             unique_families.append(family)
+        else:
+            duplicate_count += 1
 
-    st.write(f"**DEBUG:** Deduplicated {len(families)} → {len(unique_families)} unique families")
+    st.write(f"**DEBUG:** Deduplicated {len(families)} families → {len(unique_families)} unique (removed {duplicate_count} duplicates)")
 
     # Sort by BSR (best sellers first)
     unique_families.sort(key=lambda f: f.parent_bsr)
+
+    # NOW limit to requested amount AFTER deduplication
+    if len(unique_families) > limit:
+        st.write(f"**DEBUG:** Limiting {len(unique_families)} unique families → {limit} (requested limit)")
+        unique_families = unique_families[:limit]
 
     st.success(f"✅ Identified {len(unique_families)} unique product families (searched for {limit})")
 

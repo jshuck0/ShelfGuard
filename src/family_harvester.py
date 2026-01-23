@@ -875,7 +875,7 @@ def harvest_to_seed_dataframe(
         max_asins=limit,
         domain=domain,
         category_filter=category_filter,
-        seed_limit=min(10, limit // 5),  # Scale seeds based on limit
+        seed_limit=limit,  # Get as many families as requested (no expansion, so 1:1 ratio)
         expand_variations=False,  # FAST: Don't expand variations for Phase 1 (too slow)
         filter_children=False      # FAST: Skip filtering for Phase 1 (too slow)
     )

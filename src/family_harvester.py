@@ -539,9 +539,10 @@ def discover_seed_families(
     # Build Product Finder query
     query_json = {
         "title": keyword,
-        "perPage": max(50, limit * 2),  # Fetch extra to account for filtering
+        "perPage": max(50, limit * 3),  # Fetch extra to account for filtering & deduplication
         "page": 0,
-        "singleVariation": True,  # KEY: Get one product per family
+        # NOTE: Removed singleVariation=True - it was too restrictive (only returned 1 result)
+        # Instead, we'll fetch more products and deduplicate by parent_asin ourselves
         "current_SALES_gte": 1,
         "current_SALES_lte": 200000,  # Filter out dead products
         "sort": [["current_SALES", "asc"]]  # Best sellers first
@@ -555,17 +556,22 @@ def discover_seed_families(
         query_json["brand"] = [brand_filter]
     
     st.info(f"🔍 Searching for '{keyword}' with family-aware discovery...")
-    
+    st.write(f"**DEBUG:** Requesting {limit} families, perPage={query_json['perPage']}")
+
     # Execute search
     seed_asins = _keepa_product_finder_query(query_json, api_key, domain)
-    
+
+    st.write(f"**DEBUG:** Keepa API returned {len(seed_asins) if seed_asins else 0} total ASINs")
+
     if not seed_asins:
         st.warning(f"No products found for '{keyword}'")
         return []
-    
+
     # Limit to requested amount
+    original_count = len(seed_asins)
     seed_asins = seed_asins[:limit]
-    
+
+    st.write(f"**DEBUG:** Limiting {original_count} ASINs to {len(seed_asins)} (requested {limit})")
     st.info(f"📦 Found {len(seed_asins)} seed products, fetching details...")
     
     # Fetch full product details
@@ -657,24 +663,30 @@ def discover_seed_families(
     
     if skipped_parents > 0:
         st.caption(f"ℹ️ Filtered out {skipped_parents} products (no price/BSR data)")
-    
+
+    # DEDUPLICATION: Group by parent_asin to avoid duplicate families
+    # Since we removed singleVariation=True, we might get multiple children of same parent
+    seen_parents = {}
+    unique_families = []
+    for family in families:
+        if family.parent_asin not in seen_parents:
+            seen_parents[family.parent_asin] = family
+            unique_families.append(family)
+
+    st.write(f"**DEBUG:** Deduplicated {len(families)} → {len(unique_families)} unique families")
+
     # Sort by BSR (best sellers first)
-    families.sort(key=lambda f: f.parent_bsr)
+    unique_families.sort(key=lambda f: f.parent_bsr)
 
-    # Debug output
-    if skipped_parents > 0:
-        st.caption(f"ℹ️ Filtered out {skipped_parents} variation parents/products without data from {len(products)} total")
+    st.success(f"✅ Identified {len(unique_families)} unique product families (searched for {limit})")
 
-    st.success(f"✅ Identified {len(families)} product families (searched for {limit})")
-
-    if len(families) < limit:
+    if len(unique_families) < limit:
         st.warning(
-            f"⚠️ Only found {len(families)}/{limit} families\n\n"
-            f"Keepa returned products but many were filtered out (variation parents with no price/BSR data).\n\n"
-            f"**Tip:** Keepa's `singleVariation=true` sometimes returns parent ASINs that have no data."
+            f"⚠️ Only found {len(unique_families)}/{limit} families\n\n"
+            f"Keepa returned products but many were filtered out (variation parents with no price/BSR data)."
         )
 
-    return families
+    return unique_families
 
 
 def explode_family_children(

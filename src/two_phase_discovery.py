@@ -637,7 +637,7 @@ def get_openai_client() -> Optional[OpenAI]:
 ENABLE_FAMILY_HARVESTER = True
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, hash_funcs={type(None): lambda x: None})
 def phase1_seed_discovery(
     keyword: str,
     limit: int = 50,

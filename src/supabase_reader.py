@@ -312,7 +312,24 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     for col in numeric_columns:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-    
+
+    # CRITICAL: Convert boolean columns to proper dtypes
+    # This prevents type errors when using .any(), .sum(), etc.
+    boolean_columns = [
+        "buybox_is_amazon", "buybox_is_fba", "buybox_is_backorder",
+        "has_amazon_seller", "is_sns", "amazon_unstable"
+    ]
+
+    for col in boolean_columns:
+        if col in df.columns:
+            # Convert to boolean, handling NaN, floats (0.0/1.0), strings, etc.
+            df[col] = df[col].apply(lambda x:
+                False if pd.isna(x) or x is None
+                else bool(int(x)) if isinstance(x, (int, float))
+                else bool(x) if isinstance(x, bool)
+                else str(x).lower() in ('true', '1', 'yes')
+            )
+
     # Ensure required columns exist with proper values
     if "weekly_sales_filled" not in df.columns or df["weekly_sales_filled"].sum() == 0:
         if "filled_price" in df.columns and "estimated_units" in df.columns:
@@ -644,10 +661,10 @@ def cache_market_snapshot(
                 "monthly_sold": _safe_int(row_dict.get("monthly_sold")),
                 "number_of_items": _safe_int(row_dict.get("number_of_items")) or 1,
                 "price_per_unit": _safe_float(row_dict.get("price_per_unit")),
-                "buybox_is_amazon": row_dict.get("buybox_is_amazon"),  # Keep as bool/None
-                "buybox_is_fba": row_dict.get("buybox_is_fba"),  # Keep as bool/None
-                "buybox_is_backorder": row_dict.get("buybox_is_backorder", False),
-                "has_amazon_seller": row_dict.get("has_amazon_seller"),  # Keep as bool/None
+                "buybox_is_amazon": _safe_bool(row_dict.get("buybox_is_amazon")),
+                "buybox_is_fba": _safe_bool(row_dict.get("buybox_is_fba")),
+                "buybox_is_backorder": _safe_bool(row_dict.get("buybox_is_backorder")) or False,
+                "has_amazon_seller": _safe_bool(row_dict.get("has_amazon_seller")),
                 "seller_count": _safe_int(row_dict.get("seller_count")) or 1,
                 "oos_count_amazon_30": _safe_int(row_dict.get("oos_count_amazon_30")),
                 "oos_count_amazon_90": _safe_int(row_dict.get("oos_count_amazon_90")),
@@ -658,7 +675,7 @@ def cache_market_snapshot(
                 "bb_seller_count_30": _safe_int(row_dict.get("bb_seller_count_30")),
                 "bb_top_seller_30": _safe_float(row_dict.get("bb_top_seller_30")),
                 "units_source": str(row_dict.get("units_source", "bsr_formula")),
-                "is_sns": row_dict.get("is_sns", False),
+                "is_sns": _safe_bool(row_dict.get("is_sns")) or False,
             }
 
             # ENHANCEMENT 2.3: Add category metadata if provided (consolidates with accumulator)
@@ -687,18 +704,35 @@ def cache_market_snapshot(
         # Upsert in chunks
         chunk_size = 100
         total_cached = 0
-        
+
         for i in range(0, len(unique_records), chunk_size):
             chunk = unique_records[i:i + chunk_size]
+
+            # Final sanitization: Replace any remaining NaN/inf values with None
+            import math
+            sanitized_chunk = []
+            for record in chunk:
+                sanitized_record = {}
+                for key, val in record.items():
+                    # Check for NaN/inf in numeric types
+                    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                        sanitized_record[key] = None
+                    else:
+                        sanitized_record[key] = val
+                sanitized_chunk.append(sanitized_record)
+
             try:
                 supabase.table("product_snapshots").upsert(
-                    chunk,
+                    sanitized_chunk,
                     on_conflict="asin,snapshot_date"
                 ).execute()
-                total_cached += len(chunk)
+                total_cached += len(sanitized_chunk)
             except Exception as e:
                 # Log but don't fail - caching is optional
                 st.warning(f"Cache batch failed: {e}")
+                # Show which ASINs failed for debugging
+                failed_asins = [r.get("asin", "unknown") for r in sanitized_chunk]
+                st.caption(f"Failed ASINs: {failed_asins[:5]}...")
         
         return total_cached
         
@@ -733,6 +767,27 @@ def _safe_int(val) -> Optional[int]:
         return None
     try:
         return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_bool(val) -> Optional[bool]:
+    """Safely convert to bool, handling NaN, None, and float booleans (0.0/1.0)."""
+    import numpy as np
+    import pandas as pd
+    if val is None:
+        return None
+    if pd.isna(val):  # Handles np.nan, pd.NA, None, etc.
+        return None
+    try:
+        # Handle float booleans (0.0 → False, 1.0 → True)
+        if isinstance(val, (int, float)):
+            return bool(int(val))
+        # Handle string booleans
+        if isinstance(val, str):
+            return val.lower() in ('true', '1', 'yes')
+        # Handle actual booleans
+        return bool(val)
     except (ValueError, TypeError):
         return None
 

@@ -198,8 +198,18 @@ def _keepa_product_finder_query(
     
     for attempt in range(RETRY_ATTEMPTS):
         try:
+            # CIRCUIT BREAKER: Import and check from two_phase_discovery
+            try:
+                from src.two_phase_discovery import _record_api_call
+                _record_api_call("product_finder")
+            except (ImportError, RuntimeError) as cb_error:
+                if isinstance(cb_error, RuntimeError):
+                    st.error(f"Circuit breaker tripped: {cb_error}")
+                    return []
+                # ImportError - circuit breaker not available, continue anyway
+
             response = requests.post(url, json=query_json, timeout=30)
-            
+
             if response.status_code != 200:
                 st.warning(f"Keepa API error: {response.status_code}")
                 if attempt < RETRY_ATTEMPTS - 1:

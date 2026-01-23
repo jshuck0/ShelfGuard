@@ -44,6 +44,88 @@ from src.family_harvester import (
 
 
 # ========================================
+# GLOBAL CIRCUIT BREAKER for API Calls
+# ========================================
+# Prevents infinite loops from draining Keepa tokens
+# Tracks API calls per session and enforces hard limits
+
+_API_CALL_TRACKER = {
+    "session_id": None,
+    "call_count": 0,
+    "last_reset": None,
+    "max_calls_per_minute": 100,  # Keepa limit
+    "max_calls_per_session": 200,  # Safety limit (~3-5 searches before circuit trips)
+}
+
+def _check_circuit_breaker() -> bool:
+    """
+    Check if API circuit breaker should trip.
+
+    Returns:
+        True if API call is allowed, False if circuit is open (rate limit hit)
+    """
+    global _API_CALL_TRACKER
+
+    # Initialize session tracking
+    current_session = st.session_state.get("session_id")
+    if current_session is None:
+        # Generate unique session ID
+        current_session = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+        st.session_state["session_id"] = current_session
+
+    # Reset tracker if new session
+    if _API_CALL_TRACKER["session_id"] != current_session:
+        _API_CALL_TRACKER.update({
+            "session_id": current_session,
+            "call_count": 0,
+            "last_reset": time.time()
+        })
+
+    # Check session limit
+    if _API_CALL_TRACKER["call_count"] >= _API_CALL_TRACKER["max_calls_per_session"]:
+        st.error(
+            f"🚨 **CIRCUIT BREAKER TRIPPED**\n\n"
+            f"API call limit reached ({_API_CALL_TRACKER['max_calls_per_session']} calls/session).\n\n"
+            f"This prevents infinite loops from draining your Keepa tokens.\n\n"
+            f"**To continue:** Refresh the page or wait 60 seconds."
+        )
+        return False
+
+    # Check per-minute rate limit
+    if _API_CALL_TRACKER["last_reset"]:
+        elapsed = time.time() - _API_CALL_TRACKER["last_reset"]
+        if elapsed < 60:
+            rate = _API_CALL_TRACKER["call_count"] / (elapsed / 60)
+            if rate > _API_CALL_TRACKER["max_calls_per_minute"]:
+                wait_time = int(60 - elapsed)
+                st.warning(
+                    f"⚠️ **Rate Limit Protection**\n\n"
+                    f"Too many API calls per minute ({int(rate)}/min > {_API_CALL_TRACKER['max_calls_per_minute']}/min).\n\n"
+                    f"Waiting {wait_time}s before next request..."
+                )
+                time.sleep(wait_time)
+                # Reset counter after waiting
+                _API_CALL_TRACKER["call_count"] = 0
+                _API_CALL_TRACKER["last_reset"] = time.time()
+
+    # Increment counter
+    _API_CALL_TRACKER["call_count"] += 1
+
+    return True
+
+
+def _record_api_call(call_type: str = "query"):
+    """
+    Record an API call for circuit breaker tracking.
+
+    Args:
+        call_type: Type of API call (query, product_finder, etc.)
+    """
+    if not _check_circuit_breaker():
+        raise RuntimeError("Circuit breaker tripped - API call limit reached")
+
+
+# ========================================
 # HELPER: SAFE KEEPA CSV VALUE EXTRACTION
 # ========================================
 
@@ -1322,13 +1404,16 @@ def phase2_category_market_mapping(
             st.caption(f"🔍 Querying with filter: {list(query_json.keys())}...")
 
         try:
+            # CIRCUIT BREAKER: Check if we can make API call
+            _record_api_call("product_finder")
+
             # Make HTTP POST request with retry logic for rate limits
             url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
-            
+
             max_retries = 3
             retry_delay = 5  # Start with 5 seconds
             response = None
-            
+
             for attempt in range(max_retries):
                 response = requests.post(url, json=query_json, timeout=30)
                 
@@ -1378,6 +1463,9 @@ def phase2_category_market_mapping(
                 
                 for attempt in range(max_retries):
                     try:
+                        # CIRCUIT BREAKER: Check before each batch
+                        _record_api_call("batch_query")
+
                         batch_products = api.query(batch_asins, stats=90, rating=True)
                         products.extend(batch_products)
                         batch_success = True

@@ -177,16 +177,29 @@ def render_discovery_ui() -> None:
             st.info("💡 Enter a brand or keyword (e.g., 'RXBAR', 'Poppi', 'protein bars')")
             return
 
-        # Phase 1 Search Button
+        # Phase 1 Search Button with Circuit Breaker
         search_key = f"{search_keyword}_{category_filter}"
-        if "seed_products_df" not in st.session_state or st.session_state.get("last_search") != search_key:
-            if st.button("🔍 Find Products", type="primary"):
+
+        # CIRCUIT BREAKER: Prevent infinite loops
+        # Check if we're currently searching (loading lock)
+        if st.session_state.get("is_searching", False):
+            st.warning("⏳ Search already in progress. Please wait...")
+            return
+
+        # Only show button if this is a NEW search (not already loaded)
+        results_exist = "seed_products_df" in st.session_state and st.session_state.get("last_search") == search_key
+
+        if not results_exist:
+            if st.button("🔍 Find Products", type="primary", key="search_button"):
+                # Set loading lock IMMEDIATELY
+                st.session_state["is_searching"] = True
+
                 # Clear previous Phase 2 data when starting a new search
                 if "discovery_market_snapshot" in st.session_state:
                     del st.session_state["discovery_market_snapshot"]
                 if "discovery_stats" in st.session_state:
                     del st.session_state["discovery_stats"]
-                    
+
                 with st.spinner(f"🔍 Searching for '{search_keyword}'..."):
                     try:
                         from src.two_phase_discovery import phase1_seed_discovery
@@ -200,14 +213,17 @@ def render_discovery_ui() -> None:
                         )
 
                         if seed_df.empty:
+                            st.session_state["is_searching"] = False  # Release lock
                             st.error(f"❌ No products found for '{search_keyword}'")
                             return
 
                         st.session_state["seed_products_df"] = seed_df
                         st.session_state["last_search"] = search_key
+                        st.session_state["is_searching"] = False  # Release lock before rerun
                         st.rerun()
 
                     except Exception as e:
+                        st.session_state["is_searching"] = False  # Release lock on error
                         st.error(f"❌ Discovery failed: {str(e)}")
                         st.exception(e)
                         return

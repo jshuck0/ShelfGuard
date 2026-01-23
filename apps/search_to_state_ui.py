@@ -709,7 +709,22 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
     if st.button("🚀 Create Project & Backfill History", type="primary", key=f"create_project_btn_{context}"):
         with st.spinner("📊 Processing market data..."):
             asins = market_snapshot["asin"].tolist()
-            
+
+            # Debug: Check if seed ASIN is in market_snapshot being saved
+            seed_params = st.session_state.get("last_phase2_params", {})
+            seed_asin_check = seed_params.get("seed_product_asin", None)
+            if seed_asin_check:
+                if seed_asin_check in asins:
+                    st.success(f"✅ PRE-SAVE CHECK: Seed ASIN {seed_asin_check} is in market_snapshot ({len(asins)} ASINs)")
+                else:
+                    st.error(f"❌ PRE-SAVE CHECK: Seed ASIN {seed_asin_check} NOT in market_snapshot!")
+                    st.write(f"Market snapshot has {len(asins)} ASINs")
+                    st.write(f"First 10: {asins[:10]}")
+                    if "seed_debug_trail" in st.session_state:
+                        st.write("**Debug trail from Phase 2:**")
+                        for msg in st.session_state["seed_debug_trail"]:
+                            st.write(f"  - {msg}")
+
             # Use df_weekly from market_stats if available (already fetched in phase2)
             # This avoids duplicate API calls since phase2 now fetches 90-day history
             df_weekly = stats.get("df_weekly") if isinstance(stats.get("df_weekly"), pd.DataFrame) else None
@@ -747,6 +762,10 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
                 st.session_state["active_project_market_snapshot"] = market_snapshot  # Store full market
                 st.session_state["active_project_seed_brand"] = seed_brand  # Track seed brand
                 st.session_state["active_project_all_asins"] = asins  # All market ASINs
+
+                # Save debug trail for Command Center display
+                if "seed_debug_trail" in st.session_state:
+                    st.session_state["active_project_debug_trail"] = st.session_state["seed_debug_trail"].copy()
 
             # Mark as just saved so we show success on rerun
             st.session_state["just_saved_mapping"] = True

@@ -815,7 +815,28 @@ with main_tab1:
         df_weekly = pd.DataFrame()
         market_snapshot = pd.DataFrame()
         data_source = "none"
-        
+
+        # Display seed ASIN debug trail if available (persists from Market Discovery)
+        if "active_project_debug_trail" in st.session_state and st.session_state["active_project_debug_trail"]:
+            with st.expander("🔍 Seed ASIN Debug Trail (from Market Discovery)", expanded=True):
+                st.caption("This shows the tracking of your seed ASIN through the market mapping process:")
+                for msg in st.session_state["active_project_debug_trail"]:
+                    if "❌" in msg:
+                        st.error(msg)
+                    elif "✅" in msg:
+                        st.success(msg)
+                    else:
+                        st.write(msg)
+
+                # Also check if seed ASIN is actually in the project
+                if seed_asin:
+                    if seed_asin in project_asins:
+                        st.success(f"✅ **FINAL VERIFICATION:** Seed ASIN {seed_asin} is present in project ASINs ({len(project_asins)} total)")
+                    else:
+                        st.error(f"❌ **FINAL VERIFICATION:** Seed ASIN {seed_asin} NOT FOUND in project ASINs!")
+                        st.write(f"Project has {len(project_asins)} ASINs")
+                        st.write(f"First 10 ASINs: {project_asins[:10]}")
+
         # === SUPABASE CACHE (PRIMARY) - FIX 1.2: Enhanced with Network Intelligence ===
         # Try loading from harvested snapshots first (instant 0.1s load)
         # Now includes category benchmarks for competitive context
@@ -995,6 +1016,14 @@ with main_tab1:
         seed_product = market_snapshot[market_snapshot['asin'] == seed_asin]
         if seed_product.empty:
             st.error(f"❌ Seed ASIN {seed_asin} not found in market data.")
+            st.write(f"**Debug Info:**")
+            st.write(f"- Data source: {data_source}")
+            st.write(f"- Total ASINs in market_snapshot: {len(market_snapshot)}")
+            st.write(f"- Total ASINs in project_asins list: {len(project_asins)}")
+            st.write(f"- Seed ASIN: {seed_asin}")
+            st.write(f"- Seed ASIN in project_asins list: {seed_asin in project_asins}")
+            st.write(f"- Seed ASIN in market_snapshot['asin']: {seed_asin in market_snapshot['asin'].values if 'asin' in market_snapshot.columns else 'No asin column'}")
+            st.write(f"- First 10 ASINs in market_snapshot: {market_snapshot['asin'].tolist()[:10] if 'asin' in market_snapshot.columns and len(market_snapshot) > 0 else 'Empty'}")
             st.stop()
 
         target_brand = seed_product['brand'].iloc[0]

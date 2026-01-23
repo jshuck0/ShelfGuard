@@ -644,7 +644,8 @@ def phase1_seed_discovery(
     domain: str = "US",
     category_filter: Optional[int] = None,
     check_cache: bool = True,
-    use_family_harvester: bool = None  # None = use global toggle
+    use_family_harvester: bool = None,  # None = use global toggle
+    search_mode: str = "keyword"  # "keyword" or "brand"
 ) -> pd.DataFrame:
     """
     Phase 1: Lightweight search to find seed products.
@@ -677,12 +678,16 @@ def phase1_seed_discovery(
     # NEW: If family harvester is enabled, use that instead
     if use_families:
         try:
-            st.info("🧬 Using Family Harvester (variation-aware discovery)")
+            if search_mode == "brand":
+                st.info("🏷️ Using Brand Search (exact brand name matching)")
+            else:
+                st.info("🧬 Using Family Harvester (variation-aware discovery)")
             return harvest_to_seed_dataframe(
                 keyword=keyword,
                 limit=limit,
                 domain=domain,
-                category_filter=category_filter
+                category_filter=category_filter,
+                search_mode=search_mode
             )
         except Exception as e:
             # Store error in session state so it persists after rerun
@@ -1983,7 +1988,33 @@ def phase2_category_market_mapping(
             return df, market_stats
         
         st.caption(f"📈 Built weekly table with {len(df_weekly)} rows across {df_weekly['asin'].nunique()} ASINs")
-        
+
+        # CRITICAL FIX: If seed ASIN was filtered out (no historical data), add it back
+        # This happens with new products or products with sparse data
+        if seed_asin and seed_asin not in df_weekly['asin'].values:
+            st.warning(f"⚠️ Seed ASIN {seed_asin} missing from weekly table (no historical data) - adding with current values")
+
+            # Find the seed product in unique_products (it was explicitly added earlier)
+            seed_product = next((p for p in unique_products if p.get("asin") == seed_asin), None)
+
+            if seed_product:
+                # Create a minimal weekly row for the seed ASIN using current values
+                current_week = pd.Timestamp.now().normalize() - pd.Timedelta(days=pd.Timestamp.now().weekday())
+                seed_row = {
+                    "week_start": current_week,
+                    "asin": seed_asin,
+                    "title": seed_product.get("title", ""),
+                    "brand": seed_product.get("brand", ""),
+                    "filled_price": seed_product.get("price", 0),
+                    "sales_rank_filled": seed_product.get("bsr", 50000),
+                    "weekly_sales_filled": seed_product.get("revenue_proxy", 0),
+                    "estimated_units": seed_product.get("monthly_units", 0),
+                    "main_image": seed_product.get("main_image", "")
+                }
+                # Add the row to df_weekly
+                df_weekly = pd.concat([df_weekly, pd.DataFrame([seed_row])], ignore_index=True)
+                st.success(f"✅ Added seed ASIN {seed_asin} to weekly table with current values")
+
         # ========== AGGREGATE WEEKLY DATA INTO SNAPSHOT ==========
         # For each ASIN, calculate:
         # - avg_price: Average price over 3 months
@@ -2151,7 +2182,12 @@ def phase2_category_market_mapping(
                 f"Products: **{len(df)}** | Est. Monthly Revenue: **${adjusted_revenue:,.0f}**\n"
                 f"_(Projected from avg weekly sales over last 90 days)_"
             )
-        
+
+        # FINAL CHECK: Verify seed ASIN is in results
+        if seed_asin and seed_asin not in df['asin'].values:
+            st.error(f"❌ **Critical Error**: Seed ASIN {seed_asin} not found in market data.")
+            st.info("This usually means the product has no historical sales data or was filtered during processing.")
+
         return df, market_stats
         
     except Exception as e:

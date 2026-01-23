@@ -514,21 +514,23 @@ def discover_seed_families(
     limit: int = DEFAULT_SEED_LIMIT,
     domain: str = "US",
     category_filter: Optional[int] = None,
-    brand_filter: Optional[str] = None
+    brand_filter: Optional[str] = None,
+    search_mode: str = "keyword"
 ) -> List[ProductFamily]:
     """
     Phase 1: Discover unique product families from keyword search.
-    
+
     Uses singleVariation=true to get one product per family,
     avoiding duplicate variations in seed results.
-    
+
     Args:
-        keyword: Search term
+        keyword: Search term (or brand name if search_mode="brand")
         limit: Max number of seed families to find
         domain: Amazon marketplace
         category_filter: Optional category ID to restrict search
         brand_filter: Optional brand name to filter by
-        
+        search_mode: "keyword" (search in titles) or "brand" (exact brand match)
+
     Returns:
         List of ProductFamily objects (without children populated yet)
     """
@@ -540,7 +542,6 @@ def discover_seed_families(
     # Use singleVariation=True to get one representative per parent family
     # This prevents getting 50 variations of the same shoe model
     query_json = {
-        "title": keyword,
         "perPage": max(50, limit * 2),  # Fetch 2x for safety (Keepa deduplicates for us now)
         "page": 0,
         "singleVariation": True,  # CRITICAL: Only one variation per parent family
@@ -548,16 +549,23 @@ def discover_seed_families(
         "current_SALES_lte": 200000,  # Filter out dead products
         "sort": [["current_SALES", "asc"]]  # Best sellers first
     }
-    
+
+    # Search mode: "keyword" searches in title, "brand" searches exact brand name
+    if search_mode == "brand":
+        query_json["brand"] = [keyword]  # Exact brand match
+        st.info(f"🏷️ Brand Search: '{keyword}'")
+    else:
+        query_json["title"] = keyword  # Search in product titles
+        st.info(f"🔍 Keyword Search: '{keyword}'")
+
     # Optional filters
     if category_filter:
         query_json["rootCategory"] = [category_filter]
-    
-    if brand_filter:
+
+    if brand_filter and search_mode != "brand":  # Don't override if already using brand search
         query_json["brand"] = [brand_filter]
-    
-    st.info(f"🔍 Searching for '{keyword}' with family-aware discovery...")
-    st.write(f"**DEBUG:** Requesting {limit} families, perPage={query_json['perPage']}")
+
+    st.write(f"**DEBUG:** Requesting {limit} families, perPage={query_json['perPage']}, search_mode={search_mode}")
 
     # Execute search
     seed_asins = _keepa_product_finder_query(query_json, api_key, domain)
@@ -829,7 +837,8 @@ def harvest_product_families(
     brand_filter: Optional[str] = None,
     seed_limit: int = DEFAULT_SEED_LIMIT,
     expand_variations: bool = True,
-    filter_children: bool = True
+    filter_children: bool = True,
+    search_mode: str = "keyword"
 ) -> HarvestResult:
     """
     Main entry point: Harvest complete product families for a keyword.
@@ -863,7 +872,8 @@ def harvest_product_families(
         limit=seed_limit,
         domain=domain,
         category_filter=category_filter,
-        brand_filter=brand_filter
+        brand_filter=brand_filter,
+        search_mode=search_mode
     )
     
     if not families:
@@ -955,20 +965,22 @@ def harvest_to_seed_dataframe(
     keyword: str,
     limit: int = 50,
     domain: str = "US",
-    category_filter: Optional[int] = None
+    category_filter: Optional[int] = None,
+    search_mode: str = "keyword"
 ) -> pd.DataFrame:
     """
     Compatibility function: Harvest families and return as seed DataFrame.
-    
+
     This can be used as a drop-in replacement for phase1_seed_discovery()
     but with family-aware logic.
-    
+
     Args:
-        keyword: Search term
+        keyword: Search term (brand name if search_mode="brand")
         limit: Max ASINs to return
         domain: Amazon marketplace
         category_filter: Optional category ID
-        
+        search_mode: "keyword" (search in titles) or "brand" (exact brand match)
+
     Returns:
         DataFrame compatible with phase1_seed_discovery format:
         [asin, title, brand, category_id, category_path, price, bsr]
@@ -980,7 +992,8 @@ def harvest_to_seed_dataframe(
         category_filter=category_filter,
         seed_limit=limit,  # Get as many families as requested (no expansion, so 1:1 ratio)
         expand_variations=False,  # FAST: Don't expand variations for Phase 1 (too slow)
-        filter_children=False      # FAST: Skip filtering for Phase 1 (too slow)
+        filter_children=False,     # FAST: Skip filtering for Phase 1 (too slow)
+        search_mode=search_mode    # "keyword" or "brand"
     )
     
     if not result.families:

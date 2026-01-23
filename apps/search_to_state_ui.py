@@ -147,7 +147,7 @@ def render_discovery_ui() -> None:
         # ========== PHASE 1: SEED DISCOVERY ==========
         st.markdown("#### 🌱 Phase 1: Find Seed Product")
 
-        col1, col2 = st.columns([3, 1])
+        col1, col2, col3 = st.columns([3, 1, 1])
 
         with col1:
             if category_filter:
@@ -160,12 +160,20 @@ def render_discovery_ui() -> None:
             else:
                 search_keyword = st.text_input(
                     "Search (Brand or Keyword)",
-                    placeholder="e.g., RXBAR, Poppi, Starbucks, almond milk",
+                    placeholder="e.g., RXBAR, Poppi, On, Hoka",
                     help="Search by brand name or product keyword",
                     key="search_keyword_general"
                 )
 
         with col2:
+            search_mode = st.selectbox(
+                "Search Type",
+                ["Keyword", "Brand"],
+                index=0,
+                help="Keyword: searches in product titles\nBrand: searches exact brand name (better for brands like 'On')"
+            )
+
+        with col3:
             seed_limit = st.selectbox(
                 "Results",
                 [5, 10, 25, 50],
@@ -178,7 +186,7 @@ def render_discovery_ui() -> None:
             return
 
         # Phase 1 Search Button with Circuit Breaker
-        search_key = f"{search_keyword}_{category_filter}"
+        search_key = f"{search_keyword}_{category_filter}_{search_mode}"
 
         # CIRCUIT BREAKER: Prevent infinite loops
         # Check if we're currently searching (loading lock)
@@ -209,7 +217,8 @@ def render_discovery_ui() -> None:
                             limit=seed_limit,
                             domain="US",
                             category_filter=category_filter,
-                            use_family_harvester=True  # Always use best discovery
+                            use_family_harvester=True,  # Always use best discovery
+                            search_mode=search_mode.lower()  # "keyword" or "brand"
                         )
 
                         if seed_df.empty:

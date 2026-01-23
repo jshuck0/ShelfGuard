@@ -694,6 +694,18 @@ def discover_seed_families(
         st.write(f"**DEBUG:** Limiting {len(unique_families)} unique families → {limit} (requested limit)")
         unique_families = unique_families[:limit]
 
+    # Store debug info in session state so it persists after rerun
+    import streamlit as st
+    debug_info = {
+        "products_processed": len(products),
+        "skipped_no_data": skipped_parents,
+        "families_built": len(families),
+        "duplicates_removed": duplicate_count,
+        "unique_families": len(unique_families),
+        "requested": limit
+    }
+    st.session_state["last_search_debug"] = debug_info
+
     # FINAL SUMMARY (won't flash by)
     with st.expander("📊 Deduplication Summary", expanded=True):
         st.write(f"**Products processed:** {len(products)}")

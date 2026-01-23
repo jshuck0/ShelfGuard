@@ -241,7 +241,24 @@ def render_discovery_ui() -> None:
                     f"✅ Found {len(seed_df)} products across {unique_families} product families "
                     f"for '{search_keyword}'"
                 )
-                
+
+                # Display persistent debug info from last search
+                if "last_search_debug" in st.session_state:
+                    debug = st.session_state["last_search_debug"]
+                    with st.expander("🔍 Search Debug Info", expanded=False):
+                        st.write(f"**Products fetched from Keepa:** {debug.get('products_processed', 0)}")
+                        st.write(f"**Skipped (no price/BSR):** {debug.get('skipped_no_data', 0)}")
+                        st.write(f"**Families built:** {debug.get('families_built', 0)}")
+                        st.write(f"**Duplicates removed:** {debug.get('duplicates_removed', 0)}")
+                        st.write(f"**Final unique families:** {debug.get('unique_families', 0)}")
+                        st.write(f"**You requested:** {debug.get('requested', 0)}")
+
+                        if debug.get('unique_families', 0) < debug.get('requested', 25):
+                            st.error(
+                                f"⚠️ **Issue:** Only {debug.get('unique_families', 0)} unique families found out of {debug.get('requested', 25)} requested.\n\n"
+                                f"**Likely cause:** Many products in Keepa's results are variations of the same parent product (e.g., different sizes/colors of Hoka Bondi)."
+                            )
+
                 # Show family breakdown
                 with st.expander("🧬 Product Family Breakdown", expanded=False):
                     if "parent_asin" in seed_df.columns:

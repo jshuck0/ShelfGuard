@@ -876,38 +876,51 @@ def harvest_product_families(
     # Phase 2 & 3: Explode and filter each family
     final_asins: List[str] = []
     final_families: List[ProductFamily] = []
-    
+
     with st.expander("🔍 Family Expansion Progress", expanded=False):
         for family in families:
-            if len(final_asins) >= max_asins:
+            # For Phase 1 (no expansion), limit by NUMBER OF FAMILIES, not total ASINs
+            # This ensures we return N different products, not N variations of 1 product
+            if not expand_variations and len(final_families) >= max_asins:
+                st.write(f"⏹️ Reached limit of {max_asins} families (Phase 1 mode)")
                 break
-            
+
+            # For Phase 2 (with expansion), limit by total ASINs
+            if expand_variations and len(final_asins) >= max_asins:
+                st.write(f"⏹️ Reached limit of {max_asins} total ASINs (Phase 2 mode)")
+                break
+
             # Explode variations
             if expand_variations:
                 family = explode_family_children(family, api_key, domain)
-            
+
             # Filter children
             if filter_children and family.child_asins:
                 family = filter_and_prioritize_children(family, api_key, domain)
-            
-            # Calculate how many slots we have left
-            slots_remaining = max_asins - len(final_asins)
-            
-            # Add this family's ASINs (up to remaining slots)
-            family_asins = family.all_asins[:slots_remaining]
+
+            # For Phase 1: Only include parent ASIN (one representative per family)
+            # For Phase 2: Include all ASINs up to slots remaining
+            if not expand_variations:
+                # Phase 1: Just the parent/hero ASIN
+                family_asins = [family.parent_asin]
+            else:
+                # Phase 2: Fill up to quota
+                slots_remaining = max_asins - len(final_asins)
+                family_asins = family.all_asins[:slots_remaining]
+
             final_asins.extend(family_asins)
-            
+
             # Update family with actual included children
-            if len(family_asins) < len(family.all_asins):
+            if expand_variations and len(family_asins) < len(family.all_asins):
                 # Truncated - update the family
                 if family.is_variation_parent:
                     family.child_asins = family_asins
                 else:
                     family.child_asins = family_asins[1:] if len(family_asins) > 1 else []
                 family.child_count = len(family.child_asins)
-            
+
             final_families.append(family)
-            
+
             st.write(f"✅ {family.parent_brand} - {family.parent_title[:40]}... ({family.family_size} products)")
     
     # Build stats

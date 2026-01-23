@@ -694,6 +694,21 @@ def discover_seed_families(
         st.write(f"**DEBUG:** Limiting {len(unique_families)} unique families → {limit} (requested limit)")
         unique_families = unique_families[:limit]
 
+    # FINAL SUMMARY (won't flash by)
+    with st.expander("📊 Deduplication Summary", expanded=True):
+        st.write(f"**Products processed:** {len(products)}")
+        st.write(f"**Skipped (no data):** {skipped_parents}")
+        st.write(f"**Families built:** {len(families)}")
+        st.write(f"**Duplicates removed:** {duplicate_count}")
+        st.write(f"**Unique families:** {len(unique_families)}")
+        st.write(f"**Requested:** {limit}")
+
+        if len(unique_families) < limit:
+            st.error(
+                f"❌ **Problem:** Only {len(unique_families)}/{limit} unique families found\n\n"
+                f"This means most products share the same parent ASIN (they're variations of each other)."
+            )
+
     st.success(f"✅ Identified {len(unique_families)} unique product families (searched for {limit})")
 
     if len(unique_families) < limit:

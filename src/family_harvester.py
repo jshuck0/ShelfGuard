@@ -211,7 +211,28 @@ def _keepa_product_finder_query(
             response = requests.post(url, json=query_json, timeout=30)
 
             if response.status_code != 200:
-                st.warning(f"Keepa API error: {response.status_code}")
+                # Parse error message for better feedback
+                error_detail = ""
+                try:
+                    error_json = response.json()
+                    error_detail = error_json.get("error", {}).get("message", "")
+                except:
+                    error_detail = response.text[:200]
+
+                if response.status_code == 402:
+                    st.error(
+                        f"❌ **Keepa API Access Denied (402)**\n\n"
+                        f"Error: {error_detail}\n\n"
+                        f"**Possible causes:**\n"
+                        f"- API subscription expired or not activated\n"
+                        f"- Payment issue with Keepa account\n"
+                        f"- Wrong API key\n\n"
+                        f"**Fix:** Check https://keepa.com/#!api for subscription status"
+                    )
+                    return []
+                else:
+                    st.warning(f"Keepa API error {response.status_code}: {error_detail}")
+
                 if attempt < RETRY_ATTEMPTS - 1:
                     time.sleep(RETRY_DELAY * (attempt + 1))
                     continue
@@ -639,8 +660,20 @@ def discover_seed_families(
     
     # Sort by BSR (best sellers first)
     families.sort(key=lambda f: f.parent_bsr)
-    
-    st.success(f"✅ Identified {len(families)} product families")
+
+    # Debug output
+    if skipped_parents > 0:
+        st.caption(f"ℹ️ Filtered out {skipped_parents} variation parents/products without data from {len(products)} total")
+
+    st.success(f"✅ Identified {len(families)} product families (searched for {limit})")
+
+    if len(families) < limit:
+        st.warning(
+            f"⚠️ Only found {len(families)}/{limit} families\n\n"
+            f"Keepa returned products but many were filtered out (variation parents with no price/BSR data).\n\n"
+            f"**Tip:** Keepa's `singleVariation=true` sometimes returns parent ASINs that have no data."
+        )
+
     return families
 
 

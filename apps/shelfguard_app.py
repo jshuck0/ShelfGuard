@@ -1627,7 +1627,11 @@ with main_tab1:
                 if 'opportunity_type' in enriched_portfolio_df.columns:
                     subscribe_opps = (enriched_portfolio_df['opportunity_type'] == 'SUBSCRIBE').sum()
                 if 'predictive_state' in enriched_portfolio_df.columns:
-                    amazon_conquest_opps = ((enriched_portfolio_df['predictive_state'] == 'EXPLOIT') & (enriched_portfolio_df.get('amazon_unstable', False) == True)).sum()
+                    # Check if amazon_unstable column exists, otherwise create Series of False
+                    if 'amazon_unstable' in enriched_portfolio_df.columns:
+                        amazon_conquest_opps = ((enriched_portfolio_df['predictive_state'] == 'EXPLOIT') & (enriched_portfolio_df['amazon_unstable'] == True)).sum()
+                    else:
+                        amazon_conquest_opps = 0  # No column means no opportunities
             
             # Build intelligence signals section
             intel_signals = ""

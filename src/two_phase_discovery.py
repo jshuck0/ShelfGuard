@@ -685,7 +685,12 @@ def phase1_seed_discovery(
                 category_filter=category_filter
             )
         except Exception as e:
-            st.warning(f"⚠️ Family Harvester failed, falling back to naive search: {e}")
+            # Store error in session state so it persists after rerun
+            error_msg = f"Family Harvester failed: {type(e).__name__}: {str(e)}"
+            st.session_state["last_harvester_error"] = error_msg
+            st.error(f"⚠️ {error_msg}\n\nFalling back to naive search...")
+            import traceback
+            st.code(traceback.format_exc())
             # Fall through to legacy logic
     
     # FIX 1.3: Check database cache first to avoid unnecessary API calls

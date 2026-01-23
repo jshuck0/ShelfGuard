@@ -242,6 +242,12 @@ def render_discovery_ui() -> None:
                     f"for '{search_keyword}'"
                 )
 
+                # Display family harvester error if it occurred
+                if "last_harvester_error" in st.session_state:
+                    with st.expander("⚠️ Family Harvester Error (using naive search instead)", expanded=True):
+                        st.error(st.session_state["last_harvester_error"])
+                        st.info("ℹ️ Naive search was used instead. It works but may include duplicate variations.")
+
                 # Display persistent debug info from last search
                 if "last_search_debug" in st.session_state:
                     debug = st.session_state["last_search_debug"]

@@ -695,7 +695,6 @@ def discover_seed_families(
         unique_families = unique_families[:limit]
 
     # Store debug info in session state so it persists after rerun
-    import streamlit as st
     debug_info = {
         "products_processed": len(products),
         "skipped_no_data": skipped_parents,

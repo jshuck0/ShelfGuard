@@ -181,12 +181,28 @@ def render_discovery_ui() -> None:
                 help="Number of seed products to show"
             )
 
+        # Advanced Filters (Audit Upgrade)
+        with st.expander("🛠️ Advanced Filters", expanded=False):
+            f_col1, f_col2 = st.columns(2)
+            with f_col1:
+                conquest_mode = st.checkbox(
+                    "⚔️ Conquest Mode", 
+                    value=False,
+                    help="Find products where Amazon 1P is unstable (OOS > 2 times/mo)"
+                )
+            with f_col2:
+                quality_filter = st.checkbox(
+                    "✨ Quality Filter", 
+                    value=False,
+                    help="Only show established products (Reviews > 0, Variations > 1)"
+                )
+
         if not search_keyword:
             st.info("💡 Enter a brand or keyword (e.g., 'RXBAR', 'Poppi', 'protein bars')")
             return
 
         # Phase 1 Search Button with Circuit Breaker
-        search_key = f"{search_keyword}_{category_filter}_{search_mode}"
+        search_key = f"{search_keyword}_{category_filter}_{search_mode}_{conquest_mode}_{quality_filter}"
 
         # CIRCUIT BREAKER: Prevent infinite loops
         # Check if we're currently searching (loading lock)
@@ -220,7 +236,9 @@ def render_discovery_ui() -> None:
                             domain="US",
                             category_filter=category_filter,
                             use_family_harvester=True,  # Always use best discovery
-                            search_mode=search_mode.lower()  # "keyword" or "brand"
+                            search_mode=search_mode.lower(),  # "keyword" or "brand"
+                            conquest_mode=conquest_mode,
+                            quality_filter=quality_filter
                         )
 
                         if seed_df.empty:

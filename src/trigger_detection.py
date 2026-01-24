@@ -65,6 +65,14 @@ def detect_trigger_events(
     events.extend(detect_backorder_crisis(asin, df_historical))
     events.extend(detect_subscription_opportunity(asin, df_historical))
 
+    # === PHASE 2: CAUSAL INTELLIGENCE DETECTORS (2026-01-23) ===
+    # Enhanced with full Keepa metric integration and Supabase category_intelligence
+    events.extend(detect_platform_changes(asin, df_historical, df_competitors))
+    events.extend(detect_competitor_creative_changes(asin, df_historical, df_competitors))
+    events.extend(detect_share_of_voice_changes(asin, df_historical, df_competitors))
+    events.extend(detect_macro_trends(asin, df_historical, df_competitors))
+    events.extend(detect_competition_intensity(asin, df_historical, df_competitors))
+
     # Sort by severity (highest first)
     events = sorted(events, key=lambda e: e.severity, reverse=True)
 
@@ -864,3 +872,588 @@ def detect_subscription_opportunity(
                 ))
     
     return events
+
+
+# ========================================
+# PHASE 2: CAUSAL INTELLIGENCE DETECTORS
+# Enhanced with full Keepa metric integration
+# ========================================
+
+def detect_platform_changes(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect Amazon platform/algorithmic changes affecting the product.
+    
+    ENHANCED: Uses Keepa pre-calculated metrics:
+    - bb_stats_amazon_30: Amazon's BB ownership share (30-day)
+    - velocity_30d: Pre-calculated BSR velocity (more accurate than manual calc)
+    - buybox_is_amazon: Current BB holder
+    
+    Signals:
+    1. Amazon buybox takeover (using bb_stats)
+    2. Algorithm shift (unexplained velocity change)
+    3. Platform favor/disfavor
+    """
+    events = []
+    
+    if df_historical.empty:
+        return events
+    
+    latest = df_historical.iloc[-1] if len(df_historical) > 0 else {}
+    
+    # === USE KEEPA'S PRE-CALCULATED VELOCITY ===
+    # velocity_30d is much more accurate than manual BSR delta calculation
+    velocity_30d = latest.get('velocity_30d', None)
+    
+    if velocity_30d is not None and isinstance(velocity_30d, (int, float)):
+        # Significant positive velocity (rank improving) = platform/algo favor
+        if velocity_30d < -25:  # Rank dropped 25%+ (negative = improvement in Keepa)
+            # Check for confounders
+            price_change = False
+            review_spike = False
+            
+            # Check if price dropped (which would explain rank improvement)
+            if 'buy_box_price' in df_historical.columns and len(df_historical) >= 7:
+                recent_price = df_historical['buy_box_price'].tail(7).mean()
+                older_price = df_historical['buy_box_price'].iloc[-30:-7].mean() if len(df_historical) >= 30 else df_historical['buy_box_price'].iloc[:-7].mean()
+                if older_price > 0:
+                    price_change = abs((recent_price - older_price) / older_price) > 0.10
+            
+            if not price_change:
+                events.append(TriggerEvent(
+                    event_type="platform_algorithm_boost",
+                    severity=5,  # Positive event
+                    detected_at=datetime.now(),
+                    metric_name="velocity_30d_unexplained",
+                    baseline_value=0.0,
+                    current_value=float(velocity_30d),
+                    delta_pct=abs(velocity_30d),
+                    affected_asin=asin,
+                    related_asin=None
+                ))
+        # Significant negative velocity (rank worsening) = potential algo demotion
+        elif velocity_30d > 30:  # Rank worsened 30%+ 
+            events.append(TriggerEvent(
+                event_type="platform_algorithm_shift",
+                severity=7,
+                detected_at=datetime.now(),
+                metric_name="velocity_30d_decline",
+                baseline_value=0.0,
+                current_value=float(velocity_30d),
+                delta_pct=-velocity_30d,  # Make negative for downstream
+                affected_asin=asin,
+                related_asin=None
+            ))
+    
+    # === USE KEEPA'S BB STATS FOR AMAZON TAKEOVER DETECTION ===
+    # bb_stats_amazon_30 is Amazon's % of BB ownership over 30 days
+    bb_amazon_30 = latest.get('bb_stats_amazon_30', None)
+    bb_amazon_90 = latest.get('bb_stats_amazon_90', None)
+    
+    if bb_amazon_30 is not None and bb_amazon_90 is not None:
+        if isinstance(bb_amazon_30, (int, float)) and isinstance(bb_amazon_90, (int, float)):
+            bb_delta = bb_amazon_30 - bb_amazon_90
+            
+            # Amazon gained significant BB share (30-day vs 90-day)
+            if bb_delta > 0.25:  # 25%+ increase in Amazon's BB share
+                events.append(TriggerEvent(
+                    event_type="platform_amazon_takeover",
+                    severity=8,
+                    detected_at=datetime.now(),
+                    metric_name="bb_stats_amazon_30",
+                    baseline_value=float(bb_amazon_90),
+                    current_value=float(bb_amazon_30),
+                    delta_pct=bb_delta * 100,
+                    affected_asin=asin,
+                    related_asin=None
+                ))
+            # Amazon retreated from this ASIN
+            elif bb_delta < -0.25:  # 25%+ decrease
+                events.append(TriggerEvent(
+                    event_type="platform_amazon_retreat",
+                    severity=6,  # Opportunity for 3P sellers
+                    detected_at=datetime.now(),
+                    metric_name="bb_stats_amazon_30",
+                    baseline_value=float(bb_amazon_90),
+                    current_value=float(bb_amazon_30),
+                    delta_pct=bb_delta * 100,
+                    affected_asin=asin,
+                    related_asin=None
+                ))
+    
+    # === BACKORDER DETECTION USING KEEPA FLAG ===
+    buybox_is_backorder = latest.get('buybox_is_backorder', False)
+    if buybox_is_backorder:
+        events.append(TriggerEvent(
+            event_type="platform_backorder_active",
+            severity=9,  # Critical supply issue
+            detected_at=datetime.now(),
+            metric_name="buybox_is_backorder",
+            baseline_value=0.0,
+            current_value=1.0,
+            delta_pct=100.0,
+            affected_asin=asin,
+            related_asin=None
+        ))
+    
+    # === OOS EVENT COUNT (more actionable than percentage) ===
+    oos_count_30 = latest.get('oos_count_amazon_30', 0) or 0
+    if isinstance(oos_count_30, (int, float)) and oos_count_30 >= 3:
+        events.append(TriggerEvent(
+            event_type="platform_amazon_oos_pattern",
+            severity=6,
+            detected_at=datetime.now(),
+            metric_name="oos_count_amazon_30",
+            baseline_value=0.0,
+            current_value=float(oos_count_30),
+            delta_pct=float(oos_count_30) * 10,  # Scale for visibility
+            affected_asin=asin,
+            related_asin=None
+        ))
+    
+    return events
+
+
+def detect_competitor_creative_changes(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect when competitors likely refreshed creative (images, titles, A+ content).
+    
+    ENHANCED: Uses Keepa pre-calculated metrics:
+    - velocity_30d: BSR velocity (negative = improving)
+    - bb_stats_top_seller_30: Dominant seller percentage
+    - review velocity from Keepa stats
+    
+    Heuristic: Review velocity spike + negative velocity (rank improvement) = likely refresh
+    """
+    events = []
+    
+    if df_competitors.empty:
+        return events
+    
+    # Look for competitors with improved metrics (suggests creative refresh)
+    for _, comp in df_competitors.iterrows():
+        comp_asin = comp.get('asin', '')
+        if comp_asin == asin:
+            continue  # Skip self
+        
+        # === USE KEEPA'S VELOCITY_30D (negative = rank improvement) ===
+        velocity_30d = comp.get('velocity_30d', None)
+        velocity_90d = comp.get('velocity_90d', None)
+        
+        # Check for review velocity spike
+        review_30d = comp.get('review_velocity_30d', comp.get('delta30_reviews', 0)) or 0
+        review_90d = comp.get('review_velocity_90d', comp.get('reviews_per_month', 0)) or 0
+        
+        # Velocity-based detection (if available)
+        if velocity_30d is not None and isinstance(velocity_30d, (int, float)):
+            rank_improved = velocity_30d < -15  # Rank improved 15%+
+            rank_improvement_pct = abs(velocity_30d) if velocity_30d < 0 else 0
+            
+            # Compare 30d vs 90d velocity for acceleration detection
+            if velocity_90d is not None and isinstance(velocity_90d, (int, float)):
+                velocity_acceleration = velocity_90d - velocity_30d
+                # Accelerating improvement suggests effective action
+                if velocity_acceleration > 20:  # Momentum building
+                    rank_improved = True
+                    rank_improvement_pct = max(rank_improvement_pct, velocity_acceleration)
+        else:
+            # Fallback to delta30_bsr
+            rank_change = comp.get('rank_change_30d', comp.get('delta30_bsr', 0)) or 0
+            if isinstance(rank_change, (int, float)) and rank_change < 0:
+                rank_improved = True
+                rank_improvement_pct = abs(rank_change)
+            else:
+                rank_improved = False
+                rank_improvement_pct = 0
+        
+        # Check for combined spike (review velocity up + rank improved)
+        review_spike = review_30d > review_90d * 1.5 if review_90d > 0 else review_30d > 10
+        
+        if review_spike and rank_improved and rank_improvement_pct > 15:
+            events.append(TriggerEvent(
+                event_type="competitor_creative_refresh",
+                severity=5,
+                detected_at=datetime.now(),
+                metric_name="competitor_conversion_improvement",
+                baseline_value=float(review_90d) if review_90d else 0,
+                current_value=float(review_30d),
+                delta_pct=rank_improvement_pct,
+                affected_asin=asin,
+                related_asin=comp_asin
+            ))
+        
+        # === NEW: DETECT COMPETITOR SELLER CONCENTRATION ===
+        bb_top_seller_30 = comp.get('bb_stats_top_seller_30', None)
+        if bb_top_seller_30 is not None and isinstance(bb_top_seller_30, (int, float)):
+            # If one seller dominates 80%+ of buybox = potential supply control
+            if bb_top_seller_30 > 0.80:
+                events.append(TriggerEvent(
+                    event_type="competitor_seller_concentration",
+                    severity=4,
+                    detected_at=datetime.now(),
+                    metric_name="bb_stats_top_seller_30",
+                    baseline_value=0.5,  # Normal baseline
+                    current_value=float(bb_top_seller_30),
+                    delta_pct=(bb_top_seller_30 - 0.5) * 100,
+                    affected_asin=asin,
+                    related_asin=comp_asin
+                ))
+    
+    return events
+
+
+def detect_share_of_voice_changes(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    Detect Share of Voice changes (keyword ranking position shifts).
+    
+    ENHANCED: Uses Keepa pre-calculated velocity metrics:
+    - velocity_30d: Your pre-calculated BSR velocity
+    - Competitor velocity_30d for market comparison
+    
+    Uses relative velocity vs competitors as a proxy for search visibility changes.
+    """
+    events = []
+    
+    if df_historical.empty or df_competitors.empty:
+        return events
+    
+    latest = df_historical.iloc[-1] if len(df_historical) > 0 else {}
+    
+    # === USE KEEPA'S PRE-CALCULATED VELOCITY ===
+    your_velocity_30d = latest.get('velocity_30d', None)
+    
+    # Collect competitor velocities
+    comp_velocities = []
+    for _, comp in df_competitors.iterrows():
+        comp_asin = comp.get('asin', '')
+        if comp_asin == asin:
+            continue
+        
+        # Prefer velocity_30d, fallback to delta30_bsr
+        comp_velocity = comp.get('velocity_30d', None)
+        if comp_velocity is None:
+            comp_velocity = comp.get('delta30_bsr', comp.get('rank_change_30d', None))
+        
+        if comp_velocity is not None and isinstance(comp_velocity, (int, float)):
+            comp_velocities.append(comp_velocity)
+    
+    # If we have velocity data, use it
+    if your_velocity_30d is not None and isinstance(your_velocity_30d, (int, float)) and len(comp_velocities) >= 3:
+        avg_comp_velocity = sum(comp_velocities) / len(comp_velocities)
+        
+        # Relative performance: negative velocity = improving, so lower is better
+        relative_performance = your_velocity_30d - avg_comp_velocity
+        
+        # You're outperforming market (your velocity more negative than competitors)
+        if relative_performance < -20:  # 20%+ better than market
+            events.append(TriggerEvent(
+                event_type="share_of_voice_gained",
+                severity=6,
+                detected_at=datetime.now(),
+                metric_name="relative_velocity_30d",
+                baseline_value=float(avg_comp_velocity),
+                current_value=float(your_velocity_30d),
+                delta_pct=relative_performance,
+                affected_asin=asin,
+                related_asin=None
+            ))
+        # You're underperforming market (your velocity more positive than competitors)
+        elif relative_performance > 20:  # 20%+ worse than market
+            events.append(TriggerEvent(
+                event_type="share_of_voice_lost",
+                severity=7,
+                detected_at=datetime.now(),
+                metric_name="relative_velocity_30d",
+                baseline_value=float(avg_comp_velocity),
+                current_value=float(your_velocity_30d),
+                delta_pct=relative_performance,
+                affected_asin=asin,
+                related_asin=None
+            ))
+    else:
+        # Fallback to BSR-based calculation
+        rank_col = 'sales_rank_filled' if 'sales_rank_filled' in df_historical.columns else 'sales_rank' if 'sales_rank' in df_historical.columns else None
+        
+        if rank_col and len(df_historical) >= 14:
+            recent = df_historical.tail(7)
+            older = df_historical.iloc[-30:-7] if len(df_historical) >= 30 else df_historical.iloc[:-7]
+            
+            if len(older) > 0:
+                your_recent_rank = recent[rank_col].mean() if rank_col in recent.columns else None
+                your_older_rank = older[rank_col].mean() if rank_col in older.columns else None
+                
+                if your_recent_rank and your_older_rank and your_older_rank > 0:
+                    your_rank_change_pct = ((your_recent_rank - your_older_rank) / your_older_rank) * 100
+                    
+                    comp_rank_changes = []
+                    for _, comp in df_competitors.iterrows():
+                        rank_change = comp.get('delta30_bsr', comp.get('rank_change_30d', 0)) or 0
+                        if isinstance(rank_change, (int, float)):
+                            comp_rank_changes.append(rank_change)
+                    
+                    if len(comp_rank_changes) >= 3:
+                        avg_comp_rank_change = sum(comp_rank_changes) / len(comp_rank_changes)
+                        relative_performance = your_rank_change_pct - avg_comp_rank_change
+                        
+                        if relative_performance < -20:
+                            events.append(TriggerEvent(
+                                event_type="share_of_voice_gained",
+                                severity=6,
+                                detected_at=datetime.now(),
+                                metric_name="relative_rank_performance",
+                                baseline_value=float(avg_comp_rank_change),
+                                current_value=float(your_rank_change_pct),
+                                delta_pct=relative_performance,
+                                affected_asin=asin,
+                                related_asin=None
+                            ))
+                        elif relative_performance > 20:
+                            events.append(TriggerEvent(
+                                event_type="share_of_voice_lost",
+                                severity=7,
+                                detected_at=datetime.now(),
+                                metric_name="relative_rank_performance",
+                                baseline_value=float(avg_comp_rank_change),
+                                current_value=float(your_rank_change_pct),
+                                delta_pct=relative_performance,
+                                affected_asin=asin,
+                                related_asin=None
+                            ))
+    
+    return events
+
+
+def detect_macro_trends(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame,
+    category_id: Optional[int] = None  # NEW: For Supabase lookup
+) -> List[TriggerEvent]:
+    """
+    Detect category-wide macro trends (market growth/decline).
+    
+    ENHANCED: Integrates with Supabase category_intelligence table for real benchmarks
+    and uses Keepa OOS metrics for supply crisis detection.
+    
+    Uses aggregate competitor metrics to identify category-level shifts.
+    """
+    events = []
+    
+    if df_competitors.empty:
+        return events
+    
+    # === TRY SUPABASE CATEGORY_INTELLIGENCE FOR REAL MARKET BENCHMARKS ===
+    category_benchmarks = None
+    if category_id is not None:
+        try:
+            from src.supabase_reader import get_supabase_client
+            client = get_supabase_client()
+            cat_intel = client.table("category_intelligence")\
+                .select("*")\
+                .eq("category_id", category_id)\
+                .order("snapshot_date", desc=True)\
+                .limit(2)\
+                .execute()
+            
+            if cat_intel.data and len(cat_intel.data) >= 2:
+                current = cat_intel.data[0]
+                previous = cat_intel.data[1]
+                
+                current_revenue = current.get("total_weekly_revenue", 0) or 0
+                previous_revenue = previous.get("total_weekly_revenue", 0) or 0
+                
+                if previous_revenue > 0:
+                    category_growth_pct = ((current_revenue - previous_revenue) / previous_revenue) * 100
+                    
+                    if category_growth_pct > 15:
+                        events.append(TriggerEvent(
+                            event_type="macro_market_expansion",
+                            severity=4,
+                            detected_at=datetime.now(),
+                            metric_name="category_intelligence_revenue",
+                            baseline_value=float(previous_revenue),
+                            current_value=float(current_revenue),
+                            delta_pct=category_growth_pct,
+                            affected_asin=asin,
+                            related_asin=None
+                        ))
+                    elif category_growth_pct < -15:
+                        events.append(TriggerEvent(
+                            event_type="macro_market_contraction",
+                            severity=5,
+                            detected_at=datetime.now(),
+                            metric_name="category_intelligence_revenue",
+                            baseline_value=float(previous_revenue),
+                            current_value=float(current_revenue),
+                            delta_pct=category_growth_pct,
+                            affected_asin=asin,
+                            related_asin=None
+                        ))
+                    
+                    category_benchmarks = current  # Save for later use
+        except Exception:
+            pass  # Fallback to competitor-based calculation
+    
+    # === FALLBACK: Calculate from df_competitors if no Supabase data ===
+    if not category_benchmarks:
+        revenue_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in df_competitors.columns else 'revenue_proxy' if 'revenue_proxy' in df_competitors.columns else 'monthly_revenue' if 'monthly_revenue' in df_competitors.columns else None
+        
+        if revenue_col:
+            total_category_revenue = df_competitors[revenue_col].sum()
+            delta_col = 'delta30_revenue' if 'delta30_revenue' in df_competitors.columns else None
+            
+            if delta_col:
+                total_delta = df_competitors[delta_col].sum()
+                older_revenue = total_category_revenue - total_delta
+                
+                if older_revenue > 0:
+                    category_growth_pct = (total_delta / older_revenue) * 100
+                    
+                    if category_growth_pct > 15:
+                        events.append(TriggerEvent(
+                            event_type="macro_market_expansion",
+                            severity=4,
+                            detected_at=datetime.now(),
+                            metric_name="category_revenue_growth",
+                            baseline_value=float(older_revenue),
+                            current_value=float(total_category_revenue),
+                            delta_pct=category_growth_pct,
+                            affected_asin=asin,
+                            related_asin=None
+                        ))
+                    elif category_growth_pct < -15:
+                        events.append(TriggerEvent(
+                            event_type="macro_market_contraction",
+                            severity=5,
+                            detected_at=datetime.now(),
+                            metric_name="category_revenue_decline",
+                            baseline_value=float(older_revenue),
+                            current_value=float(total_category_revenue),
+                            delta_pct=category_growth_pct,
+                            affected_asin=asin,
+                            related_asin=None
+                        ))
+    
+    # === USE KEEPA OOS METRICS FOR SUPPLY CRISIS DETECTION ===
+    oos_count_from_keepa = 0
+    oos_count_from_inventory = 0
+    
+    for _, comp in df_competitors.iterrows():
+        # Prefer Keepa's oos_pct_30 metric (more accurate)
+        oos_pct = comp.get('oos_pct_30', 0) or 0
+        if isinstance(oos_pct, (int, float)) and oos_pct > 0.3:  # 30%+ OOS rate
+            oos_count_from_keepa += 1
+        
+        # Fallback to inventory count
+        inventory = comp.get('inventory_count', comp.get('stock_estimate', 99)) or 99
+        if inventory < 5:
+            oos_count_from_inventory += 1
+    
+    # Use whichever method detected more OOS (better sensitivity)
+    oos_count = max(oos_count_from_keepa, oos_count_from_inventory)
+    total_competitors = len(df_competitors)
+    
+    if total_competitors >= 5 and oos_count >= total_competitors * 0.3:
+        events.append(TriggerEvent(
+            event_type="macro_supply_crisis",
+            severity=8,
+            detected_at=datetime.now(),
+            metric_name="market_oos_rate",
+            baseline_value=0.0,
+            current_value=float(oos_count / total_competitors) * 100,
+            delta_pct=float(oos_count / total_competitors) * 100,
+            affected_asin=asin,
+            related_asin=None
+        ))
+    
+    return events
+
+
+def detect_competition_intensity(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame
+) -> List[TriggerEvent]:
+    """
+    NEW DETECTOR: Analyze competition intensity using Keepa BB stats.
+    
+    Uses:
+    - bb_stats_seller_count_30: Number of sellers rotating the buybox
+    - seller_count: Total seller count
+    - new_offer_count: Offer density
+    """
+    events = []
+    
+    if df_historical.empty:
+        return events
+    
+    latest = df_historical.iloc[-1] if len(df_historical) > 0 else {}
+    
+    # === BUYBOX SELLER COUNT (True competition metric) ===
+    bb_seller_count = latest.get('bb_stats_seller_count_30', None)
+    
+    if bb_seller_count is not None and isinstance(bb_seller_count, (int, float)):
+        # High seller rotation = intense competition
+        if bb_seller_count >= 5:
+            events.append(TriggerEvent(
+                event_type="competition_high_intensity",
+                severity=5,
+                detected_at=datetime.now(),
+                metric_name="bb_stats_seller_count_30",
+                baseline_value=2.0,  # Normal is 1-2 sellers
+                current_value=float(bb_seller_count),
+                delta_pct=(bb_seller_count - 2) * 50,  # Scale for visibility
+                affected_asin=asin,
+                related_asin=None
+            ))
+        # Low competition (opportunity)
+        elif bb_seller_count <= 1:
+            events.append(TriggerEvent(
+                event_type="competition_low_intensity",
+                severity=3,  # Opportunity
+                detected_at=datetime.now(),
+                metric_name="bb_stats_seller_count_30",
+                baseline_value=2.0,
+                current_value=float(bb_seller_count),
+                delta_pct=-(2 - bb_seller_count) * 50,
+                affected_asin=asin,
+                related_asin=None
+            ))
+    
+    # === OFFER COUNT SURGE (New competitors entering) ===
+    current_offers = latest.get('new_offer_count', None)
+    
+    if current_offers is not None and isinstance(current_offers, (int, float)) and len(df_historical) >= 14:
+        older_offers = df_historical.iloc[-30:-7]['new_offer_count'].mean() if len(df_historical) >= 30 else df_historical.iloc[:-7]['new_offer_count'].mean()
+        
+        if older_offers and older_offers > 0:
+            offer_change_pct = ((current_offers - older_offers) / older_offers) * 100
+            
+            # Significant increase in sellers
+            if offer_change_pct > 50:  # 50%+ more sellers
+                events.append(TriggerEvent(
+                    event_type="competition_new_entrants",
+                    severity=6,
+                    detected_at=datetime.now(),
+                    metric_name="new_offer_count_change",
+                    baseline_value=float(older_offers),
+                    current_value=float(current_offers),
+                    delta_pct=offer_change_pct,
+                    affected_asin=asin,
+                    related_asin=None
+                ))
+    
+    return events
+
+

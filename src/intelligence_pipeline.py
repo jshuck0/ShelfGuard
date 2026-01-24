@@ -5,10 +5,12 @@ Master pipeline that orchestrates all intelligence systems:
 1. Trigger Detection → Identify market changes
 2. Network Intelligence → Get category benchmarks
 3. Strategic Triangulator → Unified AI Classification + Insight Generation
-4. Database Storage → Store unified intelligence
+4. Revenue Attribution → Causal decomposition ("Why it happened")
+5. Predictive Forecasting → Forward-looking scenarios ("What's next")
+6. Database Storage → Store unified intelligence
 
 REFACTORED: Now uses the main StrategicTriangulator instead of separate v2/v3 engines.
-This eliminates ~1000 lines of duplicate code.
+Enhanced with Causal Intelligence Platform (Phase 2-2.5) integration.
 
 This is the main entry point for generating portfolio intelligence.
 """
@@ -27,6 +29,21 @@ from src.data_accumulation import NetworkIntelligenceAccumulator
 
 # REFACTORED: Use unified StrategicTriangulator instead of separate v2/v3 engines
 from utils.ai_engine import StrategicTriangulator, StrategicState
+
+# PHASE 2-2.5: Causal Intelligence and Predictive Forecasting
+try:
+    from src.revenue_attribution import calculate_revenue_attribution
+    from src.predictive_forecasting import (
+        generate_combined_intelligence,
+        forecast_event_impacts,
+        build_scenarios,
+        calculate_sustainable_run_rate
+    )
+    CAUSAL_INTELLIGENCE_ENABLED = True
+except ImportError:
+    CAUSAL_INTELLIGENCE_ENABLED = False
+    calculate_revenue_attribution = None
+    generate_combined_intelligence = None
 
 
 class IntelligencePipeline:
@@ -192,6 +209,52 @@ class IntelligencePipeline:
             )
             print(f"     Found {len(trigger_events)} trigger events")
 
+            # STEP 4.5: CAUSAL ATTRIBUTION (Why it happened)
+            attribution = None
+            if CAUSAL_INTELLIGENCE_ENABLED and calculate_revenue_attribution:
+                print(f"  📊 Calculating revenue attribution...")
+                try:
+                    previous_revenue = current_metrics.get('previous_monthly_revenue', revenue * 0.9)
+                    attribution = calculate_revenue_attribution(
+                        previous_revenue=previous_revenue,
+                        current_revenue=revenue,
+                        df_weekly=historical_data,
+                        trigger_events=trigger_events,
+                        market_snapshot=competitor_data.to_dict('records') if not competitor_data.empty else None,
+                        lookback_days=30
+                    )
+                    if attribution:
+                        print(f"     Internal: ${attribution.internal_contribution:,.0f} | Competitive: ${attribution.competitive_contribution:,.0f}")
+                        print(f"     Macro: ${attribution.macro_contribution:,.0f} | Platform: ${attribution.platform_contribution:,.0f}")
+                except Exception as e:
+                    print(f"     ⚠️ Attribution failed: {str(e)}")
+
+            # STEP 4.6: PREDICTIVE FORECASTING (What's next)
+            combined_intel = None
+            anticipated_events = []
+            scenarios = []
+            sustainable_run_rate = revenue
+            
+            if CAUSAL_INTELLIGENCE_ENABLED and generate_combined_intelligence:
+                print(f"  🔮 Generating predictive forecast...")
+                try:
+                    combined_intel = generate_combined_intelligence(
+                        current_revenue=revenue,
+                        previous_revenue=previous_revenue if 'previous_revenue' in dir() else revenue * 0.9,
+                        attribution=attribution,
+                        trigger_events=trigger_events,
+                        df_historical=historical_data
+                    )
+                    if combined_intel:
+                        anticipated_events = combined_intel.anticipated_events
+                        scenarios = combined_intel.scenarios
+                        sustainable_run_rate = combined_intel.sustainable_run_rate
+                        print(f"     Sustainable Run Rate: ${sustainable_run_rate:,.0f}/mo")
+                        print(f"     Anticipated Events: {len(anticipated_events)}")
+                        print(f"     Scenarios: {len(scenarios)}")
+                except Exception as e:
+                    print(f"     ⚠️ Forecasting failed: {str(e)}")
+
             # STEP 5: Map strategic state to ProductStatus
             state_to_status = {
                 "FORTRESS": ProductStatus.STABLE,
@@ -202,8 +265,12 @@ class IntelligencePipeline:
             }
             product_status = state_to_status.get(brief.strategic_state, ProductStatus.WATCH)
 
-            # STEP 6: Calculate net expected value
+            # STEP 6: Calculate net expected value (enhanced with sustainable run rate)
             net_ev = brief.thirty_day_growth - brief.thirty_day_risk
+            if sustainable_run_rate != revenue:
+                # Adjust net EV based on sustainable run rate
+                temporary_component = revenue - sustainable_run_rate
+                net_ev -= temporary_component * 0.5  # Discount temporary gains
             print(f"     Net EV: ${net_ev:+.2f}/mo")
 
             # STEP 7: Determine action type from strategic state
@@ -216,7 +283,7 @@ class IntelligencePipeline:
             }
             action_type = state_to_action.get(brief.strategic_state, "monitor")
 
-            # STEP 8: Combine into UnifiedIntelligence
+            # STEP 8: Combine into UnifiedIntelligence (with causal + predictive data)
             unified = UnifiedIntelligence(
                 # Identity
                 asin=asin,
@@ -232,7 +299,7 @@ class IntelligencePipeline:
                 confidence=brief.confidence,
                 reasoning=brief.reasoning,
 
-                # Predictive intelligence (from StrategicTriangulator)
+                # Predictive intelligence (from StrategicTriangulator + Forecasting)
                 thirty_day_risk=brief.thirty_day_risk,
                 thirty_day_growth=brief.thirty_day_growth,
                 net_expected_value=net_ev,
@@ -250,8 +317,22 @@ class IntelligencePipeline:
                 ),
                 competitive_position_summary=self._summarize_competitive_position(
                     network_intel.get('competitive_position', {})
-                )
+                ),
+                
+                # NEW: Causal Attribution (Phase 2)
+                revenue_attribution=attribution,
+                
+                # NEW: Predictive Forecasting (Phase 2.5)
+                anticipated_events=anticipated_events,
+                scenarios=scenarios,
+                sustainable_run_rate=sustainable_run_rate,
+                combined_intelligence=combined_intel
             )
+
+            # Persist to database
+            if self.supabase:
+                print(f"  💾 Persisting intelligence to Supabase...")
+                self.persist_intelligence(unified)
 
             return unified
 
@@ -297,6 +378,60 @@ class IntelligencePipeline:
 
         except Exception as e:
             print(f"⚠️  Error accumulating data: {str(e)}")
+
+    def persist_intelligence(self, intelligence: UnifiedIntelligence) -> bool:
+        """
+        Persist unified intelligence to Supabase.
+        
+        Writes to:
+        1. strategic_insights (AI analysis, attribution, forecasting)
+        2. trigger_events (detected market events)
+        
+        Args:
+            intelligence: UnifiedIntelligence object to save
+            
+        Returns:
+            bool: True if successful
+        """
+        if not self.supabase:
+            return False
+            
+        try:
+            # 1. Save Strategic Insight
+            insight_data = intelligence.to_database_record()
+            
+            # Add expiration (default 30 days)
+            insight_data['expires_at'] = (datetime.now() + timedelta(days=30)).isoformat()
+            
+            result = self.supabase.table('strategic_insights').insert(insight_data).execute()
+            
+            if not result.data:
+                print(f"⚠️ Failed to persist insight for {intelligence.asin}")
+                return False
+                
+            insight_id = result.data[0]['id']
+            print(f"✅ Persisted insight {insight_id} for {intelligence.asin}")
+            
+            # 2. Save Trigger Events (if any)
+            if intelligence.trigger_events:
+                events_data = []
+                for event in intelligence.trigger_events:
+                    event_dict = event.to_dict()
+                    # Add foreign key to parent insight
+                    event_dict['generated_insight_id'] = insight_id
+                    # Ensure ASIN is set
+                    event_dict['asin'] = intelligence.asin
+                    events_data.append(event_dict)
+                    
+                if events_data:
+                    self.supabase.table('trigger_events').insert(events_data).execute()
+                    print(f"   Saved {len(events_data)} trigger events")
+            
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Error persisting intelligence for {intelligence.asin}: {str(e)}")
+            return False
 
     # ========================================
     # PRIVATE HELPER METHODS

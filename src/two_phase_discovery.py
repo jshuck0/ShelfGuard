@@ -645,7 +645,9 @@ def phase1_seed_discovery(
     category_filter: Optional[int] = None,
     check_cache: bool = True,
     use_family_harvester: bool = None,  # None = use global toggle
-    search_mode: str = "keyword"  # "keyword" or "brand"
+    search_mode: str = "keyword",  # "keyword" or "brand"
+    conquest_mode: bool = False,   # NEW: Find Amazon vulnerabilities
+    quality_filter: bool = False   # NEW: Ensure basic quality (reviews/variations)
 ) -> pd.DataFrame:
     """
     Phase 1: Lightweight search to find seed products.
@@ -656,10 +658,7 @@ def phase1_seed_discovery(
     NEW: When use_family_harvester=True, uses intelligent variation-aware
     discovery that fetches complete product families instead of naive keyword matches.
     
-    Example: Searching "RXBAR" with family harvester will return:
-    - 1 Parent RXBAR listing + all 50 flavors/sizes
-    - Then the next competitor's complete family
-    Instead of: 1 RXBAR + 99 random competitor bars
+    NEW (Audit): Added 'conquest_mode' and 'quality_filter' additives.
 
     Args:
         keyword: User's search term
@@ -668,6 +667,8 @@ def phase1_seed_discovery(
         category_filter: Optional category ID to restrict search (e.g., 16310101 for Grocery)
         check_cache: Whether to check database cache first (default True)
         use_family_harvester: Use variation-aware discovery (None = use global toggle)
+        conquest_mode: Filter for Amazon supply instability (OOS > 2)
+        quality_filter: Filter for established products (Reviews > 50)
 
     Returns:
         DataFrame with [asin, title, brand, category_id, category_path, price, bsr]
@@ -721,6 +722,17 @@ def phase1_seed_discovery(
             # Without this, Keepa returns by "relevance" which misses high-volume hero ASINs
             "sort": [["current_SALES", "asc"]]
         }
+
+        # === ADDITIVE FILTERS (Audit Upgrade) ===
+        if conquest_mode:
+            st.caption("⚔️ CONQUEST MODE: Filtering for Amazon 1P Instability")
+            # Look for items where Amazon has been OOS at least twice in 30 days
+            query_json["outOfStockCountAmazon30_gte"] = 2
+            
+        if quality_filter:
+            st.caption("✨ QUALITY FILTER: Ensuring established products")
+            query_json["hasReviews"] = True
+            query_json["variationCount_gte"] = 1 # Must correspond to a product vs isolated sku
 
         # Add category filter if provided (category-first mode)
         if category_filter:

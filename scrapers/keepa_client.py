@@ -282,13 +282,16 @@ def extract_weekly_facts(product, window_start=None):
     out["has_amazon_seller"] = has_amazon_seller
     out["oos_count_amazon_30"] = oos_count_amazon_30
     out["oos_count_amazon_90"] = oos_count_amazon_90
-    # Normalize percentages (Keepa sometimes returns 0-100 scale, sometimes 0-1)
-    # Use explicit numeric checks to avoid list comparison errors
-    out["oos_pct_30"] = (oos_pct_30 / 100.0) if isinstance(oos_pct_30, (int, float)) and oos_pct_30 > 1 else (oos_pct_30 if isinstance(oos_pct_30, (int, float)) else 0)
-    out["oos_pct_90"] = (oos_pct_90 / 100.0) if isinstance(oos_pct_90, (int, float)) and oos_pct_90 > 1 else (oos_pct_90 if isinstance(oos_pct_90, (int, float)) else 0)
-    out["bb_stats_amazon_30"] = (bb_stats_amazon_30 / 100.0) if isinstance(bb_stats_amazon_30, (int, float)) and bb_stats_amazon_30 > 1 else bb_stats_amazon_30
-    out["bb_stats_amazon_90"] = (bb_stats_amazon_90 / 100.0) if isinstance(bb_stats_amazon_90, (int, float)) and bb_stats_amazon_90 > 1 else bb_stats_amazon_90
-    out["bb_stats_top_seller_30"] = (bb_stats_top_seller_30 / 100.0) if isinstance(bb_stats_top_seller_30, (int, float)) and bb_stats_top_seller_30 > 1 else bb_stats_top_seller_30
+    # Normalize percentages (Keepa stats are 0-100 integers)
+    # Check >= 1.0 to verify if it's 0-100 scale.
+    # Note: 1.0 (100% on 0-1 scale) becomes 0.01 (1%) with this check, but Keepa returns INTs so 100% is 100.
+    # The only ambiguity is 1 (1% vs 100%). Given Keepa returns ints 0-100, 1 is almost certainly 1%.
+    # So we assume anything >= 1 is on 0-100 scale.
+    out["oos_pct_30"] = (oos_pct_30 / 100.0) if isinstance(oos_pct_30, (int, float)) and oos_pct_30 >= 1 else oos_pct_30
+    out["oos_pct_90"] = (oos_pct_90 / 100.0) if isinstance(oos_pct_90, (int, float)) and oos_pct_90 >= 1 else oos_pct_90
+    out["bb_stats_amazon_30"] = (bb_stats_amazon_30 / 100.0) if isinstance(bb_stats_amazon_30, (int, float)) and bb_stats_amazon_30 >= 1 else bb_stats_amazon_30
+    out["bb_stats_amazon_90"] = (bb_stats_amazon_90 / 100.0) if isinstance(bb_stats_amazon_90, (int, float)) and bb_stats_amazon_90 >= 1 else bb_stats_amazon_90
+    out["bb_stats_top_seller_30"] = (bb_stats_top_seller_30 / 100.0) if isinstance(bb_stats_top_seller_30, (int, float)) and bb_stats_top_seller_30 >= 1 else bb_stats_top_seller_30
     out["bb_stats_seller_count_30"] = bb_stats_seller_count_30
     out["velocity_30d"] = velocity_30d
     out["velocity_90d"] = velocity_90d

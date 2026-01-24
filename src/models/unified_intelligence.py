@@ -3,14 +3,23 @@ Unified Intelligence Data Model
 
 Combines strategic classification, predictive forecasting, and actionable insights
 into a single unified output from the intelligence pipeline.
+
+Enhanced with Phase 2-2.5 Causal Intelligence:
+- Revenue Attribution (why revenue changed)
+- Predictive Forecasting (anticipated events, scenarios, sustainable run rate)
 """
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 
 from src.models.product_status import ProductStatus
 from src.models.trigger_event import TriggerEvent
+
+# Type hints for Phase 2/2.5 models (avoid circular imports)
+if TYPE_CHECKING:
+    from src.revenue_attribution import RevenueAttribution
+    from src.models.forecast_models import AnticipatedEvent, Scenario, CombinedIntelligence
 
 
 @dataclass
@@ -87,6 +96,19 @@ class UnifiedIntelligence:
     user_feedback: Optional[str] = None
     insight_id: Optional[str] = None
 
+    # === PHASE 2: CAUSAL ATTRIBUTION ===
+    revenue_attribution: Optional[Any] = None  # RevenueAttribution object
+
+    # === PHASE 2.5: PREDICTIVE FORECASTING ===
+    anticipated_events: List[Any] = field(default_factory=list)  # List[AnticipatedEvent]
+    scenarios: List[Any] = field(default_factory=list)  # List[Scenario]
+    sustainable_run_rate: float = 0.0  # Monthly revenue after temporary factors removed
+    combined_intelligence: Optional[Any] = None  # CombinedIntelligence object
+
+    # === NETWORK INTELLIGENCE SUMMARY STRINGS ===
+    category_benchmarks_summary: str = ""
+    competitive_position_summary: str = ""
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization and database storage."""
         return {
@@ -142,7 +164,18 @@ class UnifiedIntelligence:
             # User interaction
             "user_dismissed": self.user_dismissed,
             "user_feedback": self.user_feedback,
-            "insight_id": self.insight_id
+            "insight_id": self.insight_id,
+
+            # Phase 2: Causal Attribution
+            "revenue_attribution": self.revenue_attribution.to_dict() if self.revenue_attribution and hasattr(self.revenue_attribution, 'to_dict') else None,
+
+            # Phase 2.5: Predictive Forecasting
+            "anticipated_events": [e.to_dict() if hasattr(e, 'to_dict') else e for e in self.anticipated_events],
+            "scenarios": [s.to_dict() if hasattr(s, 'to_dict') else s for s in self.scenarios],
+            "sustainable_run_rate": self.sustainable_run_rate,
+            "combined_intelligence": self.combined_intelligence.to_dict() if self.combined_intelligence and hasattr(self.combined_intelligence, 'to_dict') else None,
+            "category_benchmarks_summary": self.category_benchmarks_summary,
+            "competitive_position_summary": self.competitive_position_summary
         }
 
     def to_database_record(self) -> Dict[str, Any]:
@@ -255,7 +288,16 @@ class UnifiedIntelligence:
             source=data.get('source', 'llm'),
             user_dismissed=data.get('user_dismissed', False),
             user_feedback=data.get('user_feedback'),
-            insight_id=data.get('insight_id')
+            insight_id=data.get('insight_id'),
+            # Phase 2: Causal Attribution
+            revenue_attribution=data.get('revenue_attribution'),
+            # Phase 2.5: Predictive Forecasting
+            anticipated_events=data.get('anticipated_events', []),
+            scenarios=data.get('scenarios', []),
+            sustainable_run_rate=data.get('sustainable_run_rate', 0.0),
+            combined_intelligence=data.get('combined_intelligence'),
+            category_benchmarks_summary=data.get('category_benchmarks_summary', ''),
+            competitive_position_summary=data.get('competitive_position_summary', '')
         )
 
     def get_priority_label(self) -> str:

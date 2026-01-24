@@ -77,6 +77,12 @@ except ImportError:
     calculate_expansion_alpha = None
     is_growth_eligible = None
 
+# Intelligence Pipeline - Unified Orchestrator (ASIN Deep Dive)
+try:
+    from src.intelligence_pipeline import IntelligencePipeline
+except ImportError:
+    pass
+
 # Revenue Attribution Engine - Causal Intelligence
 try:
     from src.revenue_attribution import calculate_revenue_attribution
@@ -86,6 +92,44 @@ except ImportError:
     ATTRIBUTION_ENABLED = False
     calculate_revenue_attribution = None
     RevenueAttribution = None
+
+# Predictive Forecasting Engine - Phase 2.5
+try:
+    from src.predictive_forecasting import (
+        generate_combined_intelligence,
+        calculate_annual_projection,
+        forecast_event_impacts,
+        build_scenarios
+    )
+    from src.models.forecast_models import (
+        AnticipatedEvent,
+        RevenueForecast,
+        Scenario,
+        CombinedIntelligence,
+        EventSeverity
+    )
+    FORECASTING_ENABLED = True
+except ImportError:
+    FORECASTING_ENABLED = False
+    generate_combined_intelligence = None
+    calculate_annual_projection = None
+    forecast_event_impacts = None
+    build_scenarios = None
+
+# Unified Intelligence Pipeline - Consolidates ALL intelligence systems
+try:
+    from src.intelligence_pipeline import IntelligencePipeline, get_active_insights_from_db
+    from src.network_intelligence import NetworkIntelligence
+    INTELLIGENCE_PIPELINE_ENABLED = True
+except ImportError:
+    INTELLIGENCE_PIPELINE_ENABLED = False
+    IntelligencePipeline = None
+    NetworkIntelligence = None
+    get_active_insights_from_db = None
+
+# Strategic Triangulator - LLM-powered classification (already imported via TRIANGULATION_ENABLED)
+# StrategicTriangulator provides: 5 strategic states, 30-day risk forecasts, cost of inaction
+
 
 # Initialize OpenAI client (for chat feature - optional)
 openai_client = None
@@ -264,6 +308,226 @@ def format_trigger_timeline(triggers: list, max_events: int = 5) -> str:
         <div style="background: #f8f9fa; border-radius: 6px; padding: 8px; margin-top: 8px;">
             <div style="font-size: 10px; font-weight: 600; color: #333; margin-bottom: 4px;">📅 Recent Market Events</div>
             {''.join(events_html)}
+        </div>
+    '''
+
+
+# ========================================
+# PHASE 2/2.5: CAUSAL INTELLIGENCE UI
+# ========================================
+
+def render_attribution_breakdown(attribution) -> str:
+    """
+    Render revenue attribution breakdown as visual HTML.
+    
+    Shows what's driving revenue changes:
+    - Internal factors (price, inventory, content)
+    - Competitive factors (market share, competitor actions)
+    - Macro factors (category trends, seasonality)
+    - Platform factors (algorithm, Amazon actions)
+    
+    Args:
+        attribution: RevenueAttribution object from calculate_revenue_attribution()
+    
+    Returns:
+        HTML string for rendering in Streamlit
+    """
+    if attribution is None:
+        return ""
+    
+    # Calculate total change and percentages
+    total_change = (attribution.internal_contribution + 
+                    attribution.competitive_contribution + 
+                    attribution.macro_contribution + 
+                    attribution.platform_contribution)
+    
+    if abs(total_change) < 0.01:
+        return ""
+    
+    def get_pct(value):
+        if abs(total_change) < 0.01:
+            return 0
+        return (value / abs(total_change)) * 100
+    
+    def get_bar_color(value):
+        if value > 0:
+            return "#28a745"  # green
+        elif value < 0:
+            return "#dc3545"  # red
+        return "#6c757d"  # gray
+    
+    def render_attribution_bar(label, value, emoji):
+        pct = abs(get_pct(value))
+        color = get_bar_color(value)
+        sign = "+" if value > 0 else ""
+        return f'''
+            <div style="margin: 4px 0;">
+                <div style="display: flex; justify-content: space-between; font-size: 11px;">
+                    <span>{emoji} {label}</span>
+                    <span style="color: {color}; font-weight: 600;">{sign}${value:,.0f}</span>
+                </div>
+                <div style="background: #e9ecef; border-radius: 3px; height: 6px; margin-top: 2px;">
+                    <div style="background: {color}; width: {min(pct, 100):.0f}%; height: 100%; border-radius: 3px;"></div>
+                </div>
+            </div>
+        '''
+    
+    bars_html = [
+        render_attribution_bar("Internal", attribution.internal_contribution, "🏠"),
+        render_attribution_bar("Competitive", attribution.competitive_contribution, "⚔️"),
+        render_attribution_bar("Macro", attribution.macro_contribution, "📊"),
+        render_attribution_bar("Platform", attribution.platform_contribution, "🔧"),
+    ]
+    
+    # Determine overall direction
+    direction = "📈" if total_change > 0 else "📉"
+    direction_text = "Growth" if total_change > 0 else "Decline"
+    direction_color = "#28a745" if total_change > 0 else "#dc3545"
+    
+    return f'''
+        <div style="background: #f8f9fa; border-radius: 8px; padding: 12px; margin-top: 10px;">
+            <div style="font-size: 12px; font-weight: 600; color: #333; margin-bottom: 8px;">
+                {direction} Revenue Attribution
+                <span style="color: {direction_color}; float: right;">
+                    {direction_text}: ${abs(total_change):,.0f}
+                </span>
+            </div>
+            {''.join(bars_html)}
+            <div style="font-size: 9px; color: #666; margin-top: 6px; text-align: right;">
+                Confidence: {attribution.confidence:.0%}
+            </div>
+        </div>
+    '''
+
+
+def render_scenario_cards(scenarios: list, sustainable_run_rate: float = 0) -> str:
+    """
+    Render predictive scenarios as compact cards.
+    
+    Shows Base/Optimistic/Pessimistic 30-day revenue forecasts.
+    
+    Args:
+        scenarios: List of Scenario objects from build_scenarios()
+        sustainable_run_rate: Monthly revenue after temporary factors removed
+    
+    Returns:
+        HTML string for rendering in Streamlit
+    """
+    if not scenarios:
+        return ""
+    
+    cards_html = []
+    for scenario in scenarios[:3]:  # Max 3 scenarios
+        # Determine card styling
+        if scenario.name == "Optimistic":
+            bg_color = "#d4edda"
+            border_color = "#28a745"
+            emoji = "🚀"
+        elif scenario.name == "Pessimistic":
+            bg_color = "#f8d7da"
+            border_color = "#dc3545"
+            emoji = "⚠️"
+        else:  # Base
+            bg_color = "#fff3cd"
+            border_color = "#ffc107"
+            emoji = "📊"
+        
+        # Calculate change from sustainable run rate
+        delta = scenario.projected_revenue - sustainable_run_rate if sustainable_run_rate else 0
+        delta_sign = "+" if delta > 0 else ""
+        delta_color = "#28a745" if delta > 0 else "#dc3545" if delta < 0 else "#666"
+        
+        cards_html.append(f'''
+            <div style="flex: 1; background: {bg_color}; border: 1px solid {border_color}; 
+                        border-radius: 6px; padding: 8px; min-width: 100px;">
+                <div style="font-size: 10px; font-weight: 600; color: #333;">
+                    {emoji} {scenario.name}
+                </div>
+                <div style="font-size: 14px; font-weight: 700; color: #000; margin: 4px 0;">
+                    ${scenario.projected_revenue:,.0f}
+                </div>
+                <div style="font-size: 9px; color: {delta_color};">
+                    {delta_sign}${delta:,.0f} vs baseline
+                </div>
+                <div style="font-size: 8px; color: #666; margin-top: 4px;">
+                    {scenario.probability:.0%} probability
+                </div>
+            </div>
+        ''')
+    
+    return f'''
+        <div style="margin-top: 10px;">
+            <div style="font-size: 12px; font-weight: 600; color: #333; margin-bottom: 8px;">
+                🔮 30-Day Revenue Scenarios
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                {''.join(cards_html)}
+            </div>
+            {f'<div style="font-size: 9px; color: #666; margin-top: 6px;">Sustainable Run Rate: ${sustainable_run_rate:,.0f}/mo</div>' if sustainable_run_rate else ''}
+        </div>
+    '''
+
+
+def render_anticipated_events(anticipated_events: list, max_events: int = 3) -> str:
+    """
+    Render anticipated future events timeline.
+    
+    Shows predicted market events with timing and impact.
+    
+    Args:
+        anticipated_events: List of AnticipatedEvent objects
+        max_events: Maximum events to display
+    
+    Returns:
+        HTML string for rendering in Streamlit
+    """
+    if not anticipated_events:
+        return ""
+    
+    events_html = []
+    for event in anticipated_events[:max_events]:
+        # Severity styling
+        if event.severity.value == "critical":
+            severity_color = "#dc3545"
+            severity_icon = "🔴"
+        elif event.severity.value == "high":
+            severity_color = "#fd7e14"
+            severity_icon = "🟠"
+        elif event.severity.value == "medium":
+            severity_color = "#ffc107"
+            severity_icon = "🟡"
+        else:
+            severity_color = "#28a745"
+            severity_icon = "🟢"
+        
+        # Impact styling
+        impact_color = "#dc3545" if event.projected_impact < 0 else "#28a745"
+        impact_sign = "+" if event.projected_impact > 0 else ""
+        
+        events_html.append(f'''
+            <div style="font-size: 10px; padding: 6px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between;">
+                <div>
+                    <span style="color: {severity_color};">{severity_icon}</span>
+                    <strong>{event.event_type}</strong>
+                    <span style="color: #666; font-size: 9px;">({event.days_until}d)</span>
+                </div>
+                <div style="color: {impact_color}; font-weight: 600;">
+                    {impact_sign}${event.projected_impact:,.0f}
+                </div>
+            </div>
+        ''')
+    
+    if len(anticipated_events) > max_events:
+        events_html.append(f'<div style="font-size: 9px; color: #999; padding: 4px;">+{len(anticipated_events) - max_events} more anticipated</div>')
+    
+    return f'''
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; padding: 12px; margin-top: 10px;">
+            <div style="font-size: 12px; font-weight: 600; color: white; margin-bottom: 8px;">
+                ⏳ Anticipated Events (Next 30 Days)
+            </div>
+            <div style="background: white; border-radius: 6px; overflow: hidden;">
+                {''.join(events_html)}
+            </div>
         </div>
     '''
 
@@ -3488,6 +3752,114 @@ with main_tab1:
                     # Debug: Show trigger detection results
                     if all_triggers:
                         st.caption(f"📍 Detected {len(all_triggers)} market events to overlay on chart")
+                    
+                    # === PHASE 2/2.5: CAUSAL INTELLIGENCE ===
+                    
+                    # Dashboard Scope Selector (Audit Upgrade)
+                    scope_container = st.container()
+                    with scope_container:
+                        analysis_scope = st.radio(
+                            "Analysis Scope", 
+                            ["Portfolio Overview", "Single Product Deep Dive"], 
+                            horizontal=True,
+                            label_visibility="collapsed"
+                        )
+                    
+                    # Initialize variables
+                    portfolio_attribution = None
+                    portfolio_scenarios = []
+                    portfolio_anticipated = []
+                    sustainable_run_rate = 0
+                    
+                    if ATTRIBUTION_ENABLED and FORECASTING_ENABLED:
+                        try:
+                            # === SINGLE PRODUCT MODE ===
+                            if analysis_scope == "Single Product Deep Dive":
+                                # Get list of ASINs
+                                if not market_df.empty:
+                                    asin_options = market_df['asin'].tolist()
+                                    target_asin = st.selectbox("Select Product", options=asin_options, format_func=lambda x: f"{market_df[market_df['asin']==x].iloc[0]['title'][:50]}... ({x})")
+                                    
+                                    # Filter history for this ASIN
+                                    single_asin_history = df_weekly[df_weekly['asin'] == target_asin].copy()
+                                    
+                                    # Get current metrics from market_df
+                                    current_metrics = market_df[market_df['asin'] == target_asin].iloc[0].to_dict()
+                                    
+                                    # Filter triggers for this ASIN
+                                    single_triggers = [t for t in all_triggers if t.affected_asin == target_asin]
+                                    
+                                    # Generate Intelligence
+                                    try:
+                                        pipeline = IntelligencePipeline(supabase=None, enable_data_accumulation=False) # We don't need persistence here
+                                        # Use the single ASIN method which orchestrates everything
+                                        # Note: We mock current_metrics as dict for compatibility
+                                        single_intel = pipeline.generate_single_asin_intelligence(
+                                            asin=target_asin,
+                                            df_weekly=single_asin_history,
+                                            current_metrics=current_metrics,
+                                            market_snapshot=market_df.to_dict('records')
+                                        )
+                                        
+                                        if single_intel:
+                                            portfolio_attribution = single_intel.revenue_attribution
+                                            portfolio_scenarios = single_intel.scenarios
+                                            portfolio_anticipated = single_intel.anticipated_events
+                                            sustainable_run_rate = single_intel.sustainable_run_rate
+                                            
+                                            st.caption(f"🎯 Analyze specific causal chain for {target_asin}")
+                                    except Exception as e:
+                                        st.error(f"Failed to generate intelligence for {target_asin}: {e}")
+                                
+                            # === PORTFOLIO MODE (Original Logic) ===
+                            else:
+                                # Get portfolio revenue for calculations
+                                portfolio_revenue = st.session_state.get('enriched_df', pd.DataFrame()).get('estimated_monthly_revenue', pd.Series()).sum() if 'enriched_df' in st.session_state else 0
+                                previous_revenue = portfolio_revenue * 0.95  # Estimate 5% change baseline
+                                
+                                if portfolio_revenue > 0 and all_triggers:
+                                    # Calculate portfolio-level attribution
+                                    portfolio_attribution = calculate_revenue_attribution(
+                                        previous_revenue=previous_revenue,
+                                        current_revenue=portfolio_revenue,
+                                        df_weekly=df_weekly,
+                                        trigger_events=all_triggers,
+                                        market_snapshot=market_df.to_dict('records') if not market_df.empty else None,
+                                        lookback_days=30
+                                    )
+                                    
+                                    # Generate combined intelligence
+                                    combined_intel = generate_combined_intelligence(
+                                        current_revenue=portfolio_revenue,
+                                        previous_revenue=previous_revenue,
+                                        attribution=portfolio_attribution,
+                                        trigger_events=all_triggers,
+                                        df_historical=df_weekly
+                                    )
+                                    
+                                    if combined_intel:
+                                        portfolio_scenarios = combined_intel.scenarios
+                                        portfolio_anticipated = combined_intel.anticipated_events
+                                        sustainable_run_rate = combined_intel.sustainable_run_rate
+                                
+                        except Exception as e:
+                            st.caption(f"📊 Intelligence Error: {str(e)[:50]}")
+                    
+                    # === RENDER CAUSAL INTELLIGENCE UI ===
+                    if portfolio_attribution or portfolio_scenarios or portfolio_anticipated:
+                        intel_cols = st.columns(3)
+                        
+                        with intel_cols[0]:
+                            if portfolio_attribution:
+                                st.markdown(render_attribution_breakdown(portfolio_attribution), unsafe_allow_html=True)
+                        
+                        with intel_cols[1]:
+                            if portfolio_scenarios:
+                                st.markdown(render_scenario_cards(portfolio_scenarios, sustainable_run_rate), unsafe_allow_html=True)
+                        
+                        with intel_cols[2]:
+                            if portfolio_anticipated:
+                                st.markdown(render_anticipated_events(portfolio_anticipated), unsafe_allow_html=True)
                     
                 except ImportError as e:
                     st.caption("📍 Trigger detection module not available")

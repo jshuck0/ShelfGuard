@@ -773,25 +773,51 @@ with main_tab2:
     else:
         # === ACTIVE PROJECT MODE ===
         try:
-            # Get project data from session state
+            # Get project data from session state - USE SAME KEYS AS COMMAND CENTER 1
             project_name = st.session_state.get('active_project_name', 'Unknown Project')
-            project_asins = st.session_state.get('active_project_all_asins', [])
+            target_brand = st.session_state.get('active_brand', '')
 
-            # Try to get data from session state or cache
-            df_weekly = st.session_state.get('active_project_weekly_data', pd.DataFrame())
+            # Get data using the same keys as Command Center 1 (lines 3394-3396)
+            df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
             market_snapshot = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
 
-            # Get enriched portfolio data if available (from triangulation)
-            enriched_portfolio = st.session_state.get('enriched_portfolio_triangulated', pd.DataFrame())
-
-            # Get trigger events if available
+            # === DETECT TRIGGER EVENTS (Same approach as CC1, lines 3398-3430) ===
             trigger_events = []
-            if not enriched_portfolio.empty and 'trigger_events' in enriched_portfolio.columns:
-                # Extract trigger events from enriched portfolio
-                for _, row in enriched_portfolio.iterrows():
-                    events = row.get('trigger_events', [])
-                    if isinstance(events, list):
-                        trigger_events.extend(events)
+            project_asins = []
+
+            if not df_weekly.empty and 'asin' in df_weekly.columns:
+                project_asins = list(df_weekly['asin'].unique())
+                try:
+                    from src.trigger_detection import detect_trigger_events
+
+                    # Get top revenue products for trigger detection
+                    if target_brand and 'brand' in df_weekly.columns:
+                        brand_asins = df_weekly[df_weekly['brand'].str.lower() == target_brand.lower()]['asin'].unique()[:15]
+                    else:
+                        brand_asins = df_weekly['asin'].unique()[:15]
+
+                    for asin in brand_asins:
+                        asin_history = df_weekly[df_weekly['asin'] == asin]
+                        if not asin_history.empty and len(asin_history) >= 3:
+                            try:
+                                triggers = detect_trigger_events(
+                                    asin=asin,
+                                    df_historical=asin_history,
+                                    df_competitors=market_snapshot,
+                                    lookback_days=30
+                                )
+                                for t in triggers:
+                                    t.asin = asin
+                                trigger_events.extend(triggers)
+                            except Exception:
+                                pass
+
+                    # Sort by severity, take top events
+                    trigger_events = sorted(trigger_events, key=lambda e: e.severity, reverse=True)[:20]
+                except ImportError:
+                    pass
+                except Exception:
+                    pass
 
             # === REVENUE CALCULATION ===
             # Calculate current and previous revenue from portfolio
@@ -824,10 +850,21 @@ with main_tab2:
                 else:
                     # Fallback: use market snapshot revenue if available
                     if not market_snapshot.empty:
-                        rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_snapshot.columns else 'revenue_proxy'
-                        if rev_col in market_snapshot.columns:
-                            current_revenue = market_snapshot[rev_col].sum()
-                            previous_revenue = current_revenue * 0.85  # Assume 15% growth as default
+                        # Try multiple revenue columns
+                        rev_col = None
+                        for col in ['revenue_proxy_adjusted', 'revenue_proxy', 'monthly_revenue']:
+                            if col in market_snapshot.columns:
+                                rev_col = col
+                                break
+                        if rev_col:
+                            # Filter to target brand if available
+                            if target_brand and 'brand' in market_snapshot.columns:
+                                brand_mask = market_snapshot['brand'].str.lower().str.contains(target_brand.lower(), case=False, na=False)
+                                brand_df = market_snapshot[brand_mask]
+                                current_revenue = brand_df[rev_col].sum() if not brand_df.empty else market_snapshot[rev_col].sum()
+                            else:
+                                current_revenue = market_snapshot[rev_col].sum()
+                            previous_revenue = current_revenue * 0.85  # Estimate 15% growth
                         else:
                             current_revenue = 100000  # Placeholder
                             previous_revenue = 85000
@@ -835,8 +872,27 @@ with main_tab2:
                         current_revenue = 100000  # Placeholder
                         previous_revenue = 85000
             else:
-                current_revenue = 100000  # Placeholder
-                previous_revenue = 85000
+                # Use market snapshot if df_weekly is empty
+                if not market_snapshot.empty:
+                    rev_col = None
+                    for col in ['revenue_proxy_adjusted', 'revenue_proxy', 'monthly_revenue']:
+                        if col in market_snapshot.columns:
+                            rev_col = col
+                            break
+                    if rev_col:
+                        if target_brand and 'brand' in market_snapshot.columns:
+                            brand_mask = market_snapshot['brand'].str.lower().str.contains(target_brand.lower(), case=False, na=False)
+                            brand_df = market_snapshot[brand_mask]
+                            current_revenue = brand_df[rev_col].sum() if not brand_df.empty else 0
+                        else:
+                            current_revenue = market_snapshot[rev_col].sum()
+                        previous_revenue = current_revenue * 0.85
+                    else:
+                        current_revenue = 100000
+                        previous_revenue = 85000
+                else:
+                    current_revenue = 100000  # Placeholder
+                    previous_revenue = 85000
 
             # === ATTRIBUTION CALCULATION ===
             attribution = None

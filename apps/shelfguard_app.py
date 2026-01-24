@@ -847,10 +847,19 @@ with main_tab2:
                     market_snapshot_dict = None
                     if not market_snapshot.empty:
                         # Create category benchmarks from market data
+                        # Safely get median price from available columns
+                        median_price = 0
+                        for price_col in ['price_per_unit', 'buy_box_price', 'price']:
+                            if price_col in market_snapshot.columns:
+                                price_series = market_snapshot[price_col].dropna()
+                                if len(price_series) > 0:
+                                    median_price = float(price_series.median())
+                                    break
+                        
                         market_snapshot_dict = {
                             'category_benchmarks': {
                                 'growth_rate_30d': 0,  # Will be calculated if historical data available
-                                'median_price': market_snapshot.get('price_per_unit', market_snapshot.get('buy_box_price', [0])).median() if not market_snapshot.empty else 0
+                                'median_price': median_price
                             }
                         }
 

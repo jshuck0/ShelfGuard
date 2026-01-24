@@ -74,12 +74,17 @@ def render_unified_dashboard():
         # Using simplified attribution call for display
         # In production, this uses the real engine
         from src.revenue_attribution import calculate_revenue_attribution
+
+        # Get category_id from session state (if available)
+        category_id = st.session_state.get('active_project_category_id')
+
         attribution = calculate_revenue_attribution(
             previous_revenue=previous_revenue,
             current_revenue=current_revenue,
             df_weekly=df_weekly,
             trigger_events=[], # Passed empty for speed
-            market_snapshot=None
+            market_snapshot=None,
+            category_id=category_id
         )
     except Exception as e:
         st.error(f"⚠️ Attribution Error: {str(e)}")
@@ -120,6 +125,51 @@ def render_unified_dashboard():
             # Show data quality summary
             data_quality = attribution.get_data_quality_summary()
             st.caption(data_quality)
+
+        # Category Benchmarks Comparison (P3 Feature)
+        macro_drivers = attribution.macro_drivers if hasattr(attribution, 'macro_drivers') else []
+        for driver in macro_drivers:
+            if driver.event_type == "category_trend" and driver.metadata:
+                category_growth = driver.metadata.get('category_growth_pct', 0)
+                your_growth = (attribution.total_delta / previous_revenue * 100) if previous_revenue > 0 else 0
+                market_share = driver.metadata.get('market_share', 0)
+                growth_direction = driver.metadata.get('growth_direction', 'unknown')
+
+                # Show comparison
+                st.markdown("##### 📊 Category Performance Comparison")
+
+                comp_cols = st.columns(3)
+                with comp_cols[0]:
+                    st.metric(
+                        "Category Growth",
+                        f"{category_growth:+.1f}%",
+                        delta=growth_direction.title(),
+                        help="30-day category-wide revenue trend"
+                    )
+                with comp_cols[1]:
+                    st.metric(
+                        "Your Growth",
+                        f"{your_growth:+.1f}%",
+                        delta="Outperforming" if your_growth > category_growth else "Underperforming",
+                        help="Your revenue growth vs category benchmark"
+                    )
+                with comp_cols[2]:
+                    st.metric(
+                        "Market Share",
+                        f"{market_share*100:.2f}%",
+                        help="Your estimated category market share"
+                    )
+
+                # Insight
+                if your_growth > category_growth + 5:
+                    st.success(f"✅ You're growing faster than the category ({your_growth:.1f}% vs {category_growth:.1f}%). This is earned market share gain.")
+                elif your_growth < category_growth - 5:
+                    st.warning(f"⚠️ You're growing slower than the category ({your_growth:.1f}% vs {category_growth:.1f}%). You're losing market share.")
+                else:
+                    st.info(f"📊 Your growth is tracking with the category ({your_growth:.1f}% vs {category_growth:.1f}%). This is primarily macro trend.")
+
+                break  # Only show first category trend driver
+
     else:
         # Fallback if attribution fails
         st.info("⚠️ Strategic Context Unavailable: insufficient historical data for attribution.")
@@ -381,6 +431,96 @@ def render_unified_dashboard():
                     """, unsafe_allow_html=True)
         else:
             st.info("No anticipated events detected for the next 30 days.")
+
+    # === SCENARIO COMPARISON UI ===
+    if combined_intel and hasattr(combined_intel, 'scenarios') and combined_intel.scenarios:
+        st.markdown("---")
+        st.markdown("#### 🎲 Scenario Analysis (30/60/90 Day Outlook)")
+
+        scenarios = combined_intel.scenarios
+        if scenarios and len(scenarios) >= 3:
+            # Create 3-column layout for Base/Optimistic/Pessimistic
+            scen_cols = st.columns(3)
+
+            # Sort scenarios: Base Case first, then Optimistic, then Pessimistic
+            scenario_order = {"Base Case": 0, "Optimistic": 1, "Pessimistic": 2}
+            sorted_scenarios = sorted(scenarios, key=lambda s: scenario_order.get(s.scenario_name, 3))
+
+            # Styling map for scenario types
+            scenario_styles = {
+                "Base Case": {"color": "#007bff", "bg": "#e7f3ff", "icon": "📊"},
+                "Optimistic": {"color": "#28a745", "bg": "#e8f5e9", "icon": "🚀"},
+                "Pessimistic": {"color": "#dc3545", "bg": "#fee", "icon": "⚠️"}
+            }
+
+            for idx, scenario in enumerate(sorted_scenarios[:3]):  # Show top 3
+                style = scenario_styles.get(scenario.scenario_name, {"color": "#6c757d", "bg": "#f8f9fa", "icon": "📈"})
+
+                with scen_cols[idx]:
+                    # Scenario header card
+                    st.markdown(f"""
+                    <div style="background: {style['bg']}; border-left: 4px solid {style['color']};
+                                padding: 16px; border-radius: 6px; margin-bottom: 12px;">
+                        <div style="font-size: 16px; font-weight: 700; color: {style['color']}; margin-bottom: 8px;">
+                            {style['icon']} {scenario.scenario_name}
+                        </div>
+                        <div style="font-size: 13px; color: #666;">
+                            Probability: <strong>{scenario.probability:.0%}</strong>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Revenue projections
+                    st.markdown("**Revenue Projections:**")
+
+                    # 30-day projection
+                    proj_30d = scenario.projected_revenue_30d if hasattr(scenario, 'projected_revenue_30d') else 0
+                    delta_30d = proj_30d - current_revenue
+                    st.metric(
+                        "30 Days",
+                        f"${proj_30d:,.0f}",
+                        delta=f"{delta_30d:+,.0f}",
+                        delta_color="normal"
+                    )
+
+                    # 60-day projection
+                    if hasattr(scenario, 'projected_revenue_60d'):
+                        proj_60d = scenario.projected_revenue_60d
+                        delta_60d = proj_60d - current_revenue
+                        st.metric(
+                            "60 Days",
+                            f"${proj_60d:,.0f}",
+                            delta=f"{delta_60d:+,.0f}",
+                            delta_color="normal"
+                        )
+
+                    # 90-day projection
+                    if hasattr(scenario, 'projected_revenue_90d'):
+                        proj_90d = scenario.projected_revenue_90d
+                        delta_90d = proj_90d - current_revenue
+                        st.metric(
+                            "90 Days",
+                            f"${proj_90d:,.0f}",
+                            delta=f"{delta_90d:+,.0f}",
+                            delta_color="normal"
+                        )
+
+                    # Key assumptions/narrative
+                    if hasattr(scenario, 'narrative') and scenario.narrative:
+                        st.caption(f"**Scenario:** {scenario.narrative}")
+                    elif hasattr(scenario, 'assumptions') and scenario.assumptions:
+                        assumptions_text = ", ".join([a.get('assumption', '') for a in scenario.assumptions[:2]])
+                        st.caption(f"**Key Factors:** {assumptions_text}")
+
+            # Summary insight
+            st.markdown("---")
+            base_scenario = next((s for s in sorted_scenarios if s.scenario_name == "Base Case"), None)
+            if base_scenario:
+                base_30d = base_scenario.projected_revenue_30d if hasattr(base_scenario, 'projected_revenue_30d') else current_revenue
+                st.info(f"""
+                **Most Likely Outcome:** Based on current trajectory and anticipated events,
+                expect revenue of **${base_30d:,.0f}** in 30 days ({base_scenario.probability:.0%} confidence).
+                """)
 
     # === SECTION 2: TACTICAL EXECUTION (The What) ===
     st.markdown("---")

@@ -20,7 +20,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from typing import List, Optional, Dict, Tuple
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from supabase import Client
 
 
@@ -1068,3 +1068,211 @@ def get_market_snapshot_with_network_intelligence(
         stats['network_intelligence'] = {'error': str(e)}
 
     return df, stats
+
+
+# =============================================================================
+# P3: CATEGORY BENCHMARKS & HISTORICAL TRACKING
+# =============================================================================
+
+def load_category_benchmarks(category_id: int, lookback_days: int = 30) -> Optional[Dict]:
+    """
+    Load category-level intelligence and benchmarks from Supabase.
+
+    Args:
+        category_id: Amazon category ID
+        lookback_days: Number of days to look back for trend calculation
+
+    Returns:
+        Dictionary with category benchmarks or None if not available
+    """
+    if not SUPABASE_CACHE_ENABLED:
+        return None
+
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            return None
+
+        # Query category_intelligence table for latest benchmarks
+        # Assuming table structure: category_id, timestamp, metrics (JSONB)
+        result = supabase.table('category_intelligence')\
+            .select('*')\
+            .eq('category_id', category_id)\
+            .order('timestamp', desc=True)\
+            .limit(lookback_days)\
+            .execute()
+
+        if not result.data:
+            return None
+
+        # Calculate trends from historical data
+        data_points = result.data
+        latest = data_points[0]
+
+        # Extract current metrics
+        benchmarks = {
+            'category_id': category_id,
+            'timestamp': latest.get('timestamp'),
+            'median_price': latest.get('median_price', 0),
+            'median_review_count': latest.get('median_review_count', 0),
+            'median_rating': latest.get('median_rating', 0),
+            'total_products': latest.get('total_products', 0),
+            'category_revenue_estimate': latest.get('category_revenue_estimate', 0)
+        }
+
+        # Calculate growth rate (comparing first vs last in lookback period)
+        if len(data_points) >= 2:
+            oldest = data_points[-1]
+            latest_revenue = latest.get('category_revenue_estimate', 0)
+            oldest_revenue = oldest.get('category_revenue_estimate', 0)
+
+            if oldest_revenue > 0:
+                days_between = (
+                    pd.to_datetime(latest.get('timestamp')) -
+                    pd.to_datetime(oldest.get('timestamp'))
+                ).days or 1
+
+                # Normalize to 30-day growth rate
+                growth = ((latest_revenue / oldest_revenue) - 1) * 100
+                growth_rate_30d = growth * (30 / days_between)
+
+                benchmarks['growth_rate_30d'] = growth_rate_30d
+                benchmarks['growth_direction'] = 'expanding' if growth_rate_30d > 5 else 'contracting' if growth_rate_30d < -5 else 'stable'
+            else:
+                benchmarks['growth_rate_30d'] = 0
+                benchmarks['growth_direction'] = 'unknown'
+        else:
+            benchmarks['growth_rate_30d'] = 0
+            benchmarks['growth_direction'] = 'insufficient_data'
+
+        return benchmarks
+
+    except Exception as e:
+        print(f"⚠️ Error loading category benchmarks: {str(e)}")
+        return None
+
+
+def load_keyword_rank_history(
+    asin: str,
+    lookback_days: int = 30
+) -> Optional[pd.DataFrame]:
+    """
+    Load keyword ranking history for Share of Voice tracking.
+
+    Args:
+        asin: Product ASIN
+        lookback_days: Number of days of history to load
+
+    Returns:
+        DataFrame with columns: keyword, rank, search_volume, timestamp
+        Returns None if data unavailable
+    """
+    if not SUPABASE_CACHE_ENABLED:
+        return None
+
+    try:
+        supabase = get_supabase_client()
+        if not supabase:
+            return None
+
+        # Query keyword_ranks table
+        # Assuming table structure: asin, keyword, rank, search_volume, timestamp
+        cutoff_date = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+
+        result = supabase.table('keyword_ranks')\
+            .select('*')\
+            .eq('asin', asin)\
+            .gte('timestamp', cutoff_date)\
+            .order('timestamp', desc=True)\
+            .execute()
+
+        if not result.data:
+            return None
+
+        # Convert to DataFrame
+        df = pd.DataFrame(result.data)
+
+        # Ensure required columns exist
+        required_cols = ['keyword', 'rank', 'search_volume', 'timestamp']
+        if not all(col in df.columns for col in required_cols):
+            return None
+
+        return df
+
+    except Exception as e:
+        print(f"⚠️ Error loading keyword rank history: {str(e)}")
+        return None
+
+
+def calculate_share_of_voice_metrics(
+    keyword_rank_df: pd.DataFrame
+) -> Dict:
+    """
+    Calculate Share of Voice metrics from keyword rank history.
+
+    Args:
+        keyword_rank_df: DataFrame with keyword ranking history
+
+    Returns:
+        Dictionary with SOV metrics and trend
+    """
+    if keyword_rank_df is None or keyword_rank_df.empty:
+        return {}
+
+    try:
+        # Calculate weighted average rank (weighted by search volume)
+        keyword_rank_df['weighted_rank'] = keyword_rank_df['rank'] * keyword_rank_df['search_volume']
+
+        # Get recent (7d) and older (30d) periods
+        keyword_rank_df['timestamp'] = pd.to_datetime(keyword_rank_df['timestamp'])
+        cutoff_7d = datetime.now() - timedelta(days=7)
+        cutoff_30d = datetime.now() - timedelta(days=30)
+
+        recent_df = keyword_rank_df[keyword_rank_df['timestamp'] >= cutoff_7d]
+        older_df = keyword_rank_df[
+            (keyword_rank_df['timestamp'] < cutoff_7d) &
+            (keyword_rank_df['timestamp'] >= cutoff_30d)
+        ]
+
+        # Calculate weighted average ranks
+        if not recent_df.empty and recent_df['search_volume'].sum() > 0:
+            recent_avg_rank = recent_df['weighted_rank'].sum() / recent_df['search_volume'].sum()
+        else:
+            recent_avg_rank = 50  # Default fallback
+
+        if not older_df.empty and older_df['search_volume'].sum() > 0:
+            older_avg_rank = older_df['weighted_rank'].sum() / older_df['search_volume'].sum()
+        else:
+            older_avg_rank = recent_avg_rank  # No change
+
+        # Calculate change percentage
+        # Note: Lower rank is better, so improvement = negative % change
+        if older_avg_rank > 0:
+            rank_change_pct = ((recent_avg_rank - older_avg_rank) / older_avg_rank) * 100
+        else:
+            rank_change_pct = 0
+
+        # Determine trend
+        if rank_change_pct < -20:
+            trend = "significant_improvement"
+        elif rank_change_pct < -5:
+            trend = "improving"
+        elif rank_change_pct > 20:
+            trend = "significant_decline"
+        elif rank_change_pct > 5:
+            trend = "declining"
+        else:
+            trend = "stable"
+
+        return {
+            'recent_avg_rank': recent_avg_rank,
+            'older_avg_rank': older_avg_rank,
+            'rank_change_pct': rank_change_pct,
+            'trend': trend,
+            'keywords_tracked': len(keyword_rank_df['keyword'].unique()),
+            'total_search_volume': keyword_rank_df['search_volume'].sum()
+        }
+
+    except Exception as e:
+        print(f"⚠️ Error calculating SOV metrics: {str(e)}")
+        return {}

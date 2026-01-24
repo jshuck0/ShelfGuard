@@ -36,6 +36,111 @@ def f_money(val):
         return f"${val/1000:.0f}K"
     return f"${val:.0f}"
 
+
+# =============================================================================
+# DATA VALIDATION LAYER (P2: Enhanced Accuracy)
+# =============================================================================
+
+def validate_dataframe_schema(
+    df: pd.DataFrame,
+    schema_type: str = "market_snapshot",
+    fix_issues: bool = True
+) -> tuple:
+    """
+    Validate and standardize DataFrame schema.
+
+    Args:
+        df: DataFrame to validate
+        schema_type: Type of schema ("weekly_historical" or "market_snapshot")
+        fix_issues: Whether to attempt automatic fixes
+
+    Returns:
+        (validated_df, list_of_errors)
+    """
+    errors = []
+    validated_df = df.copy()
+
+    # Define required columns for each schema type
+    schema_requirements = {
+        "weekly_historical": {
+            "required": ["asin"],
+            "recommended": ["date", "week", "price", "sales_rank"],
+            "revenue_columns": ["revenue", "sales", "revenue_proxy", "estimated_revenue"]
+        },
+        "market_snapshot": {
+            "required": ["asin"],
+            "recommended": ["title", "brand", "price", "sales_rank"],
+            "revenue_columns": ["revenue", "sales", "revenue_proxy", "estimated_revenue"]
+        }
+    }
+
+    requirements = schema_requirements.get(schema_type, schema_requirements["market_snapshot"])
+
+    # Check required columns
+    for col in requirements["required"]:
+        if col not in validated_df.columns:
+            errors.append(f"CRITICAL: Missing required column '{col}'")
+
+    # Check for at least one revenue column
+    has_revenue_col = any(col in validated_df.columns for col in requirements["revenue_columns"])
+    if not has_revenue_col:
+        errors.append(f"WARNING: No revenue column found. Expected one of: {requirements['revenue_columns']}")
+
+    # Standardize revenue column (define canonical column)
+    if fix_issues and has_revenue_col:
+        # Priority order: revenue > sales > revenue_proxy > estimated_revenue
+        canonical_revenue_col = None
+        for col in requirements["revenue_columns"]:
+            if col in validated_df.columns:
+                canonical_revenue_col = col
+                break
+
+        # Add canonical 'revenue' column if it doesn't exist
+        if 'revenue' not in validated_df.columns and canonical_revenue_col:
+            validated_df['revenue'] = validated_df[canonical_revenue_col]
+            errors.append(f"INFO: Created canonical 'revenue' column from '{canonical_revenue_col}'")
+
+    # Standardize date column for weekly_historical
+    if schema_type == "weekly_historical" and fix_issues:
+        if 'date' not in validated_df.columns and 'week' in validated_df.columns:
+            try:
+                validated_df['date'] = pd.to_datetime(validated_df['week'], errors='coerce')
+                errors.append("INFO: Created 'date' column from 'week' column")
+            except Exception as e:
+                errors.append(f"WARNING: Could not convert 'week' to 'date': {str(e)}")
+
+    # Validate data types (if fixing is enabled)
+    if fix_issues:
+        # Ensure numeric columns are numeric
+        numeric_cols = ['price', 'sales_rank', 'revenue', 'sales', 'revenue_proxy']
+        for col in numeric_cols:
+            if col in validated_df.columns:
+                try:
+                    validated_df[col] = pd.to_numeric(validated_df[col], errors='coerce')
+                except Exception:
+                    errors.append(f"WARNING: Could not convert '{col}' to numeric")
+
+        # Ensure date columns are datetime
+        date_cols = ['date', 'last_updated', 'timestamp']
+        for col in date_cols:
+            if col in validated_df.columns and not pd.api.types.is_datetime64_any_dtype(validated_df[col]):
+                try:
+                    validated_df[col] = pd.to_datetime(validated_df[col], errors='coerce')
+                except Exception:
+                    errors.append(f"WARNING: Could not convert '{col}' to datetime")
+
+    # Check for null values in critical columns
+    if 'asin' in validated_df.columns:
+        null_asins = validated_df['asin'].isna().sum()
+        if null_asins > 0:
+            errors.append(f"WARNING: {null_asins} rows with null ASIN values")
+            if fix_issues:
+                validated_df = validated_df[validated_df['asin'].notna()]
+                errors.append(f"INFO: Removed {null_asins} rows with null ASINs")
+
+    return validated_df, errors
+
+
 def ensure_data_loaded():
     """
     Loads project data, performs healing, calculates intelligence, and returns dashboard objects.
@@ -91,7 +196,30 @@ def ensure_data_loaded():
 
     if df_weekly.empty or market_snapshot.empty:
         return None, None, pd.DataFrame(), ""
-    
+
+    # === DATA VALIDATION LAYER ===
+    # Validate and standardize dataframes before processing
+    df_weekly, weekly_validation_errors = validate_dataframe_schema(
+        df_weekly,
+        schema_type="weekly_historical",
+        fix_issues=True
+    )
+    market_snapshot, market_validation_errors = validate_dataframe_schema(
+        market_snapshot,
+        schema_type="market_snapshot",
+        fix_issues=True
+    )
+
+    # Store validation warnings for debugging
+    if weekly_validation_errors or market_validation_errors:
+        all_errors = weekly_validation_errors + market_validation_errors
+        st.session_state['data_validation_warnings'] = all_errors
+        # Only show critical errors (missing required columns)
+        critical_errors = [e for e in all_errors if "CRITICAL" in e]
+        if critical_errors and st.session_state.get('show_validation_warnings', False):
+            for error in critical_errors[:3]:  # Limit to first 3
+                st.warning(f"Data Quality: {error}")
+
     # === DATA HEALER ===
     if heal_market_snapshot:
         market_snapshot = heal_market_snapshot(market_snapshot, verbose=False)

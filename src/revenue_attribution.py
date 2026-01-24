@@ -106,6 +106,102 @@ def detect_price_changes(
     return actions
 
 
+def detect_ppc_changes(
+    df_weekly: pd.DataFrame,
+    lookback_days: int = 30,
+    default_roas: float = 4.0
+) -> List[InternalAction]:
+    """
+    Auto-detect PPC budget changes from historical data.
+
+    Args:
+        df_weekly: Historical time-series data with PPC spend columns
+        lookback_days: Number of days to look back for changes
+        default_roas: Default Return on Ad Spend multiplier (revenue per $1 spent)
+
+    Returns:
+        List of detected PPC budget change actions
+    """
+    if df_weekly.empty:
+        return []
+
+    actions = []
+
+    # Check for PPC spend columns (various naming conventions)
+    ppc_columns = ['ppc_spend', 'ad_spend', 'advertising_spend', 'sponsored_spend']
+    spend_col = None
+    for col in ppc_columns:
+        if col in df_weekly.columns:
+            spend_col = col
+            break
+
+    if not spend_col:
+        return []  # No PPC data available
+
+    # Ensure date column exists - with validation
+    if 'date' not in df_weekly.columns:
+        if 'week' in df_weekly.columns:
+            df_weekly = df_weekly.copy()
+            try:
+                df_weekly['date'] = pd.to_datetime(df_weekly['week'], errors='coerce')
+            except Exception:
+                return []
+        else:
+            return []
+
+    # Validate that 'date' column now exists and has valid data
+    if 'date' not in df_weekly.columns or df_weekly['date'].isna().all():
+        return []
+
+    # Sort by date
+    df_weekly = df_weekly.sort_values('date')
+
+    # Calculate spend changes
+    df_weekly['spend_change'] = df_weekly[spend_col].diff()
+    df_weekly['spend_change_pct'] = df_weekly[spend_col].pct_change() * 100
+
+    # Get recent data
+    cutoff_date = datetime.now() - timedelta(days=lookback_days)
+    recent_df = df_weekly[df_weekly['date'] >= cutoff_date].copy()
+
+    if recent_df.empty:
+        return []
+
+    # Detect significant PPC budget changes (>15% or >$100 absolute)
+    for idx, row in recent_df.iterrows():
+        spend_change = row.get('spend_change', 0)
+        spend_change_pct = row.get('spend_change_pct', 0)
+
+        # Skip if not significant
+        if pd.isna(spend_change) or pd.isna(spend_change_pct):
+            continue
+        if abs(spend_change_pct) < 15 and abs(spend_change) < 100:
+            continue
+
+        # Calculate expected revenue impact using ROAS
+        expected_impact = spend_change * default_roas
+
+        # Create action
+        action = InternalAction(
+            action_type=ActionType.PPC_BUDGET,
+            timestamp=row['date'],
+            magnitude=spend_change_pct,
+            magnitude_type="percentage",
+            expected_impact=expected_impact,
+            description=f"PPC budget {'increase' if spend_change > 0 else 'decrease'} of ${abs(spend_change):,.0f} ({spend_change_pct:+.1f}%)",
+            metadata={
+                "spend_change": float(spend_change),
+                "spend_change_pct": float(spend_change_pct),
+                "roas_applied": default_roas,
+                "previous_spend": float(df_weekly.loc[df_weekly['date'] < row['date'], spend_col].iloc[-1]) if len(df_weekly[df_weekly['date'] < row['date']]) > 0 else 0,
+                "new_spend": float(row[spend_col])
+            }
+        )
+        actions.append(action)
+
+    return actions
+
+
 # ========================================
 # ATTRIBUTION CALCULATION
 # ========================================
@@ -159,11 +255,12 @@ def attribute_internal_actions(
         elif action.action_type == ActionType.PPC_BUDGET:
             # Use ROAS model
             # Typical ROAS: 4.0 ($4 revenue per $1 spend)
-            roas = action.metadata.get('roas', 4.0)
-            spend_delta = action.magnitude  # Assume magnitude is spend change
+            roas = action.metadata.get('roas_applied', 4.0)
+            spend_delta = action.metadata.get('spend_change', 0)  # Absolute spend change in dollars
 
+            # Revenue impact = spend change * ROAS
             impact = spend_delta * roas
-            confidence = 0.8
+            confidence = 0.8  # High confidence for PPC attribution (direct causation)
 
         # Create driver
         driver = AttributionDriver(
@@ -287,17 +384,19 @@ def attribute_competitive_events(
 def attribute_macro_trends(
     df_weekly: pd.DataFrame,
     baseline_revenue: float,
-    market_snapshot: Optional[Dict] = None
+    market_snapshot: Optional[Dict] = None,
+    category_id: Optional[int] = None
 ) -> Tuple[float, List[AttributionDriver]]:
     """
     Attribute revenue change to macro trends (category growth, seasonality).
 
-    Method: Category benchmark growth share.
+    Method: Category benchmark growth share from Supabase intelligence.
 
     Args:
         df_weekly: Historical time-series data
         baseline_revenue: Revenue before changes
         market_snapshot: Market intelligence data with category benchmarks
+        category_id: Amazon category ID for loading real benchmarks
 
     Returns:
         (total_macro_impact, list_of_drivers)
@@ -305,29 +404,52 @@ def attribute_macro_trends(
     drivers = []
     total_impact = 0.0
 
-    # Check for category growth data in market snapshot
-    if market_snapshot and 'category_benchmarks' in market_snapshot:
+    # Try to load real category benchmarks from Supabase
+    category_data = None
+    if category_id:
+        try:
+            from src.supabase_reader import load_category_benchmarks
+            category_data = load_category_benchmarks(category_id, lookback_days=30)
+        except Exception:
+            pass
+
+    # Fallback to market_snapshot if Supabase query failed
+    if not category_data and market_snapshot and 'category_benchmarks' in market_snapshot:
         category_data = market_snapshot['category_benchmarks']
+
+    if category_data:
         category_growth_pct = category_data.get('growth_rate_30d', 0)
 
         if abs(category_growth_pct) > 5:  # Significant category trend
-            # Calculate your share of category growth
-            # Assume you maintain your market share (4-5% typical)
-            your_market_share = 0.04  # Conservative estimate
+            # Calculate your market share
+            # If we have category revenue estimate, calculate actual share
+            category_revenue = category_data.get('category_revenue_estimate', 0)
+            if category_revenue > 0 and baseline_revenue > 0:
+                your_market_share = baseline_revenue / category_revenue
+                your_market_share = min(your_market_share, 0.15)  # Cap at 15% (realistic max)
+            else:
+                your_market_share = 0.04  # Conservative default estimate
 
             # Your revenue lift from category growth
+            # You capture your market share of the category growth
             impact = baseline_revenue * (category_growth_pct / 100)
+
+            # Description with direction
+            growth_direction = category_data.get('growth_direction', 'unknown')
+            direction_emoji = "📈" if category_growth_pct > 0 else "📉"
 
             driver = AttributionDriver(
                 category=CausalCategory.MACRO,
-                description=f"Category demand {'+' if category_growth_pct > 0 else ''}{category_growth_pct:.1f}%",
+                description=f"{direction_emoji} Category {growth_direction}: {'+' if category_growth_pct > 0 else ''}{category_growth_pct:.1f}%",
                 impact=impact,
-                confidence=0.75,
+                confidence=0.78 if category_revenue > 0 else 0.65,  # Higher confidence with real data
                 controllable=False,
                 event_type="category_trend",
                 metadata={
                     "category_growth_pct": category_growth_pct,
-                    "market_share": your_market_share
+                    "market_share": your_market_share,
+                    "category_revenue": category_revenue,
+                    "growth_direction": growth_direction
                 }
             )
 
@@ -460,7 +582,8 @@ def calculate_revenue_attribution(
     trigger_events: List[TriggerEvent],
     market_snapshot: Optional[Dict] = None,
     lookback_days: int = 30,
-    portfolio_asins: List[str] = None
+    portfolio_asins: List[str] = None,
+    category_id: Optional[int] = None
 ) -> RevenueAttribution:
     """
     Decomposes revenue change into 4 causal categories using elimination method.
@@ -481,6 +604,7 @@ def calculate_revenue_attribution(
         market_snapshot: Market intelligence data
         lookback_days: Number of days to analyze
         portfolio_asins: List of ASINs in portfolio
+        category_id: Amazon category ID for loading real benchmarks
 
     Returns:
         RevenueAttribution object with complete breakdown
@@ -492,8 +616,10 @@ def calculate_revenue_attribution(
     end_date = datetime.now()
     start_date = end_date - timedelta(days=lookback_days)
 
-    # Step 1: Detect internal actions
-    internal_actions = detect_price_changes(df_weekly, lookback_days)
+    # Step 1: Detect internal actions (price changes + PPC budget changes)
+    price_actions = detect_price_changes(df_weekly, lookback_days)
+    ppc_actions = detect_ppc_changes(df_weekly, lookback_days)
+    internal_actions = price_actions + ppc_actions
 
     # Step 2: Attribute to internal actions
     internal_impact, internal_drivers = attribute_internal_actions(
@@ -505,9 +631,9 @@ def calculate_revenue_attribution(
         trigger_events, df_weekly, previous_revenue, market_snapshot
     )
 
-    # Step 4: Attribute to macro trends
+    # Step 4: Attribute to macro trends (with category benchmarks from Supabase)
     macro_impact, macro_drivers = attribute_macro_trends(
-        df_weekly, previous_revenue, market_snapshot
+        df_weekly, previous_revenue, market_snapshot, category_id
     )
 
     # Step 5: Attribute to platform changes

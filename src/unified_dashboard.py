@@ -15,6 +15,58 @@ try:
 except ImportError:
     pass
 
+
+def ensure_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures df has 'date' and 'week' columns for attribution and forecasting.
+    Returns a copy with these columns guaranteed to exist.
+    """
+    if df is None:
+        return pd.DataFrame(columns=['date', 'week'])
+
+    if df.empty:
+        # Add empty date/week columns to empty dataframe
+        df = df.copy()
+        df['date'] = pd.Series(dtype='datetime64[ns]')
+        df['week'] = pd.Series(dtype='datetime64[ns]')
+        return df
+
+    df = df.copy()
+
+    # List of possible date column names (in priority order)
+    date_candidates = ['date', 'week', 'timestamp', 'snapshot_date', 'created_at', 'updated_at']
+
+    # Check if we already have valid date column
+    if 'date' in df.columns:
+        try:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            if not df['date'].isna().all():
+                df['week'] = df['date']
+                return df
+        except Exception:
+            pass
+
+    # Try other candidate columns
+    for col in date_candidates:
+        if col in df.columns and col != 'date':
+            try:
+                df['date'] = pd.to_datetime(df[col], errors='coerce')
+                if not df['date'].isna().all():
+                    df['week'] = df['date']
+                    return df
+            except Exception:
+                continue
+
+    # Last resort: create synthetic dates based on row count
+    # Assume weekly data, going back from today
+    num_rows = len(df)
+    if num_rows > 0:
+        df['date'] = pd.date_range(end=pd.Timestamp.today(), periods=num_rows, freq='W')
+        df['week'] = df['date']
+
+    return df
+
+
 def render_unified_dashboard():
     """
     Renders the Unified Command Center (Strategy + Tactics)
@@ -46,19 +98,10 @@ def render_unified_dashboard():
     df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
     
     # === DATA PREPARATION (Fix for missing 'date'/'week') ===
-    if not df_weekly.empty:
-        # standardise columns
-        if 'date' not in df_weekly.columns:
-            if 'week' in df_weekly.columns:
-                try:
-                    df_weekly['date'] = pd.to_datetime(df_weekly['week'])
-                except:
-                    # If week parsing fails, try to use index or create dummy
-                    pass
-        
-        # Ensure 'week' exists if we have 'date' (for predictive engine fallback)
-        if 'week' not in df_weekly.columns and 'date' in df_weekly.columns:
-            df_weekly['week'] = df_weekly['date']
+    df_weekly = ensure_date_columns(df_weekly)
+
+    # Update session state with fixed df
+    st.session_state['df_weekly'] = df_weekly
 
     if not df_weekly.empty and 'revenue_proxy' in df_weekly.columns:
         # Simple estimation logic for previous period
@@ -67,40 +110,50 @@ def render_unified_dashboard():
 
     # === SECTION 1: STRATEGIC INTELLIGENCE (The Why) ===
     st.markdown("### 🧩 Strategic Context")
-    
+
+    # Check if we have enough data for attribution
+    has_sufficient_data = (
+        not df_weekly.empty and
+        len(df_weekly) >= 2 and
+        current_revenue > 0
+    )
+
     # Calculate Attribution
     attribution = None
-    try:
-        # Using simplified attribution call for display
-        # In production, this uses the real engine
-        from src.revenue_attribution import calculate_revenue_attribution
-
-        # Get category_id from session state (if available)
-        category_id = st.session_state.get('active_project_category_id')
-
-        attribution = calculate_revenue_attribution(
-            previous_revenue=previous_revenue,
-            current_revenue=current_revenue,
-            df_weekly=df_weekly,
-            trigger_events=[], # Passed empty for speed
-            market_snapshot=None,
-            category_id=category_id
-        )
-
-        # P3: Save attribution to history for trend tracking
+    if has_sufficient_data:
         try:
-            from src.supabase_reader import save_attribution_to_history
-            project_id = st.session_state.get('active_project_id')
-            asin = st.session_state.get('active_asin')
-            if project_id and asin and attribution:
-                save_attribution_to_history(project_id, asin, attribution)
-        except Exception:
-            pass  # Silent fail if history save errors
+            # Using simplified attribution call for display
+            # In production, this uses the real engine
+            from src.revenue_attribution import calculate_revenue_attribution
 
-    except Exception as e:
-        st.error(f"⚠️ Attribution Error: {str(e)}")
-        # import traceback
-        # st.code(traceback.format_exc())
+            # Get category_id from session state (if available)
+            category_id = st.session_state.get('active_project_category_id')
+
+            attribution = calculate_revenue_attribution(
+                previous_revenue=previous_revenue,
+                current_revenue=current_revenue,
+                df_weekly=df_weekly,
+                trigger_events=[],  # Passed empty for speed
+                market_snapshot=None,
+                category_id=category_id
+            )
+
+            # P3: Save attribution to history for trend tracking
+            try:
+                from src.supabase_reader import save_attribution_to_history
+                project_id = st.session_state.get('active_project_id')
+                asin = st.session_state.get('active_asin')
+                if project_id and asin and attribution:
+                    save_attribution_to_history(project_id, asin, attribution)
+            except Exception:
+                pass  # Silent fail if history save errors
+
+        except Exception as e:
+            st.error(f"⚠️ Attribution Error: {str(e)}")
+            # import traceback
+            # st.code(traceback.format_exc())
+    else:
+        st.info("📊 **Strategic Context Unavailable**: Insufficient historical data for attribution. Load a project with at least 2 weeks of historical data.")
 
     if attribution:
         # Metric Headers
@@ -190,195 +243,128 @@ def render_unified_dashboard():
     # This is calculated later in the predictive section, so we'll add it there after combined_intel is generated
 
     # === SECTION 1.5: PREDICTIVE HORIZON ===
-    # Forecast Chart (Restored from Command Center 2.0)
-    try:
-        from src.predictive_forecasting import generate_combined_intelligence
-        
-        # We need trigger events for the forecast. In this unified view, we can try to get them
-        # or pass empty if not easily available. ideally we'd load them in ensure_data_loaded.
-        # For now, pass empty list to get base forecast.
-        combined_intel = generate_combined_intelligence(
-            current_revenue=current_revenue,
-            previous_revenue=previous_revenue,
-            attribution=attribution,
-            trigger_events=[],
-            df_historical=df_weekly
-        )
+    combined_intel = None
 
-        # P3: Save forecast to history for accuracy tracking
+    if has_sufficient_data and current_revenue > 0:
         try:
-            from src.supabase_reader import save_forecast_to_history, update_forecast_actuals
-            project_id = st.session_state.get('active_project_id')
-            asin = st.session_state.get('active_asin')
-            if project_id and asin and combined_intel and combined_intel.forecast:
-                save_forecast_to_history(project_id, asin, combined_intel.forecast)
-                # Also update any past forecasts with current actuals
-                update_forecast_actuals(project_id, asin, current_revenue, pd.Timestamp.today().date())
-        except Exception:
-            pass  # Silent fail if history save errors
+            from src.predictive_forecasting import generate_combined_intelligence
 
-        if combined_intel and combined_intel.forecast:
-            st.markdown("---")
+            combined_intel = generate_combined_intelligence(
+                current_revenue=current_revenue,
+                previous_revenue=previous_revenue,
+                attribution=attribution,
+                trigger_events=[],
+                df_historical=df_weekly
+            )
 
-            # === SUSTAINABILITY ANALYSIS BANNER ===
-            sustainable_run_rate = combined_intel.sustainable_run_rate
-            temporary_inflation = combined_intel.temporary_inflation
-            temporary_duration = combined_intel.temporary_duration_days
+            # P3: Save forecast to history for accuracy tracking
+            try:
+                from src.supabase_reader import save_forecast_to_history, update_forecast_actuals
+                project_id = st.session_state.get('active_project_id')
+                asin = st.session_state.get('active_asin')
+                if project_id and asin and combined_intel and combined_intel.forecast:
+                    save_forecast_to_history(project_id, asin, combined_intel.forecast)
+                    update_forecast_actuals(project_id, asin, current_revenue, pd.Timestamp.today().date())
+            except Exception:
+                pass
 
-            # Calculate inflation percentage
-            inflation_pct = (temporary_inflation / current_revenue * 100) if current_revenue > 0 else 0
+            if combined_intel and combined_intel.forecast:
+                st.markdown("---")
 
-            # Determine banner color based on inflation level
-            if abs(inflation_pct) > 20:
-                banner_color = "#fee"  # Light red
-                icon = "⚠️"
-            elif abs(inflation_pct) > 10:
-                banner_color = "#fff3cd"  # Light yellow
-                icon = "⚡"
-            else:
-                banner_color = "#e8f5e9"  # Light green
-                icon = "✅"
+                # === SUSTAINABILITY ANALYSIS BANNER ===
+                sustainable_run_rate = combined_intel.sustainable_run_rate
+                temporary_inflation = combined_intel.temporary_inflation
+                temporary_duration = combined_intel.temporary_duration_days
+                inflation_pct = (temporary_inflation / current_revenue * 100) if current_revenue > 0 else 0
 
-            # Display sustainability banner
-            st.markdown(f"""
-            <div style="background: {banner_color}; border-left: 5px solid {'#dc3545' if abs(inflation_pct) > 20 else '#ffc107' if abs(inflation_pct) > 10 else '#28a745'};
-                        padding: 20px; border-radius: 6px; margin-bottom: 20px;">
-                <div style="font-size: 18px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px;">
-                    {icon} Sustainability Analysis
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
-                    <div>
-                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue</div>
-                        <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_revenue:,.0f}/mo</div>
+                if abs(inflation_pct) > 20:
+                    banner_color = "#fee"
+                    icon = "⚠️"
+                elif abs(inflation_pct) > 10:
+                    banner_color = "#fff3cd"
+                    icon = "⚡"
+                else:
+                    banner_color = "#e8f5e9"
+                    icon = "✅"
+
+                st.markdown(f"""
+                <div style="background: {banner_color}; border-left: 5px solid {'#dc3545' if abs(inflation_pct) > 20 else '#ffc107' if abs(inflation_pct) > 10 else '#28a745'};
+                            padding: 20px; border-radius: 6px; margin-bottom: 20px;">
+                    <div style="font-size: 18px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px;">
+                        {icon} Sustainability Analysis
                     </div>
-                    <div>
-                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Sustainable Run Rate</div>
-                        <div style="font-size: 24px; font-weight: 700; color: #28a745;">${sustainable_run_rate:,.0f}/mo</div>
-                    </div>
-                    <div>
-                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Temporary {'Inflation' if temporary_inflation > 0 else 'Deflation'}</div>
-                        <div style="font-size: 24px; font-weight: 700; color: {'#dc3545' if temporary_inflation > 0 else '#28a745'};">
-                            {'+' if temporary_inflation > 0 else ''}${temporary_inflation:,.0f}
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+                        <div>
+                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_revenue:,.0f}/mo</div>
                         </div>
-                        <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                            ({abs(inflation_pct):.0f}% of current) • Reverses in {temporary_duration} days
+                        <div>
+                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Sustainable Run Rate</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #28a745;">${sustainable_run_rate:,.0f}/mo</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Temporary {'Inflation' if temporary_inflation > 0 else 'Deflation'}</div>
+                            <div style="font-size: 24px; font-weight: 700; color: {'#dc3545' if temporary_inflation > 0 else '#28a745'};">
+                                {'+' if temporary_inflation > 0 else ''}${temporary_inflation:,.0f}
+                            </div>
+                            <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                                ({abs(inflation_pct):.0f}% of current) - Reverses in {temporary_duration} days
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div style="margin-top: 16px; font-size: 14px; color: #666; border-top: 1px solid #ddd; padding-top: 12px;">
-                    <strong>What this means:</strong> Your sustainable revenue after temporary factors reverse is
-                    <strong style="color: {'#dc3545' if sustainable_run_rate < current_revenue else '#28a745'};">
-                        ${sustainable_run_rate:,.0f}/month
-                    </strong>.
-                    {'⚠️ Caution: Don\'t scale fixed costs on temporary gains.' if temporary_inflation > current_revenue * 0.15 else '✅ Your growth is primarily sustainable.'}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
 
-            st.markdown("### 🔮 Predictive Horizon")
-            portfolio_forecast = combined_intel.forecast
-            
-            p_col1, p_col2 = st.columns([2, 1])
-            
-            with p_col1:
-                # Prepare Forecast Chart Data
-                # 1. Historical Data (Monthly)
-                if not df_weekly.empty:
-                    # Ensure date column exists with validation
-                    if 'date' not in df_weekly.columns:
-                        if 'week' in df_weekly.columns:
-                            try:
-                                df_weekly['date'] = pd.to_datetime(df_weekly['week'], errors='coerce')
-                            except Exception:
-                                # If conversion fails, skip chart
-                                df_weekly = pd.DataFrame()
-                        else:
-                            # No date or week column, skip chart
-                            df_weekly = pd.DataFrame()
+                st.markdown("### 🔮 Predictive Horizon")
+                portfolio_forecast = combined_intel.forecast
 
-                    # Only proceed if we have valid data
+                p_col1, p_col2 = st.columns([2, 1])
+
+                with p_col1:
                     if not df_weekly.empty and 'date' in df_weekly.columns:
-                        df_weekly['month'] = df_weekly['date'].dt.to_period('M')
-                        # Use revenue proxy or calc from sum
-                        rev_col_chart = 'revenue_proxy' if 'revenue_proxy' in df_weekly.columns else 'sales' if 'sales' in df_weekly.columns else None
+                        try:
+                            df_chart = df_weekly[df_weekly['date'].notna()].copy()
+                            if not df_chart.empty:
+                                df_chart['month'] = df_chart['date'].dt.to_period('M')
+                            rev_col_chart = 'revenue_proxy' if 'revenue_proxy' in df_chart.columns else 'sales' if 'sales' in df_chart.columns else None
 
-                        if rev_col_chart:
-                            monthly_rev = df_weekly.groupby('month')[rev_col_chart].sum().reset_index()
-                            monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
+                            if rev_col_chart and 'month' in df_chart.columns:
+                                monthly_rev = df_chart.groupby('month')[rev_col_chart].sum().reset_index()
+                                monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
+                                cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
+                                monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
 
-                            # Filter to last 6 months
-                            cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
-                            monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
+                                if not monthly_rev.empty:
+                                    last_date = monthly_rev['month'].max()
+                                    next_date = last_date + pd.Timedelta(days=30)
+                                    proj_rev = portfolio_forecast.projected_revenue
+                                    lower_bound = portfolio_forecast.lower_bound
+                                    upper_bound = portfolio_forecast.upper_bound
 
-                            # 2. Future Data Point
-                            last_date = monthly_rev['month'].max() if not monthly_rev.empty else pd.Timestamp.now()
-                            next_date = last_date + pd.Timedelta(days=30)
+                                    fig_pred = go.Figure()
+                                    fig_pred.add_trace(go.Bar(x=monthly_rev['month'], y=monthly_rev[rev_col_chart], name='Historical Revenue', marker_color='#e0e0e0'))
+                                    fig_pred.add_trace(go.Scatter(x=[last_date, next_date], y=[monthly_rev[rev_col_chart].iloc[-1], proj_rev], name='Projected Trend', line=dict(color='#007bff', width=3, dash='dot'), mode='lines+markers'))
+                                    fig_pred.update_layout(height=300, margin=dict(l=40, r=40, t=30, b=30), showlegend=True, legend=dict(orientation="h", y=1.1))
+                                    st.plotly_chart(fig_pred, use_container_width=True)
+                        except Exception as chart_err:
+                            st.caption(f"📊 Revenue chart unavailable: {chart_err}")
 
-                            proj_rev = portfolio_forecast.projected_revenue
-                            lower_bound = portfolio_forecast.lower_bound
-                            upper_bound = portfolio_forecast.upper_bound
+                with p_col2:
+                    st.metric("Est. Annual Run Rate", f"${portfolio_forecast.projected_annual_sales:,.0f}", delta=None, help="Based on sustainable run rate and seasonality")
+                    st.info(f"On track for **${portfolio_forecast.projected_revenue:,.0f}** next month.")
+            else:
+                st.markdown("---")
+                st.markdown("### 🔮 Predictive Horizon")
+                st.info("⚠️ Predictive Horizon Unavailable: Insufficient data for forecast generation.")
 
-                            # Create Chart
-                            fig_pred = go.Figure()
-
-                            # Historical Bars
-                            fig_pred.add_trace(go.Bar(
-                                x=monthly_rev['month'],
-                                y=monthly_rev[rev_col_chart],
-                                name='Historical Revenue',
-                                marker_color='#e0e0e0'
-                            ))
-
-                            # Forecast Line
-                            fig_pred.add_trace(go.Scatter(
-                                x=[last_date, next_date],
-                                y=[monthly_rev[rev_col_chart].iloc[-1] if not monthly_rev.empty else 0, proj_rev],
-                                name='Projected Trend',
-                                line=dict(color='#007bff', width=3, dash='dot'),
-                                mode='lines+markers'
-                            ))
-
-                            # Confidence Interval (Error Bars)
-                            fig_pred.add_trace(go.Scatter(
-                                x=[next_date, next_date],
-                                y=[upper_bound, lower_bound],
-                                mode='markers',
-                                marker=dict(color='#007bff', size=1),
-                                error_y=dict(
-                                    type='data',
-                                    symmetric=False,
-                                    array=[upper_bound - proj_rev],
-                                    arrayminus=[proj_rev - lower_bound],
-                                    color='rgba(0,123,255,0.3)',
-                                    thickness=10,
-                                    width=10
-                                ),
-                                name='Confidence Interval (80%)'
-                            ))
-
-                            fig_pred.update_layout(
-                                height=300,
-                                margin=dict(l=40, r=40, t=30, b=30),
-                                showlegend=True,
-                                legend=dict(orientation="h", y=1.1),
-                                title=None
-                            )
-                            st.plotly_chart(fig_pred, use_container_width=True)
-            
-            with p_col2:
-                 st.metric(
-                    "Est. Annual Run Rate",
-                    f"${portfolio_forecast.projected_annual_sales:,.0f}",
-                    delta=None,
-                    help="Based on sustainable run rate and seasonality"
-                )
-                 st.info(f"On track for **${proj_rev:,.0f}** next month.")
-        else:
-            st.info("⚠️ Predictive Horizon Unavailable: Insufficient historical data or trigger events for forecast generation.")
-                 
-    except Exception as e:
-        st.warning(f"Predictive engine offline: {e}")
-        # pass
+        except Exception as e:
+            st.markdown("---")
+            st.markdown("### 🔮 Predictive Horizon")
+            st.warning(f"🔮 Predictive engine error: {e}")
+    else:
+        st.markdown("---")
+        st.markdown("### 🔮 Predictive Horizon")
+        st.info("📊 **Predictive Analysis Unavailable**: Load a project with historical data to see forecasts and scenarios.")
 
     # === EVENT TIMELINE TABLE ===
     if combined_intel and hasattr(combined_intel, 'anticipated_events') and combined_intel.anticipated_events:

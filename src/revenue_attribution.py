@@ -87,9 +87,16 @@ def detect_price_changes(
             # Significant price change detected
             asin = row.get('asin', 'PORTFOLIO')
 
+            # Safely get timestamp (use .get() to avoid KeyError)
+            row_date = row.get('date', None)
+            if row_date is None:
+                row_date = datetime.now()
+            elif isinstance(row_date, pd.Timestamp):
+                row_date = row_date.to_pydatetime()
+
             action = InternalAction(
                 action_type=ActionType.PRICE_CHANGE,
-                timestamp=row['date'],
+                timestamp=row_date,
                 magnitude=price_change_pct,
                 magnitude_type="percentage",
                 affected_asins=[asin] if asin != 'PORTFOLIO' else [],
@@ -181,10 +188,24 @@ def detect_ppc_changes(
         # Calculate expected revenue impact using ROAS
         expected_impact = spend_change * default_roas
 
+        # Safely get timestamp
+        row_date = row.get('date', None)
+        if row_date is None:
+            row_date = datetime.now()
+        elif isinstance(row_date, pd.Timestamp):
+            row_date = row_date.to_pydatetime()
+
+        # Calculate previous spend safely
+        try:
+            prev_spend_df = df_weekly[df_weekly['date'] < row_date] if 'date' in df_weekly.columns else pd.DataFrame()
+            previous_spend = float(prev_spend_df[spend_col].iloc[-1]) if not prev_spend_df.empty else 0
+        except Exception:
+            previous_spend = 0
+
         # Create action
         action = InternalAction(
             action_type=ActionType.PPC_BUDGET,
-            timestamp=row['date'],
+            timestamp=row_date,
             magnitude=spend_change_pct,
             magnitude_type="percentage",
             expected_impact=expected_impact,
@@ -193,8 +214,8 @@ def detect_ppc_changes(
                 "spend_change": float(spend_change),
                 "spend_change_pct": float(spend_change_pct),
                 "roas_applied": default_roas,
-                "previous_spend": float(df_weekly.loc[df_weekly['date'] < row['date'], spend_col].iloc[-1]) if len(df_weekly[df_weekly['date'] < row['date']]) > 0 else 0,
-                "new_spend": float(row[spend_col])
+                "previous_spend": previous_spend,
+                "new_spend": float(row.get(spend_col, 0))
             }
         )
         actions.append(action)

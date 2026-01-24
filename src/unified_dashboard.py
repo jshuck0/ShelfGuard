@@ -86,6 +86,17 @@ def render_unified_dashboard():
             market_snapshot=None,
             category_id=category_id
         )
+
+        # P3: Save attribution to history for trend tracking
+        try:
+            from src.supabase_reader import save_attribution_to_history
+            project_id = st.session_state.get('active_project_id')
+            asin = st.session_state.get('active_asin')
+            if project_id and asin and attribution:
+                save_attribution_to_history(project_id, asin, attribution)
+        except Exception:
+            pass  # Silent fail if history save errors
+
     except Exception as e:
         st.error(f"⚠️ Attribution Error: {str(e)}")
         # import traceback
@@ -190,10 +201,22 @@ def render_unified_dashboard():
             current_revenue=current_revenue,
             previous_revenue=previous_revenue,
             attribution=attribution,
-            trigger_events=[], 
+            trigger_events=[],
             df_historical=df_weekly
         )
-        
+
+        # P3: Save forecast to history for accuracy tracking
+        try:
+            from src.supabase_reader import save_forecast_to_history, update_forecast_actuals
+            project_id = st.session_state.get('active_project_id')
+            asin = st.session_state.get('active_asin')
+            if project_id and asin and combined_intel and combined_intel.forecast:
+                save_forecast_to_history(project_id, asin, combined_intel.forecast)
+                # Also update any past forecasts with current actuals
+                update_forecast_actuals(project_id, asin, current_revenue, pd.Timestamp.today().date())
+        except Exception:
+            pass  # Silent fail if history save errors
+
         if combined_intel and combined_intel.forecast:
             st.markdown("---")
 
@@ -521,6 +544,218 @@ def render_unified_dashboard():
                 **Most Likely Outcome:** Based on current trajectory and anticipated events,
                 expect revenue of **${base_30d:,.0f}** in 30 days ({base_scenario.probability:.0%} confidence).
                 """)
+
+    # === P3: HISTORICAL ATTRIBUTION TRENDS ===
+    if attribution:
+        try:
+            from src.supabase_reader import load_attribution_history, calculate_attribution_trends
+
+            project_id = st.session_state.get('active_project_id')
+            asin = st.session_state.get('active_asin')
+
+            if project_id and asin:
+                # Load historical data
+                attribution_history = load_attribution_history(project_id, asin, lookback_days=90)
+
+                if attribution_history is not None and len(attribution_history) >= 2:
+                    st.markdown("---")
+                    st.markdown("#### 📈 Attribution Trends (90-Day History)")
+
+                    # Calculate trends
+                    trends = calculate_attribution_trends(attribution_history)
+
+                    if trends:
+                        trend_cols = st.columns(2)
+
+                        # Left column: Key trends
+                        with trend_cols[0]:
+                            st.markdown("**🎯 Key Pattern Changes:**")
+
+                            # Internal trend
+                            if 'internal_trend' in trends:
+                                t = trends['internal_trend']
+                                icon = "📈" if t['direction'] == 'increasing' else "📉"
+                                st.markdown(f"{icon} {t['interpretation']}")
+
+                            # Competitive trend
+                            if 'competitive_trend' in trends:
+                                t = trends['competitive_trend']
+                                icon = "⚠️" if t['direction'] == 'increasing' else "✅"
+                                risk_badge = f"[{t['risk_level']}]" if 'risk_level' in t else ""
+                                st.markdown(f"{icon} {t['interpretation']} {risk_badge}")
+
+                            # Macro trend
+                            if 'macro_trend' in trends:
+                                t = trends['macro_trend']
+                                icon = "🌊" if t['direction'] == 'increasing' else "🏜️"
+                                st.markdown(f"{icon} {t['interpretation']}")
+
+                            # Platform trend
+                            if 'platform_trend' in trends:
+                                t = trends['platform_trend']
+                                icon = "🔧" if abs(t['change_pct']) > 10 else "🔩"
+                                st.markdown(f"{icon} {t['interpretation']}")
+
+                        # Right column: Quality metrics
+                        with trend_cols[1]:
+                            st.markdown("**📊 Data Quality:**")
+
+                            # Quality trend
+                            if 'quality_trend' in trends:
+                                t = trends['quality_trend']
+                                icon = "✅" if t['direction'] == 'improving' else "⚠️"
+                                st.markdown(f"{icon} {t['interpretation']}")
+
+                            # Volatility
+                            if 'volatility' in trends:
+                                v = trends['volatility']
+                                st.markdown(f"📊 {v['interpretation']}")
+
+                            # Historical data points
+                            st.caption(f"📅 Tracking {len(attribution_history)} attribution snapshots over 90 days")
+
+                        # Trend chart: Attribution composition over time
+                        st.markdown("**Attribution Composition Over Time:**")
+
+                        # Prepare data for stacked area chart
+                        dates = pd.to_datetime(attribution_history['attribution_date'])
+
+                        fig = go.Figure()
+
+                        # Calculate percentages for each date
+                        for _, row in attribution_history.iterrows():
+                            total = row['total_revenue_delta']
+                            if total != 0:
+                                row['internal_pct'] = (row['internal_contribution'] / total) * 100
+                                row['competitive_pct'] = (row['competitive_contribution'] / total) * 100
+                                row['macro_pct'] = (row['macro_contribution'] / total) * 100
+                                row['platform_pct'] = (row['platform_contribution'] / total) * 100
+
+                        # Add traces
+                        fig.add_trace(go.Scatter(
+                            x=dates, y=attribution_history['internal_pct'],
+                            mode='lines', name='Internal', fill='tonexty',
+                            line=dict(color='#007bff')
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=dates, y=attribution_history['competitive_pct'],
+                            mode='lines', name='Competitive', fill='tonexty',
+                            line=dict(color='#ffc107')
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=dates, y=attribution_history['macro_pct'],
+                            mode='lines', name='Macro', fill='tonexty',
+                            line=dict(color='#6f42c1')
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=dates, y=attribution_history['platform_pct'],
+                            mode='lines', name='Platform', fill='tonexty',
+                            line=dict(color='#28a745')
+                        ))
+
+                        fig.update_layout(
+                            height=250,
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            xaxis_title="Date",
+                            yaxis_title="% of Total Revenue Change",
+                            hovermode='x unified'
+                        )
+
+                        st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            # Silent fail if attribution trends can't be loaded
+            pass
+
+    # === P3: FORECAST ACCURACY METRICS ===
+    try:
+        from src.supabase_reader import calculate_forecast_accuracy_metrics
+
+        project_id = st.session_state.get('active_project_id')
+        asin = st.session_state.get('active_asin')
+
+        if project_id and asin:
+            accuracy_metrics = calculate_forecast_accuracy_metrics(project_id, asin, lookback_days=90)
+
+            if accuracy_metrics.get('has_data', False):
+                st.markdown("---")
+                st.markdown("#### 🎯 Forecast Accuracy (90-Day Performance)")
+
+                acc_cols = st.columns(4)
+
+                # MAPE metric
+                with acc_cols[0]:
+                    mape = accuracy_metrics['mape']
+                    grade = accuracy_metrics['grade']
+                    grade_color = {'A': '#28a745', 'B': '#ffc107', 'C': '#fd7e14', 'D': '#dc3545'}.get(grade, '#6c757d')
+                    st.markdown(f"""
+                    <div style="text-align: center; padding: 15px; background: {grade_color}15; border-radius: 8px;">
+                        <div style="font-size: 32px; font-weight: 700; color: {grade_color};">{grade}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 5px;">MAPE: ±{mape:.0f}%</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                # Hit rate metric
+                with acc_cols[1]:
+                    hit_rate = accuracy_metrics['hit_rate']
+                    hit_icon = "🎯" if hit_rate >= 80 else "🎲" if hit_rate >= 60 else "❌"
+                    st.metric(
+                        "Hit Rate",
+                        f"{hit_rate:.0f}%",
+                        delta=f"{hit_icon} Within CI"
+                    )
+
+                # Bias metric
+                with acc_cols[2]:
+                    bias_pct = accuracy_metrics['bias_pct']
+                    bias_direction = "Optimistic" if bias_pct > 0 else "Pessimistic" if bias_pct < 0 else "Unbiased"
+                    st.metric(
+                        "Forecast Bias",
+                        f"{abs(bias_pct):.0f}%",
+                        delta=bias_direction
+                    )
+
+                # Trend metric
+                with acc_cols[3]:
+                    trend = accuracy_metrics['trend']
+                    trend_icon = "📈" if trend == 'improving' else "📉" if trend == 'declining' else "➡️"
+                    st.metric(
+                        "Trend",
+                        f"{trend_icon} {trend.title()}",
+                        delta=f"{accuracy_metrics['total_forecasts']} forecasts"
+                    )
+
+                # Interpretation
+                st.info(f"""
+                **📊 {accuracy_metrics['interpretation']}**
+
+                Your forecasts are Grade **{grade}**. {
+                    'Excellent accuracy - forecasts are highly reliable.' if grade == 'A' else
+                    'Good accuracy - forecasts are directionally correct.' if grade == 'B' else
+                    'Fair accuracy - use forecasts with caution.' if grade == 'C' else
+                    'Poor accuracy - review forecasting methodology.'
+                }
+                """)
+
+                # Accuracy by horizon
+                if accuracy_metrics.get('accuracy_by_horizon'):
+                    st.markdown("**Accuracy by Forecast Horizon:**")
+
+                    horizon_data = accuracy_metrics['accuracy_by_horizon']
+                    horizon_df = pd.DataFrame([
+                        {
+                            'Horizon': k,
+                            'MAPE (%)': f"{v['mape']:.0f}%",
+                            'Hit Rate (%)': f"{v['hit_rate']:.0f}%",
+                            'Forecasts': v['count']
+                        }
+                        for k, v in horizon_data.items()
+                    ])
+
+                    st.dataframe(horizon_df, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        # Silent fail if forecast accuracy can't be loaded
+        pass
 
     # === SECTION 2: TACTICAL EXECUTION (The What) ===
     st.markdown("---")

@@ -1276,3 +1276,482 @@ def calculate_share_of_voice_metrics(
     except Exception as e:
         print(f"⚠️ Error calculating SOV metrics: {str(e)}")
         return {}
+
+
+# ============================================================================
+# HISTORICAL ATTRIBUTION TRACKING
+# ============================================================================
+
+def save_attribution_to_history(
+    project_id: str,
+    asin: str,
+    attribution: 'RevenueAttribution',
+    attribution_date: Optional[date] = None
+) -> bool:
+    """
+    Save revenue attribution to Supabase for historical tracking.
+
+    Args:
+        project_id: Project UUID
+        asin: Product ASIN
+        attribution: RevenueAttribution object
+        attribution_date: Date of attribution (defaults to today)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        supabase = get_supabase_client()
+
+        if attribution_date is None:
+            attribution_date = date.today()
+
+        # Prepare data for insertion
+        record = {
+            'project_id': project_id,
+            'asin': asin,
+            'attribution_date': attribution_date.isoformat(),
+
+            # Total change
+            'total_revenue_delta': float(attribution.total_delta),
+            'previous_revenue': float(attribution.previous_revenue),
+            'current_revenue': float(attribution.current_revenue),
+
+            # The 4 Categories
+            'internal_contribution': float(attribution.internal_contribution),
+            'competitive_contribution': float(attribution.competitive_contribution),
+            'macro_contribution': float(attribution.macro_contribution),
+            'platform_contribution': float(attribution.platform_contribution),
+
+            # Metadata
+            'explained_variance': float(attribution.explained_variance),
+            'residual': float(attribution.residual),
+            'confidence': float(attribution.confidence),
+
+            # Detailed drivers (JSON)
+            'internal_drivers': [d.to_dict() for d in attribution.internal_drivers],
+            'competitive_drivers': [d.to_dict() for d in attribution.competitive_drivers],
+            'macro_drivers': [d.to_dict() for d in attribution.macro_drivers],
+            'platform_drivers': [d.to_dict() for d in attribution.platform_drivers]
+        }
+
+        # Upsert (insert or update if exists)
+        result = supabase.table('revenue_attributions')\
+            .upsert(record)\
+            .execute()
+
+        return len(result.data) > 0
+
+    except Exception as e:
+        print(f"⚠️ Error saving attribution to history: {str(e)}")
+        return False
+
+
+def load_attribution_history(
+    project_id: str,
+    asin: str,
+    lookback_days: int = 90
+) -> Optional[pd.DataFrame]:
+    """
+    Load historical attribution records for trend analysis.
+
+    Args:
+        project_id: Project UUID
+        asin: Product ASIN
+        lookback_days: How far back to retrieve (default 90 days)
+
+    Returns:
+        DataFrame with historical attribution data or None if error
+    """
+    try:
+        supabase = get_supabase_client()
+
+        cutoff_date = date.today() - timedelta(days=lookback_days)
+
+        result = supabase.table('revenue_attributions')\
+            .select('*')\
+            .eq('project_id', project_id)\
+            .eq('asin', asin)\
+            .gte('attribution_date', cutoff_date.isoformat())\
+            .order('attribution_date', desc=False)\
+            .execute()
+
+        if not result.data:
+            return None
+
+        df = pd.DataFrame(result.data)
+
+        # Convert date strings to datetime
+        df['attribution_date'] = pd.to_datetime(df['attribution_date'])
+
+        return df
+
+    except Exception as e:
+        print(f"⚠️ Error loading attribution history: {str(e)}")
+        return None
+
+
+def calculate_attribution_trends(
+    attribution_history_df: pd.DataFrame
+) -> Dict:
+    """
+    Analyze attribution trends over time to identify patterns.
+
+    Examples:
+    - "Dependency on competitor OOS growing: 20% → 36%"
+    - "Internal contribution declining: 60% → 45%"
+    - "Platform impact increasing: -$2k → -$8k"
+
+    Args:
+        attribution_history_df: Historical attribution data
+
+    Returns:
+        Dictionary with trend analysis
+    """
+    try:
+        if attribution_history_df is None or len(attribution_history_df) < 2:
+            return {}
+
+        # Sort by date
+        df = attribution_history_df.sort_values('attribution_date')
+
+        # Get oldest and most recent records
+        oldest = df.iloc[0]
+        latest = df.iloc[-1]
+
+        # Calculate percentage contributions
+        def calc_percentages(row):
+            total = row['total_revenue_delta']
+            if total == 0:
+                return {'internal': 0, 'competitive': 0, 'macro': 0, 'platform': 0}
+
+            return {
+                'internal': (row['internal_contribution'] / total) * 100 if total != 0 else 0,
+                'competitive': (row['competitive_contribution'] / total) * 100 if total != 0 else 0,
+                'macro': (row['macro_contribution'] / total) * 100 if total != 0 else 0,
+                'platform': (row['platform_contribution'] / total) * 100 if total != 0 else 0
+            }
+
+        oldest_pct = calc_percentages(oldest)
+        latest_pct = calc_percentages(latest)
+
+        # Calculate trends
+        trends = {}
+
+        # Internal contribution trend
+        internal_change = latest_pct['internal'] - oldest_pct['internal']
+        if abs(internal_change) > 10:
+            trends['internal_trend'] = {
+                'change_pct': internal_change,
+                'direction': 'increasing' if internal_change > 0 else 'decreasing',
+                'old_value': oldest_pct['internal'],
+                'new_value': latest_pct['internal'],
+                'interpretation': f"Internal actions {'growing' if internal_change > 0 else 'declining'} as revenue driver: {oldest_pct['internal']:.0f}% → {latest_pct['internal']:.0f}%"
+            }
+
+        # Competitive dependency trend
+        competitive_change = latest_pct['competitive'] - oldest_pct['competitive']
+        if abs(competitive_change) > 10:
+            trends['competitive_trend'] = {
+                'change_pct': competitive_change,
+                'direction': 'increasing' if competitive_change > 0 else 'decreasing',
+                'old_value': oldest_pct['competitive'],
+                'new_value': latest_pct['competitive'],
+                'interpretation': f"Competitive dependency {'growing' if competitive_change > 0 else 'declining'}: {oldest_pct['competitive']:.0f}% → {latest_pct['competitive']:.0f}%",
+                'risk_level': 'HIGH' if latest_pct['competitive'] > 40 else 'MEDIUM' if latest_pct['competitive'] > 20 else 'LOW'
+            }
+
+        # Macro trend
+        macro_change = latest_pct['macro'] - oldest_pct['macro']
+        if abs(macro_change) > 10:
+            trends['macro_trend'] = {
+                'change_pct': macro_change,
+                'direction': 'increasing' if macro_change > 0 else 'decreasing',
+                'old_value': oldest_pct['macro'],
+                'new_value': latest_pct['macro'],
+                'interpretation': f"Market tailwind dependency {'growing' if macro_change > 0 else 'declining'}: {oldest_pct['macro']:.0f}% → {latest_pct['macro']:.0f}%"
+            }
+
+        # Platform impact trend
+        platform_change = latest_pct['platform'] - oldest_pct['platform']
+        if abs(platform_change) > 5:
+            trends['platform_trend'] = {
+                'change_pct': platform_change,
+                'direction': 'increasing' if platform_change > 0 else 'decreasing',
+                'old_value': oldest_pct['platform'],
+                'new_value': latest_pct['platform'],
+                'interpretation': f"Platform impact {'growing' if platform_change > 0 else 'declining'}: {oldest_pct['platform']:.0f}% → {latest_pct['platform']:.0f}%"
+            }
+
+        # Overall attribution quality trend
+        explained_var_change = latest['explained_variance'] - oldest['explained_variance']
+        trends['quality_trend'] = {
+            'change': explained_var_change,
+            'direction': 'improving' if explained_var_change > 0 else 'declining',
+            'old_value': oldest['explained_variance'],
+            'new_value': latest['explained_variance'],
+            'interpretation': f"Attribution quality {'improving' if explained_var_change > 0 else 'declining'}: {oldest['explained_variance']:.0%} → {latest['explained_variance']:.0%}"
+        }
+
+        # Revenue volatility
+        revenue_std = df['total_revenue_delta'].std()
+        revenue_mean = df['total_revenue_delta'].mean()
+        volatility = (revenue_std / abs(revenue_mean)) * 100 if revenue_mean != 0 else 0
+
+        trends['volatility'] = {
+            'coefficient_of_variation': volatility,
+            'interpretation': f"Revenue volatility: {'HIGH' if volatility > 50 else 'MEDIUM' if volatility > 25 else 'LOW'} ({volatility:.0f}%)"
+        }
+
+        return trends
+
+    except Exception as e:
+        print(f"⚠️ Error calculating attribution trends: {str(e)}")
+        return {}
+
+
+# ============================================================================
+# FORECAST ACCURACY TRACKING
+# ============================================================================
+
+def save_forecast_to_history(
+    project_id: str,
+    asin: str,
+    forecast: 'RevenueForecast',
+    forecast_date: Optional[date] = None
+) -> bool:
+    """
+    Save revenue forecast to Supabase for accuracy tracking.
+
+    Args:
+        project_id: Project UUID
+        asin: Product ASIN
+        forecast: RevenueForecast object
+        forecast_date: Date forecast was made (defaults to today)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        supabase = get_supabase_client()
+
+        if forecast_date is None:
+            forecast_date = date.today()
+
+        # Prepare data for insertion
+        record = {
+            'project_id': project_id,
+            'asin': asin,
+            'forecast_date': forecast_date.isoformat(),
+            'forecast_horizon_days': forecast.forecast_horizon_days,
+
+            # Predictions
+            'predicted_revenue': float(forecast.projected_revenue),
+            'predicted_lower_bound': float(forecast.lower_bound),
+            'predicted_upper_bound': float(forecast.upper_bound),
+            'confidence_interval': float(forecast.confidence_interval),
+
+            # Actuals will be filled later
+            'actual_revenue': None,
+            'actual_date': None,
+
+            # Accuracy metrics will be calculated later
+            'absolute_error': None,
+            'percentage_error': None,
+            'within_confidence_interval': None,
+
+            # Metadata
+            'forecast_metadata': {
+                'base_trend': forecast.base_trend,
+                'seasonality_adjustment': forecast.seasonality_adjustment,
+                'event_adjustments': forecast.event_adjustments
+            }
+        }
+
+        # Upsert (insert or update if exists)
+        result = supabase.table('forecast_accuracy')\
+            .upsert(record)\
+            .execute()
+
+        return len(result.data) > 0
+
+    except Exception as e:
+        print(f"⚠️ Error saving forecast to history: {str(e)}")
+        return False
+
+
+def update_forecast_actuals(
+    project_id: str,
+    asin: str,
+    actual_revenue: float,
+    actual_date: date
+) -> int:
+    """
+    Update forecast records with actual outcomes and calculate accuracy.
+
+    Finds all forecasts that should have materialized by actual_date
+    and fills in the actual_revenue, then calculates accuracy metrics.
+
+    Args:
+        project_id: Project UUID
+        asin: Product ASIN
+        actual_revenue: Actual revenue achieved
+        actual_date: Date of actual measurement
+
+    Returns:
+        Number of forecast records updated
+    """
+    try:
+        supabase = get_supabase_client()
+
+        # Find forecasts that should have materialized
+        # (forecast_date + forecast_horizon_days <= actual_date)
+        result = supabase.table('forecast_accuracy')\
+            .select('*')\
+            .eq('project_id', project_id)\
+            .eq('asin', asin)\
+            .is_('actual_revenue', 'null')\
+            .execute()
+
+        if not result.data:
+            return 0
+
+        updated_count = 0
+
+        for forecast_record in result.data:
+            forecast_date_str = forecast_record['forecast_date']
+            forecast_horizon = forecast_record['forecast_horizon_days']
+
+            # Parse forecast date
+            forecast_date_obj = datetime.fromisoformat(forecast_date_str).date() if isinstance(forecast_date_str, str) else forecast_date_str
+
+            # Calculate target date
+            target_date = forecast_date_obj + timedelta(days=forecast_horizon)
+
+            # Check if actual_date has passed the target
+            if actual_date >= target_date:
+                # Calculate accuracy metrics
+                predicted = forecast_record['predicted_revenue']
+                absolute_error = abs(actual_revenue - predicted)
+                percentage_error = (absolute_error / predicted * 100) if predicted != 0 else 0
+
+                # Check if within confidence interval
+                lower_bound = forecast_record['predicted_lower_bound']
+                upper_bound = forecast_record['predicted_upper_bound']
+                within_ci = lower_bound <= actual_revenue <= upper_bound
+
+                # Update record
+                update_result = supabase.table('forecast_accuracy')\
+                    .update({
+                        'actual_revenue': float(actual_revenue),
+                        'actual_date': actual_date.isoformat(),
+                        'absolute_error': float(absolute_error),
+                        'percentage_error': float(percentage_error),
+                        'within_confidence_interval': within_ci
+                    })\
+                    .eq('id', forecast_record['id'])\
+                    .execute()
+
+                if update_result.data:
+                    updated_count += 1
+
+        return updated_count
+
+    except Exception as e:
+        print(f"⚠️ Error updating forecast actuals: {str(e)}")
+        return 0
+
+
+def calculate_forecast_accuracy_metrics(
+    project_id: str,
+    asin: str,
+    lookback_days: int = 90
+) -> Dict:
+    """
+    Calculate forecast accuracy metrics (MAPE, hit rate, bias).
+
+    Args:
+        project_id: Project UUID
+        asin: Product ASIN
+        lookback_days: How far back to analyze (default 90 days)
+
+    Returns:
+        Dictionary with accuracy metrics
+    """
+    try:
+        supabase = get_supabase_client()
+
+        cutoff_date = date.today() - timedelta(days=lookback_days)
+
+        # Get all forecasts with actuals filled in
+        result = supabase.table('forecast_accuracy')\
+            .select('*')\
+            .eq('project_id', project_id)\
+            .eq('asin', asin)\
+            .gte('forecast_date', cutoff_date.isoformat())\
+            .not_.is_('actual_revenue', 'null')\
+            .execute()
+
+        if not result.data or len(result.data) == 0:
+            return {
+                'has_data': False,
+                'message': 'No forecast actuals available yet'
+            }
+
+        df = pd.DataFrame(result.data)
+
+        # Calculate MAPE (Mean Absolute Percentage Error)
+        mape = df['percentage_error'].mean()
+
+        # Calculate hit rate (% of forecasts within confidence interval)
+        hit_rate = (df['within_confidence_interval'].sum() / len(df)) * 100
+
+        # Calculate bias (average signed error)
+        df['signed_error'] = df['actual_revenue'] - df['predicted_revenue']
+        bias = df['signed_error'].mean()
+        bias_pct = (bias / df['predicted_revenue'].mean() * 100) if df['predicted_revenue'].mean() != 0 else 0
+
+        # Accuracy by horizon
+        accuracy_by_horizon = {}
+        for horizon in df['forecast_horizon_days'].unique():
+            horizon_df = df[df['forecast_horizon_days'] == horizon]
+            accuracy_by_horizon[f'{horizon}d'] = {
+                'mape': horizon_df['percentage_error'].mean(),
+                'hit_rate': (horizon_df['within_confidence_interval'].sum() / len(horizon_df)) * 100,
+                'count': len(horizon_df)
+            }
+
+        # Trend analysis (improving or declining)
+        if len(df) >= 5:
+            # Split into first half vs second half
+            mid_point = len(df) // 2
+            first_half_mape = df.iloc[:mid_point]['percentage_error'].mean()
+            second_half_mape = df.iloc[mid_point:]['percentage_error'].mean()
+
+            if second_half_mape < first_half_mape:
+                trend = 'improving'
+                trend_change = first_half_mape - second_half_mape
+            else:
+                trend = 'declining'
+                trend_change = second_half_mape - first_half_mape
+        else:
+            trend = 'stable'
+            trend_change = 0
+
+        return {
+            'has_data': True,
+            'mape': mape,
+            'hit_rate': hit_rate,
+            'bias': bias,
+            'bias_pct': bias_pct,
+            'accuracy_by_horizon': accuracy_by_horizon,
+            'trend': trend,
+            'trend_change': trend_change,
+            'total_forecasts': len(df),
+            'grade': 'A' if mape < 15 else 'B' if mape < 25 else 'C' if mape < 35 else 'D',
+            'interpretation': f"Forecast accuracy: {100 - mape:.0f}% (±{mape:.0f}% average error)"
+        }
+
+    except Exception as e:
+        print(f"⚠️ Error calculating forecast accuracy: {str(e)}")
+        return {'has_data': False, 'error': str(e)}

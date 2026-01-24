@@ -1522,11 +1522,26 @@ def _determine_state_fallback(
         if velocity_decay > 1.3:
             signals.append(f"Velocity DECAYING ({velocity_decay:.2f}x)")
     
-    # TRENCH_WAR: High competition or BB pressure or Amazon 1P
-    elif offer_count > 10 or bb_share < 0.60 or price_gap > 0.10 or amazon_1p_pressure:
+    # TRENCH_WAR: Requires 2+ competitive signals (not just one)
+    # BUG FIX #4: Changed from OR to require multiple signals
+    elif (sum([
+        offer_count > 15,           # High competition threshold (was 10)
+        bb_share < 0.50,            # Significant BB loss (was 0.60)
+        price_gap > 0.15,           # Significant price undercut (was 0.10)
+        amazon_1p_pressure
+    ]) >= 2):
         state = StrategicState.TRENCH_WAR
         confidence = 0.75 if amazon_1p_pressure else 0.70
-        
+
+        # Calculate SPECIFIC price and spend recommendations
+        current_price = _safe_float(row_data.get('price', row_data.get('filled_price', 0)), 0)
+        competitor_price = _safe_float(row_data.get('competitor_price', row_data.get('lowest_competitor_price', 0)), 0)
+        if competitor_price == 0:
+            competitor_price = current_price * (1 - price_gap)  # Estimate from gap
+
+        revenue = _safe_float(row_data.get('revenue_proxy', row_data.get('weekly_sales_filled', 0)), 0)
+        estimated_daily_spend = max(10, (revenue * 0.08) / 30)  # 8% of monthly revenue as daily budget
+
         if amazon_1p_pressure:
             reasoning = f"Amazon 1P competition detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
             if strategic_bias == "Profit Maximization":
@@ -1537,20 +1552,33 @@ def _determine_state_fallback(
                 action = "Defend with brand differentiation. Avoid direct price war with Amazon."
         else:
             reasoning = f"Competitive pressure detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
-            if strategic_bias == "Profit Maximization":
-                action = f"Avoid price war. Focus on differentiation. Consider raising price (gap {price_gap*100:+.0f}%)."
-            elif strategic_bias == "Aggressive Growth":
-                action = f"Defend aggressively. Match pricing (gap {price_gap*100:+.0f}%). Scale defensive ads."
+
+            # Build specific recommendations with actual dollar amounts
+            price_rec = ""
+            spend_rec = ""
+
+            if price_gap > 0.05 and current_price > 0:
+                target_price = competitor_price * 1.02  # Match +2%
+                price_rec = f"Consider ${target_price:.2f} (currently ${current_price:.2f}, competitor ${competitor_price:.2f})"
             else:
-                action = f"Defend position. Match competitor pricing (gap {price_gap*100:+.0f}%). Increase visibility spend."
-        
-        if offer_count > 10:
+                price_rec = f"Hold at ${current_price:.2f} (competitive)"
+
+            spend_rec = f"${estimated_daily_spend:.0f}/day PPC budget"
+
+            if strategic_bias == "Profit Maximization":
+                action = f"Avoid price war. {price_rec}. Focus on differentiation over spend."
+            elif strategic_bias == "Aggressive Growth":
+                action = f"Price: {price_rec}. Visibility: {spend_rec}. Scale defensive ads."
+            else:
+                action = f"Price: {price_rec}. Visibility: {spend_rec}."
+
+        if offer_count > 15:
             signals.append(f"Competition HIGH ({int(offer_count)} sellers)")
-        if bb_share < 0.60:
+        if bb_share < 0.50:
             signals.append(f"Buy Box WEAK ({bb_share*100:.0f}%)")
-        if price_gap > 0.10:
+        if price_gap > 0.15:
             signals.append(f"Price gap {price_gap*100:+.0f}%")
-    
+
     # HARVEST: Stable, good margins, can extract value
     elif margin > margin_harvest and velocity_decay < 1.1 and bb_share > 0.75:
         state = StrategicState.HARVEST

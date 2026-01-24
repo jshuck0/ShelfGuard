@@ -15,6 +15,11 @@ try:
 except ImportError:
     pass
 
+try:
+    from src.trigger_detection import detect_trigger_events
+except ImportError:
+    detect_trigger_events = None
+
 
 def ensure_date_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -118,6 +123,26 @@ def render_unified_dashboard():
         current_revenue > 0
     )
 
+    # Detect trigger events for attribution and forecasting
+    trigger_events = []
+    if has_sufficient_data and detect_trigger_events is not None:
+        try:
+            # Get competitor data from session state
+            df_competitors = st.session_state.get('df_competitors', pd.DataFrame())
+            active_asin = st.session_state.get('active_asin', '')
+
+            # Run trigger detection if we have an ASIN
+            if active_asin and not df_weekly.empty:
+                trigger_events = detect_trigger_events(
+                    asin=active_asin,
+                    df_historical=df_weekly,
+                    df_competitors=df_competitors,
+                    lookback_days=30
+                )
+        except Exception as te:
+            # Silent fail - trigger detection is not critical
+            trigger_events = []
+
     # Calculate Attribution
     attribution = None
     if has_sufficient_data:
@@ -133,7 +158,7 @@ def render_unified_dashboard():
                 previous_revenue=previous_revenue,
                 current_revenue=current_revenue,
                 df_weekly=df_weekly,
-                trigger_events=[],  # Passed empty for speed
+                trigger_events=trigger_events,  # Now passing real events
                 market_snapshot=None,
                 category_id=category_id
             )
@@ -156,21 +181,43 @@ def render_unified_dashboard():
         st.info("📊 **Strategic Context Unavailable**: Insufficient historical data for attribution. Load a project with at least 2 weeks of historical data.")
 
     if attribution:
-        # Metric Headers
+        # Metric Headers with time period labels and tooltips (BUG FIX #7)
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Total Revenue", f_money(current_revenue), f"{attribution.delta_pct:.1f}%", delta_color="normal")
+            st.metric(
+                label="Total Revenue (Last 30 Days)",
+                value=f_money(current_revenue),
+                delta=f"{attribution.delta_pct:.1f}% vs prior period",
+                delta_color="normal",
+                help="Sum of revenue from all monitored ASINs over the past 30 days, compared to the prior 30-day period."
+            )
         with col2:
             earned_pct = attribution.get_earned_percentage()
-            st.metric("Earned Growth", f_money(attribution.internal_contribution), f"{earned_pct:.0f}% share")
+            st.metric(
+                label="Earned Growth",
+                value=f_money(attribution.internal_contribution),
+                delta=f"{earned_pct:.0f}% of change",
+                help="Revenue attributed to YOUR actions: price adjustments, PPC budget changes, coupons, listing optimizations. This is controllable growth."
+            )
         with col3:
             opp_pct = attribution.get_opportunistic_percentage()
-            st.metric("Opportunistic Growth", f_money(attribution.get_opportunistic_growth()), f"{opp_pct:.0f}% share")
+            st.metric(
+                label="Opportunistic Growth",
+                value=f_money(attribution.get_opportunistic_growth()),
+                delta=f"{opp_pct:.0f}% of change",
+                help="Revenue from external factors: competitor out-of-stock, market seasonality, category trends. This is temporary and may reverse."
+            )
         
         st.markdown("---")
-        
-        # Waterfall Chart
+
+        # Waterfall Chart with category definitions (BUG FIX #7)
         st.markdown("#### 📊 Revenue Drivers (Waterfall)")
+        st.caption("""
+        **Internal** = Your actions (price changes, PPC) |
+        **Competition** = Competitor events (OOS, price wars) |
+        **Market** = Category trends (seasonality, demand) |
+        **Platform** = Amazon changes (algorithm, badges)
+        """)
         fig = go.Figure(go.Waterfall(
             name="Revenue Attribution", orientation="v",
             measure=["absolute", "relative", "relative", "relative", "relative", "total"],
@@ -253,7 +300,7 @@ def render_unified_dashboard():
                 current_revenue=current_revenue,
                 previous_revenue=previous_revenue,
                 attribution=attribution,
-                trigger_events=[],
+                trigger_events=trigger_events,  # Now passing real events
                 df_historical=df_weekly
             )
 
@@ -287,20 +334,29 @@ def render_unified_dashboard():
                     banner_color = "#e8f5e9"
                     icon = "✅"
 
+                # Build tooltip content for definitions
+                definitions_text = """
+                <b>Current Revenue:</b> Your actual monthly revenue (last 30 days).<br>
+                <b>Sustainable Run Rate:</b> Revenue after temporary factors (competitor OOS, seasonality) reverse. This is your true baseline.<br>
+                <b>Temporary Inflation:</b> Extra revenue from temporary market conditions that will likely reverse.
+                """
+
                 st.markdown(f"""
                 <div style="background: {banner_color}; border-left: 5px solid {'#dc3545' if abs(inflation_pct) > 20 else '#ffc107' if abs(inflation_pct) > 10 else '#28a745'};
                             padding: 20px; border-radius: 6px; margin-bottom: 20px;">
                     <div style="font-size: 18px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px;">
                         {icon} Sustainability Analysis
+                        <span style="font-size: 12px; font-weight: 400; color: #666; margin-left: 8px;" title="{definitions_text}">ⓘ</span>
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
                         <div>
-                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue</div>
+                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue (Last 30 Days)</div>
                             <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_revenue:,.0f}/mo</div>
                         </div>
                         <div>
                             <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Sustainable Run Rate</div>
                             <div style="font-size: 24px; font-weight: 700; color: #28a745;">${sustainable_run_rate:,.0f}/mo</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 2px;">= Current − Temporary</div>
                         </div>
                         <div>
                             <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Temporary {'Inflation' if temporary_inflation > 0 else 'Deflation'}</div>
@@ -308,7 +364,7 @@ def render_unified_dashboard():
                                 {'+' if temporary_inflation > 0 else ''}${temporary_inflation:,.0f}
                             </div>
                             <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                                ({abs(inflation_pct):.0f}% of current) - Reverses in {temporary_duration} days
+                                ({abs(inflation_pct):.0f}% of current) - Reverses in ~{temporary_duration} days
                             </div>
                         </div>
                     </div>
@@ -350,8 +406,21 @@ def render_unified_dashboard():
                             st.caption(f"📊 Revenue chart unavailable: {chart_err}")
 
                 with p_col2:
-                    st.metric("Est. Annual Run Rate", f"${portfolio_forecast.projected_annual_sales:,.0f}", delta=None, help="Based on sustainable run rate and seasonality")
-                    st.info(f"On track for **${portfolio_forecast.projected_revenue:,.0f}** next month.")
+                    st.metric(
+                        label="Est. Annual Run Rate",
+                        value=f"${portfolio_forecast.projected_annual_sales:,.0f}",
+                        delta=None,
+                        help="Annualized revenue projection based on sustainable run rate, adjusted for seasonality. 80% confidence interval."
+                    )
+                    # Show forecast delta to make it meaningful
+                    forecast_delta = portfolio_forecast.projected_revenue - current_revenue
+                    delta_pct = (forecast_delta / current_revenue * 100) if current_revenue > 0 else 0
+                    if abs(delta_pct) < 2:
+                        st.info(f"📊 **30-Day Forecast:** ${portfolio_forecast.projected_revenue:,.0f}/mo (stable)")
+                    elif delta_pct > 0:
+                        st.success(f"📈 **30-Day Forecast:** ${portfolio_forecast.projected_revenue:,.0f}/mo (+{delta_pct:.0f}%)")
+                    else:
+                        st.warning(f"📉 **30-Day Forecast:** ${portfolio_forecast.projected_revenue:,.0f}/mo ({delta_pct:.0f}%)")
             else:
                 st.markdown("---")
                 st.markdown("### 🔮 Predictive Horizon")

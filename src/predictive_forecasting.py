@@ -249,26 +249,45 @@ def build_scenarios(
     current_revenue: float,
     attribution: Optional[Any] = None,
     anticipated_events: Optional[List[AnticipatedEvent]] = None,
-    market_trends: Optional[Dict] = None
+    market_trends: Optional[Dict] = None,
+    df_historical: Optional[pd.DataFrame] = None
 ) -> List[Scenario]:
     """
     Generate Base/Optimistic/Pessimistic scenarios.
-    
+
     Base Case: Most likely outcome (60-75% confidence)
     Optimistic: Execute all growth opportunities (30-45% confidence)
     Pessimistic: Competitive aggression / market decline (25-35% confidence)
     """
     scenarios = []
-    
+
     # Calculate net event impacts
     event_impact_30d = sum(e.impact_per_month for e in (anticipated_events or []) if e.days_until <= 30)
     event_impact_60d = sum(e.impact_per_month for e in (anticipated_events or []) if e.days_until <= 60)
     event_impact_90d = sum(e.impact_per_month for e in (anticipated_events or []))
-    
+
+    # BUG FIX #6: Add trend-based adjustment when no events detected
+    trend_adjustment = 0.0
+    if len(anticipated_events or []) == 0 and df_historical is not None and len(df_historical) >= 8:
+        # Calculate historical growth rate from last 8 periods
+        try:
+            rev_col = 'revenue_proxy' if 'revenue_proxy' in df_historical.columns else \
+                      'sales' if 'sales' in df_historical.columns else \
+                      'revenue' if 'revenue' in df_historical.columns else None
+            if rev_col:
+                recent_4wk = df_historical.iloc[-4:][rev_col].sum()
+                prior_4wk = df_historical.iloc[-8:-4][rev_col].sum()
+                if prior_4wk > 0:
+                    growth_rate = (recent_4wk - prior_4wk) / prior_4wk
+                    # Dampen growth rate for projection (assume mean reversion)
+                    trend_adjustment = current_revenue * growth_rate * 0.5
+        except Exception:
+            trend_adjustment = 0.0
+
     # === BASE CASE ===
-    base_30d = current_revenue + event_impact_30d * 0.7  # 70% of events materialize
-    base_60d = current_revenue + event_impact_60d * 0.6
-    base_90d = current_revenue + event_impact_90d * 0.5
+    base_30d = current_revenue + event_impact_30d * 0.7 + trend_adjustment * 0.3
+    base_60d = current_revenue + event_impact_60d * 0.6 + trend_adjustment * 0.5
+    base_90d = current_revenue + event_impact_90d * 0.5 + trend_adjustment * 0.7
     
     base_assumptions = []
     if event_impact_30d < 0:
@@ -351,34 +370,38 @@ def calculate_sustainable_run_rate(
     Returns:
         (sustainable_run_rate, temporary_inflation, temporary_duration_days)
     """
+    # BUG FIX #5: Clearer sustainability calculation
     # Identify temporary gains (from attribution if available)
     temporary_inflation = 0.0
     temporary_duration_days = 30
-    
+
     if attribution:
         # Competitive vacuum gains are typically temporary
         competitive = getattr(attribution, 'competitive_contribution', 0) or 0
         macro = getattr(attribution, 'macro_contribution', 0) or 0
-        
+
+        # Only count POSITIVE contributions as temporary (gains that will reverse)
         # 70% of competitive gains are temporary (competitor will restock)
         # 50% of macro gains are temporary (seasonality, trends)
-        temporary_inflation = competitive * 0.70 + macro * 0.50
-    
-    # Also consider anticipated negative events
+        temp_competitive = max(0, competitive) * 0.70  # Only positive gains
+        temp_macro = max(0, macro) * 0.50              # Only positive gains
+        temporary_inflation = temp_competitive + temp_macro
+
+    # Calculate temporary duration from anticipated events
     if anticipated_events:
-        near_term_threats = sum(
-            e.impact_per_month 
-            for e in anticipated_events 
-            if e.days_until <= 30 and e.impact_per_month < 0
-        )
-        temporary_duration_days = max(
-            e.days_until for e in anticipated_events if e.impact_per_month < 0
-        ) if anticipated_events else 30
-    else:
-        near_term_threats = 0
-    
-    sustainable_run_rate = current_revenue - temporary_inflation + near_term_threats
-    
+        # Find events that reverse temporary gains
+        reversal_events = [e for e in anticipated_events
+                          if e.event_type in ['competitor_restock', 'seasonality_end']
+                          and e.days_until <= 60]
+        if reversal_events:
+            temporary_duration_days = max(e.days_until for e in reversal_events)
+        else:
+            temporary_duration_days = 30
+
+    # Simple formula: sustainable = current - temporary_gains
+    # Threats are shown separately as "risk", not mixed into sustainable rate
+    sustainable_run_rate = current_revenue - temporary_inflation
+
     return (
         max(0, sustainable_run_rate),
         temporary_inflation,
@@ -414,7 +437,8 @@ def generate_combined_intelligence(
     scenarios = build_scenarios(
         current_revenue=current_revenue,
         attribution=attribution,
-        anticipated_events=anticipated_events
+        anticipated_events=anticipated_events,
+        df_historical=df_historical
     )
     
     # 3. Calculate sustainable run rate

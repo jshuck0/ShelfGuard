@@ -184,16 +184,20 @@ class RevenueAttribution:
         )
 
     def get_earned_percentage(self) -> float:
-        """Get percentage of growth from internal actions."""
+        """Get percentage of growth from internal actions (capped at 100%)."""
         if self.total_delta == 0:
             return 0.0
-        return (self.internal_contribution / self.total_delta) * 100
+        # Cap at 100% to prevent impossible display values
+        raw_pct = (self.internal_contribution / self.total_delta) * 100
+        return min(100.0, max(-100.0, raw_pct))
 
     def get_opportunistic_percentage(self) -> float:
-        """Get percentage of growth from opportunistic factors."""
+        """Get percentage of growth from opportunistic factors (capped at 100%)."""
         if self.total_delta == 0:
             return 0.0
-        return (self.get_opportunistic_growth() / self.total_delta) * 100
+        # Cap at 100% to prevent impossible display values
+        raw_pct = (self.get_opportunistic_growth() / self.total_delta) * 100
+        return min(100.0, max(-100.0, raw_pct))
 
     def get_variance_badge(self) -> str:
         """Get explained variance badge."""

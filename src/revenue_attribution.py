@@ -670,11 +670,36 @@ def calculate_revenue_attribution(
         platform_impact
     )
 
+    # BUG FIX #1: Normalize attribution if it exceeds total_delta
+    # This prevents impossible percentages like 467% or 473%
+    abs_attributed = abs(internal_impact) + abs(competitive_impact) + abs(macro_impact) + abs(platform_impact)
+    if abs_attributed > abs(total_delta) and abs_attributed > 0 and total_delta != 0:
+        # Scale down proportionally so attributed amounts don't exceed total change
+        scale_factor = abs(total_delta) / abs_attributed
+        internal_impact *= scale_factor
+        competitive_impact *= scale_factor
+        macro_impact *= scale_factor
+        platform_impact *= scale_factor
+
+        # Recalculate attributed_total after normalization
+        attributed_total = internal_impact + competitive_impact + macro_impact + platform_impact
+
+        # Also scale drivers' impacts to match
+        for driver in internal_drivers:
+            driver.impact *= scale_factor
+        for driver in competitive_drivers:
+            driver.impact *= scale_factor
+        for driver in macro_drivers:
+            driver.impact *= scale_factor
+        for driver in platform_drivers:
+            driver.impact *= scale_factor
+
     residual = total_delta - attributed_total
 
-    # Calculate explained variance
+    # BUG FIX #2: Clamp explained_variance to 0.0 - 1.0 range
+    # This prevents impossible values like 840% unexplained variance
     if total_delta != 0:
-        explained_variance = min(1.0, abs(attributed_total) / abs(total_delta))
+        explained_variance = max(0.0, min(1.0, 1.0 - (abs(residual) / abs(total_delta))))
     else:
         explained_variance = 1.0 if attributed_total == 0 else 0.0
 

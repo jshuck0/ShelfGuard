@@ -41,8 +41,25 @@ def render_unified_dashboard():
     current_revenue = res.get('total_rev', 0)
     previous_revenue = current_revenue * 0.9 # Fallback estimate if not strictly calc
     
+    
     # Re-calculate previous revenue more accurately from df_weekly if possible
     df_weekly = st.session_state.get('df_weekly', pd.DataFrame())
+    
+    # === DATA PREPARATION (Fix for missing 'date'/'week') ===
+    if not df_weekly.empty:
+        # standardise columns
+        if 'date' not in df_weekly.columns:
+            if 'week' in df_weekly.columns:
+                try:
+                    df_weekly['date'] = pd.to_datetime(df_weekly['week'])
+                except:
+                    # If week parsing fails, try to use index or create dummy
+                    pass
+        
+        # Ensure 'week' exists if we have 'date' (for predictive engine fallback)
+        if 'week' not in df_weekly.columns and 'date' in df_weekly.columns:
+            df_weekly['week'] = df_weekly['date']
+
     if not df_weekly.empty and 'revenue_proxy' in df_weekly.columns:
         # Simple estimation logic for previous period
         # (Real implementation uses dates, kept simple here to avoid complexity)

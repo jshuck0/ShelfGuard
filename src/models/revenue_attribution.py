@@ -213,6 +213,41 @@ class RevenueAttribution:
         else:
             return f"Low Confidence ({self.explained_variance:.0%})"
 
+    def get_residual_percentage(self) -> float:
+        """Get residual as percentage of total delta."""
+        if self.total_delta == 0:
+            return 0.0
+        return abs(self.residual) / abs(self.total_delta) * 100
+
+    def has_high_residual(self, threshold: float = 20.0) -> bool:
+        """Check if residual exceeds threshold percentage."""
+        return self.get_residual_percentage() > threshold
+
+    def get_residual_warning(self) -> Optional[str]:
+        """
+        Get warning message if residual is high.
+
+        Returns None if residual is acceptable (<20% of total delta).
+        Returns warning message if residual is high (>20%).
+        """
+        residual_pct = self.get_residual_percentage()
+
+        if residual_pct > 20:
+            return f"⚠️ {residual_pct:.0f}% unexplained variance - review data quality. Attribution confidence may be lower than reported."
+        return None
+
+    def get_data_quality_summary(self) -> str:
+        """Get overall data quality assessment."""
+        residual_pct = self.get_residual_percentage()
+        explained = self.explained_variance
+
+        if explained >= 0.8 and residual_pct < 20:
+            return "✅ High data quality - attribution is reliable"
+        elif explained >= 0.6 and residual_pct < 30:
+            return "🟡 Medium data quality - attribution is directionally correct"
+        else:
+            return f"🔴 Low data quality - {residual_pct:.0f}% unexplained variance. Use with caution."
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {

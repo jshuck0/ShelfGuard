@@ -50,10 +50,22 @@ def detect_price_changes(
 
     actions = []
 
-    # Ensure date column exists
-    if 'date' not in df_weekly.columns and 'week' in df_weekly.columns:
-        df_weekly = df_weekly.copy()
-        df_weekly['date'] = pd.to_datetime(df_weekly['week'])
+    # Ensure date column exists - with validation
+    if 'date' not in df_weekly.columns:
+        if 'week' in df_weekly.columns:
+            df_weekly = df_weekly.copy()
+            try:
+                df_weekly['date'] = pd.to_datetime(df_weekly['week'], errors='coerce')
+            except Exception:
+                # If date conversion fails, return empty list
+                return []
+        else:
+            # No date or week column available
+            return []
+
+    # Validate that 'date' column now exists and has valid data
+    if 'date' not in df_weekly.columns or df_weekly['date'].isna().all():
+        return []
 
     # Sort by date
     df_weekly = df_weekly.sort_values('date')
@@ -537,6 +549,14 @@ def calculate_revenue_attribution(
 
     # Adjust confidence by explained variance
     overall_confidence = overall_confidence * explained_variance
+
+    # Additional penalty for high residual (>20% of total delta)
+    if total_delta != 0:
+        residual_pct = abs(residual) / abs(total_delta)
+        if residual_pct > 0.20:
+            # Aggressive downweight: reduce confidence by additional 20% for each 10% of unexplained variance above threshold
+            penalty_factor = max(0.5, 1.0 - ((residual_pct - 0.20) * 2.0))
+            overall_confidence = overall_confidence * penalty_factor
 
     # Create attribution object
     attribution = RevenueAttribution(

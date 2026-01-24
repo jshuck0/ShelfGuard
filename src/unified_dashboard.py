@@ -112,12 +112,22 @@ def render_unified_dashboard():
         ))
         fig.update_layout(height=350, title=None, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
+
+        # Residual Warning (if high unexplained variance)
+        residual_warning = attribution.get_residual_warning()
+        if residual_warning:
+            st.warning(residual_warning)
+            # Show data quality summary
+            data_quality = attribution.get_data_quality_summary()
+            st.caption(data_quality)
     else:
         # Fallback if attribution fails
         st.info("⚠️ Strategic Context Unavailable: insufficient historical data for attribution.")
-        
 
-        
+    # === SUSTAINABILITY ANALYSIS BANNER ===
+    # Show sustainable run rate vs current revenue (calculated from CombinedIntelligence)
+    # This is calculated later in the predictive section, so we'll add it there after combined_intel is generated
+
     # === SECTION 1.5: PREDICTIVE HORIZON ===
     # Forecast Chart (Restored from Command Center 2.0)
     try:
@@ -136,6 +146,62 @@ def render_unified_dashboard():
         
         if combined_intel and combined_intel.forecast:
             st.markdown("---")
+
+            # === SUSTAINABILITY ANALYSIS BANNER ===
+            sustainable_run_rate = combined_intel.sustainable_run_rate
+            temporary_inflation = combined_intel.temporary_inflation
+            temporary_duration = combined_intel.temporary_duration_days
+
+            # Calculate inflation percentage
+            inflation_pct = (temporary_inflation / current_revenue * 100) if current_revenue > 0 else 0
+
+            # Determine banner color based on inflation level
+            if abs(inflation_pct) > 20:
+                banner_color = "#fee"  # Light red
+                icon = "⚠️"
+            elif abs(inflation_pct) > 10:
+                banner_color = "#fff3cd"  # Light yellow
+                icon = "⚡"
+            else:
+                banner_color = "#e8f5e9"  # Light green
+                icon = "✅"
+
+            # Display sustainability banner
+            st.markdown(f"""
+            <div style="background: {banner_color}; border-left: 5px solid {'#dc3545' if abs(inflation_pct) > 20 else '#ffc107' if abs(inflation_pct) > 10 else '#28a745'};
+                        padding: 20px; border-radius: 6px; margin-bottom: 20px;">
+                <div style="font-size: 18px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px;">
+                    {icon} Sustainability Analysis
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
+                    <div>
+                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue</div>
+                        <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_revenue:,.0f}/mo</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Sustainable Run Rate</div>
+                        <div style="font-size: 24px; font-weight: 700; color: #28a745;">${sustainable_run_rate:,.0f}/mo</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Temporary {'Inflation' if temporary_inflation > 0 else 'Deflation'}</div>
+                        <div style="font-size: 24px; font-weight: 700; color: {'#dc3545' if temporary_inflation > 0 else '#28a745'};">
+                            {'+' if temporary_inflation > 0 else ''}${temporary_inflation:,.0f}
+                        </div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                            ({abs(inflation_pct):.0f}% of current) • Reverses in {temporary_duration} days
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 16px; font-size: 14px; color: #666; border-top: 1px solid #ddd; padding-top: 12px;">
+                    <strong>What this means:</strong> Your sustainable revenue after temporary factors reverse is
+                    <strong style="color: {'#dc3545' if sustainable_run_rate < current_revenue else '#28a745'};">
+                        ${sustainable_run_rate:,.0f}/month
+                    </strong>.
+                    {'⚠️ Caution: Don\'t scale fixed costs on temporary gains.' if temporary_inflation > current_revenue * 0.15 else '✅ Your growth is primarily sustainable.'}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
             st.markdown("### 🔮 Predictive Horizon")
             portfolio_forecast = combined_intel.forecast
             
@@ -145,75 +211,86 @@ def render_unified_dashboard():
                 # Prepare Forecast Chart Data
                 # 1. Historical Data (Monthly)
                 if not df_weekly.empty:
+                    # Ensure date column exists with validation
                     if 'date' not in df_weekly.columns:
-                        df_weekly['date'] = pd.to_datetime(df_weekly['week'])
-                        
-                    df_weekly['month'] = df_weekly['date'].dt.to_period('M')
-                    # Use revenue proxy or calc from sum
-                    rev_col_chart = 'revenue_proxy' if 'revenue_proxy' in df_weekly.columns else 'sales' if 'sales' in df_weekly.columns else None
-                    
-                    if rev_col_chart:
-                        monthly_rev = df_weekly.groupby('month')[rev_col_chart].sum().reset_index()
-                        monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
-                        
-                        # Filter to last 6 months
-                        cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
-                        monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
-                        
-                        # 2. Future Data Point
-                        last_date = monthly_rev['month'].max() if not monthly_rev.empty else pd.Timestamp.now()
-                        next_date = last_date + pd.Timedelta(days=30)
-                        
-                        proj_rev = portfolio_forecast.projected_revenue
-                        lower_bound = portfolio_forecast.lower_bound
-                        upper_bound = portfolio_forecast.upper_bound
-                        
-                        # Create Chart
-                        fig_pred = go.Figure()
-                        
-                        # Historical Bars
-                        fig_pred.add_trace(go.Bar(
-                            x=monthly_rev['month'],
-                            y=monthly_rev[rev_col_chart],
-                            name='Historical Revenue',
-                            marker_color='#e0e0e0'
-                        ))
-                        
-                        # Forecast Line
-                        fig_pred.add_trace(go.Scatter(
-                            x=[last_date, next_date],
-                            y=[monthly_rev[rev_col_chart].iloc[-1] if not monthly_rev.empty else 0, proj_rev],
-                            name='Projected Trend',
-                            line=dict(color='#007bff', width=3, dash='dot'),
-                            mode='lines+markers'
-                        ))
-                        
-                        # Confidence Interval (Error Bars)
-                        fig_pred.add_trace(go.Scatter(
-                            x=[next_date, next_date],
-                            y=[upper_bound, lower_bound],
-                            mode='markers',
-                            marker=dict(color='#007bff', size=1),
-                            error_y=dict(
-                                type='data',
-                                symmetric=False,
-                                array=[upper_bound - proj_rev],
-                                arrayminus=[proj_rev - lower_bound],
-                                color='rgba(0,123,255,0.3)',
-                                thickness=10,
-                                width=10
-                            ),
-                            name='Confidence Interval (80%)'
-                        ))
-                        
-                        fig_pred.update_layout(
-                            height=300,
-                            margin=dict(l=40, r=40, t=30, b=30),
-                            showlegend=True,
-                            legend=dict(orientation="h", y=1.1),
-                            title=None
-                        )
-                        st.plotly_chart(fig_pred, use_container_width=True)
+                        if 'week' in df_weekly.columns:
+                            try:
+                                df_weekly['date'] = pd.to_datetime(df_weekly['week'], errors='coerce')
+                            except Exception:
+                                # If conversion fails, skip chart
+                                df_weekly = pd.DataFrame()
+                        else:
+                            # No date or week column, skip chart
+                            df_weekly = pd.DataFrame()
+
+                    # Only proceed if we have valid data
+                    if not df_weekly.empty and 'date' in df_weekly.columns:
+                        df_weekly['month'] = df_weekly['date'].dt.to_period('M')
+                        # Use revenue proxy or calc from sum
+                        rev_col_chart = 'revenue_proxy' if 'revenue_proxy' in df_weekly.columns else 'sales' if 'sales' in df_weekly.columns else None
+
+                        if rev_col_chart:
+                            monthly_rev = df_weekly.groupby('month')[rev_col_chart].sum().reset_index()
+                            monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
+
+                            # Filter to last 6 months
+                            cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
+                            monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
+
+                            # 2. Future Data Point
+                            last_date = monthly_rev['month'].max() if not monthly_rev.empty else pd.Timestamp.now()
+                            next_date = last_date + pd.Timedelta(days=30)
+
+                            proj_rev = portfolio_forecast.projected_revenue
+                            lower_bound = portfolio_forecast.lower_bound
+                            upper_bound = portfolio_forecast.upper_bound
+
+                            # Create Chart
+                            fig_pred = go.Figure()
+
+                            # Historical Bars
+                            fig_pred.add_trace(go.Bar(
+                                x=monthly_rev['month'],
+                                y=monthly_rev[rev_col_chart],
+                                name='Historical Revenue',
+                                marker_color='#e0e0e0'
+                            ))
+
+                            # Forecast Line
+                            fig_pred.add_trace(go.Scatter(
+                                x=[last_date, next_date],
+                                y=[monthly_rev[rev_col_chart].iloc[-1] if not monthly_rev.empty else 0, proj_rev],
+                                name='Projected Trend',
+                                line=dict(color='#007bff', width=3, dash='dot'),
+                                mode='lines+markers'
+                            ))
+
+                            # Confidence Interval (Error Bars)
+                            fig_pred.add_trace(go.Scatter(
+                                x=[next_date, next_date],
+                                y=[upper_bound, lower_bound],
+                                mode='markers',
+                                marker=dict(color='#007bff', size=1),
+                                error_y=dict(
+                                    type='data',
+                                    symmetric=False,
+                                    array=[upper_bound - proj_rev],
+                                    arrayminus=[proj_rev - lower_bound],
+                                    color='rgba(0,123,255,0.3)',
+                                    thickness=10,
+                                    width=10
+                                ),
+                                name='Confidence Interval (80%)'
+                            ))
+
+                            fig_pred.update_layout(
+                                height=300,
+                                margin=dict(l=40, r=40, t=30, b=30),
+                                showlegend=True,
+                                legend=dict(orientation="h", y=1.1),
+                                title=None
+                            )
+                            st.plotly_chart(fig_pred, use_container_width=True)
             
             with p_col2:
                  st.metric(
@@ -227,8 +304,83 @@ def render_unified_dashboard():
             st.info("⚠️ Predictive Horizon Unavailable: Insufficient historical data or trigger events for forecast generation.")
                  
     except Exception as e:
-        st.warning(f"Predictive engine offline: {e}") 
+        st.warning(f"Predictive engine offline: {e}")
         # pass
+
+    # === EVENT TIMELINE TABLE ===
+    if combined_intel and hasattr(combined_intel, 'anticipated_events') and combined_intel.anticipated_events:
+        st.markdown("---")
+        st.markdown("#### 📅 Anticipated Events (Next 30 Days)")
+
+        # Build timeline table
+        events = combined_intel.anticipated_events
+        if events:
+            timeline_data = []
+
+            # Severity styling map
+            severity_styles = {
+                'CRITICAL': {'emoji': '🚨', 'color': '#dc3545', 'bg': '#fee'},
+                'HIGH': {'emoji': '⚡', 'color': '#fd7e14', 'bg': '#fff3cd'},
+                'MEDIUM': {'emoji': '⚠️', 'color': '#ffc107', 'bg': '#fff8e1'},
+                'LOW': {'emoji': '📉', 'color': '#6c757d', 'bg': '#f8f9fa'}
+            }
+
+            # Sort by days_until (most urgent first)
+            sorted_events = sorted(events, key=lambda e: e.days_until if hasattr(e, 'days_until') else 999)
+
+            for event in sorted_events:
+                # Get severity (handle both string and enum)
+                severity = event.severity if hasattr(event, 'severity') else 'MEDIUM'
+                if hasattr(severity, 'name'):
+                    severity_name = severity.name
+                else:
+                    severity_name = str(severity).upper()
+
+                # Get styling
+                style = severity_styles.get(severity_name, severity_styles['MEDIUM'])
+
+                # Build row
+                timeline_data.append({
+                    "Day": f"Day {event.days_until if hasattr(event, 'days_until') else '?'}",
+                    "Event": f"{style['emoji']} {event.description if hasattr(event, 'description') else event.event_type}",
+                    "Impact": f"${event.impact_per_month:+,.0f}/mo" if hasattr(event, 'impact_per_month') else 'N/A',
+                    "Severity": severity_name,
+                    "Action": event.action_recommended if hasattr(event, 'action_recommended') else 'Monitor'
+                })
+
+            # Display as dataframe
+            if timeline_data:
+                df_timeline = pd.DataFrame(timeline_data)
+
+                # Custom styling function
+                def style_severity(row):
+                    severity = row['Severity']
+                    style = severity_styles.get(severity, severity_styles['MEDIUM'])
+                    return [f"background-color: {style['bg']}"] * len(row)
+
+                # Apply styling
+                styled_timeline = df_timeline.style.apply(style_severity, axis=1)
+
+                st.dataframe(styled_timeline, use_container_width=True, hide_index=True)
+
+                # Net impact summary
+                total_impact = sum(
+                    event.impact_per_month if hasattr(event, 'impact_per_month') else 0
+                    for event in sorted_events
+                )
+
+                if total_impact != 0:
+                    impact_color = '#28a745' if total_impact > 0 else '#dc3545'
+                    st.markdown(f"""
+                    <div style="margin-top: 12px; padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid {impact_color};">
+                        <strong>Net Projected Impact (30 days):</strong>
+                        <span style="color: {impact_color}; font-size: 18px; font-weight: 700;">
+                            ${total_impact:+,.0f}/month
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("No anticipated events detected for the next 30 days.")
 
     # === SECTION 2: TACTICAL EXECUTION (The What) ===
     st.markdown("---")

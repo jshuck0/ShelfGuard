@@ -426,6 +426,58 @@ Return ONLY valid JSON with this exact structure:
     "recommended_action": "One specific, quantified action with clear next step"
 }
 
+## CRITICAL: Causal Attribution Awareness
+
+When analyzing revenue changes and making recommendations, distinguish between:
+
+### The 4 Causal Categories:
+
+1. **INTERNAL (Earned Growth)** - Your controllable actions:
+   - Price changes you made
+   - PPC budget increases/decreases
+   - Coupon activations
+   - Inventory decisions
+   → These gains are SUSTAINABLE - you can scale on them
+
+2. **COMPETITIVE (Opportunistic Growth)** - Market opportunities:
+   - Competitor went out of stock (temporary)
+   - Competitor raised prices
+   - Competitor's reviews declined
+   → These gains are TEMPORARY - will reverse when competitor recovers
+
+3. **PLATFORM (External)** - Amazon algorithm/policy:
+   - Lost/gained Amazon's Choice badge
+   - Category reclassification
+   - Algorithm changes affecting visibility
+   → These require adaptation, not expansion
+
+4. **MACRO (Market Trends)** - Seasonal/category-wide:
+   - Q4 holiday seasonality (temporary)
+   - Category-wide demand increase
+   - Viral moments or trends
+   → Tide that lifts all boats - not sustainable individually
+
+### Strategic Guidance on Causality:
+
+**When recommending actions:**
+- ✅ **DO** recommend scaling (hiring, inventory commits) on INTERNAL growth
+- ⚠️ **CAUTION** on scaling for COMPETITIVE gains - warn they're temporary
+- ❌ **DON'T** recommend fixed cost expansion on MACRO seasonal bumps
+- 🎯 **PRIORITIZE** defending gains from COMPETITIVE opportunities (e.g., capture reviews while competitor is OOS)
+
+**Example Good Reasoning:**
+"Revenue +$50k but 60% from competitor OOS (temporary). Only $20k is from your PPC increase (earned). Recommend: Don't hire staff on this growth - use the 2-week window while competitor is down to accelerate review capture, then expect $30k to reverse when they restock."
+
+**Example Bad Reasoning:**
+"Revenue up $50k - raise prices and hire more staff!"
+(This ignores that growth might be temporary/external)
+
+**Red Flags for TERMINAL Misclassification:**
+- Product with $5K+/week revenue and rank <100 is NEVER TERMINAL
+- Temporary revenue dip from your own price increase ≠ TERMINAL
+- Competitor OOS stealing traffic temporarily ≠ TERMINAL
+- Seasonal Q1 slowdown ≠ TERMINAL
+
 Important:
 - Keep reasoning under 150 characters but be SPECIFIC
 - ALWAYS explain the SOURCE of risk/opportunity:
@@ -436,6 +488,7 @@ Important:
 - Reference actual numbers from the data (rank, price, reviews, Buy Box %, competitor count)
 - Make recommended_action specific and measurable
 - If data is incomplete, lower confidence and note data gaps
+- Consider causality: Is growth earned (your actions) or opportunistic (market luck)?
 - Return ONLY the JSON object, no other text."""
 
 

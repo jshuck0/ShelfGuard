@@ -14,6 +14,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Tuple
+import json
+from supabase import Client
 
 from src.models.revenue_attribution import (
     RevenueAttribution,
@@ -559,3 +561,105 @@ def calculate_revenue_attribution(
     )
 
     return attribution
+
+# ========================================
+# PERSISTENCE (Added 2026-01-23)
+# ========================================
+
+def save_revenue_attribution(
+    attribution: RevenueAttribution,
+    project_id: str,
+    start_date: str,
+    end_date: str,
+    supabase: Client
+) -> bool:
+    """
+    Persist revenue attribution to database.
+    
+    Stores:
+    1. Top-level attribution record (revenue_attributions)
+    2. Granular drivers (attribution_drivers)
+    
+    Args:
+        attribution: Calculated attribution object
+        project_id: Supabase project ID (UUID)
+        start_date: Analysis start date (ISO)
+        end_date: Analysis end date (ISO)
+        supabase: Authenticated Supabase client
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not project_id:
+        print("⚠️ Cannot save attribution: No project_id provided")
+        return False
+        
+    try:
+        # 1. Prepare main attribution record
+        main_record = {
+            "project_id": project_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            
+            # Deltas
+            "total_delta": attribution.total_delta,
+            "previous_revenue": attribution.previous_revenue,
+            "current_revenue": attribution.current_revenue,
+            "delta_pct": attribution.delta_pct,
+            
+            # Categories
+            "internal_contribution": attribution.internal_contribution,
+            "competitive_contribution": attribution.competitive_contribution,
+            "macro_contribution": attribution.macro_contribution,
+            "platform_contribution": attribution.platform_contribution,
+            
+            # Metadata
+            "explained_variance": attribution.explained_variance,
+            "confidence_score": attribution.confidence_score,
+            "residual": attribution.residual,
+            "attribution_method": "elimination"
+        }
+        
+        # Upsert main record (conflict on project_id + dates)
+        result = supabase.table("revenue_attributions").upsert(
+            main_record, 
+            on_conflict="project_id,start_date,end_date"
+        ).execute()
+        
+        if not result.data:
+            print("⚠️ Failed to insert revenue_attributions record")
+            return False
+            
+        attribution_id = result.data[0]['id']
+        
+        # 2. Prepare drivers
+        drivers_to_insert = []
+        for driver in attribution.drivers:
+            driver_record = {
+                "attribution_id": attribution_id,
+                "category": driver.category.value,
+                "description": driver.description,
+                "impact": driver.impact,
+                "confidence": driver.confidence,
+                "controllable": driver.controllable,
+                "event_type": driver.event_type,
+                "related_asin": driver.related_asin,
+                "event_timestamp": driver.timestamp.isoformat() if driver.timestamp else None,
+                "metadata": driver.metadata or {}
+            }
+            drivers_to_insert.append(driver_record)
+            
+        # 3. Replace drivers (Delete old ones for this attribution, then insert new)
+        # This acts as a "sync" for the drivers list
+        if drivers_to_insert:
+            # Delete existing drivers for this attribution ID (to avoid duplicates if re-running)
+            supabase.table("attribution_drivers").delete().eq("attribution_id", attribution_id).execute()
+            
+            # Insert new drivers
+            supabase.table("attribution_drivers").insert(drivers_to_insert).execute()
+            
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Error saving attribution: {str(e)}")
+        return False

@@ -48,7 +48,8 @@ try:
         load_historical_metrics_from_db,
         load_historical_metrics_by_asins,
         # FIX 1.2: Network intelligence for competitive context
-        get_market_snapshot_with_network_intelligence
+        get_market_snapshot_with_network_intelligence,
+        get_supabase_client
     )
     SUPABASE_CACHE_ENABLED = True
 except ImportError:
@@ -85,13 +86,19 @@ except ImportError:
 
 # Revenue Attribution Engine - Causal Intelligence
 try:
-    from src.revenue_attribution import calculate_revenue_attribution
+    from src.revenue_attribution import calculate_revenue_attribution, save_revenue_attribution
     from src.models.revenue_attribution import RevenueAttribution
     ATTRIBUTION_ENABLED = True
 except ImportError:
     ATTRIBUTION_ENABLED = False
     calculate_revenue_attribution = None
     RevenueAttribution = None
+
+# Unified Dashboard Logic (Unified 3.0)
+try:
+    from src.dashboard_logic import ensure_data_loaded
+except ImportError:
+    ensure_data_loaded = None
 
 # Predictive Forecasting Engine - Phase 2.5
 try:
@@ -1012,29 +1019,14 @@ with main_tab2:
     # Check if we have an active project
     active_project_asin = st.session_state.get('active_project_asin', None)
 
-    if not active_project_asin:
-        # === SYSTEM OFFLINE STATE ===
-        st.markdown("<br><br><br>", unsafe_allow_html=True)
+    # === UNIFIED COMMAND CENTER 3.0 (Analysis & Action) ===
+    from src.unified_dashboard import render_unified_dashboard
+    render_unified_dashboard()
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown("""
-            <div style="text-align: center; padding: 60px 40px; background: white;
-                        border: 2px dashed #e0e0e0; border-radius: 12px;">
-                <div style="font-size: 72px; margin-bottom: 20px;">🧩</div>
-                <div style="font-size: 28px; font-weight: 700; color: #666; margin-bottom: 12px;">
-                    CAUSAL INTELLIGENCE OFFLINE
-                </div>
-                <div style="font-size: 16px; color: #999; margin-bottom: 30px;">
-                    No active project detected
-                </div>
-                <div style="font-size: 14px; color: #666; margin-bottom: 20px;">
-                    Initialize a project in Market Discovery to activate revenue attribution
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    else:
+    # LEGACY CODE DISABLED (Preserved for reference but unreachable)
+    if False:
+        pass
+    elif False: # Replaces 'else:' to skip the legacy block below
         # === ACTIVE PROJECT MODE ===
         try:
             # Get project data from session state - USE SAME KEYS AS COMMAND CENTER 1
@@ -1193,6 +1185,32 @@ with main_tab2:
                         lookback_days=30,
                         portfolio_asins=project_asins
                     )
+
+                    # === PERSISTENCE INJECTION (Added 2026-01-23) ===
+                    # Automatically save intelligence for longitudinal monitoring
+                    active_project_id = st.session_state.get('active_project_id')
+                    if attribution and active_project_id:
+                        try:
+                            from datetime import date, timedelta
+                            today = date.today()
+                            # Define analysis period (matches lookback_days=30)
+                            end_date_iso = today.isoformat()
+                            start_date_iso = (today - timedelta(days=30)).isoformat()
+                            
+                            supabase_client = get_supabase_client()
+                            
+                            saved = save_revenue_attribution(
+                                attribution=attribution,
+                                project_id=active_project_id,
+                                start_date=start_date_iso,
+                                end_date=end_date_iso,
+                                supabase=supabase_client
+                            )
+                            if saved:
+                                st.toast("✅ Intelligence saved to history", icon="💾")
+                        except Exception as save_err:
+                            # Non-blocking error
+                            st.caption(f"Note: Could not save history ({str(save_err)})")
                 except Exception as e:
                     st.error(f"⚠️ Attribution calculation failed: {str(e)}")
                     st.caption("Debug: Check that revenue_attribution module is properly installed")
@@ -1438,10 +1456,126 @@ with main_tab2:
                 if not ATTRIBUTION_ENABLED:
                     st.error("⚠️ Attribution engine not loaded. Check installation.")
 
+                # === PREDICTIVE INTELLIGENCE (FORECAST) ===
+                st.markdown("---")
+                st.markdown("### 🔮 Predictive Intelligence: Future Outlook")
+                st.caption("Forecast based on current run rate, seasonality, and anticipated events")
+
+                try:
+                    # Generate forecast using the unified pipeline
+                    from src.predictive_forecasting import generate_combined_intelligence
+                    
+                    # Generate combined intelligence
+                    combined_intel = generate_combined_intelligence(
+                        current_revenue=current_revenue,
+                        previous_revenue=previous_revenue,
+                        attribution=attribution,
+                        trigger_events=trigger_events,
+                        df_historical=df_weekly
+                    )
+                    
+                    if combined_intel and combined_intel.forecast:
+                        portfolio_forecast = combined_intel.forecast
+                        
+                        pred_cols = st.columns([2, 1])
+                        
+                        with pred_cols[0]:
+                            # Prepare Forecast Chart Data
+                            # 1. Historical Data (Monthly)
+                            if not df_weekly.empty:
+                                if 'date' not in df_weekly.columns:
+                                    df_weekly['date'] = pd.to_datetime(df_weekly['week'])
+                                    
+                                df_weekly['month'] = df_weekly['date'].dt.to_period('M')
+                                # Use revenue proxy or calc from sum
+                                rev_col_chart = 'revenue_proxy' if 'revenue_proxy' in df_weekly.columns else 'sales' if 'sales' in df_weekly.columns else None
+                                
+                                if rev_col_chart:
+                                    monthly_rev = df_weekly.groupby('month')[rev_col_chart].sum().reset_index()
+                                    monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
+                                    
+                                    # Filter to last 6 months
+                                    cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
+                                    monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
+                                    
+                                    # 2. Future Data Point
+                                    last_date = monthly_rev['month'].max() if not monthly_rev.empty else pd.Timestamp.now()
+                                    next_date = last_date + pd.Timedelta(days=30)
+                                    
+                                    proj_rev = portfolio_forecast.projected_revenue
+                                    lower_bound = portfolio_forecast.lower_bound
+                                    upper_bound = portfolio_forecast.upper_bound
+                                    
+                                    # Create Chart
+                                    import plotly.graph_objects as go
+                                    fig_pred = go.Figure()
+                                    
+                                    # Historical Bars
+                                    fig_pred.add_trace(go.Bar(
+                                        x=monthly_rev['month'],
+                                        y=monthly_rev[rev_col_chart],
+                                        name='Historical Revenue',
+                                        marker_color='#e0e0e0'
+                                    ))
+                                    
+                                    # Forecast Line
+                                    fig_pred.add_trace(go.Scatter(
+                                        x=[last_date, next_date],
+                                        y=[monthly_rev[rev_col_chart].iloc[-1] if not monthly_rev.empty else 0, proj_rev],
+                                        name='Projected Trend',
+                                        line=dict(color='#007bff', width=3, dash='dot'),
+                                        mode='lines+markers'
+                                    ))
+                                    
+                                    # Confidence Interval (Error Bars)
+                                    fig_pred.add_trace(go.Scatter(
+                                        x=[next_date, next_date],
+                                        y=[upper_bound, lower_bound],
+                                        mode='markers',
+                                        marker=dict(color='#007bff', size=1),
+                                        error_y=dict(
+                                            type='data',
+                                            symmetric=False,
+                                            array=[upper_bound - proj_rev],
+                                            arrayminus=[proj_rev - lower_bound],
+                                            color='rgba(0,123,255,0.3)',
+                                            thickness=10,
+                                            width=10
+                                        ),
+                                        name='Confidence Interval (80%)'
+                                    ))
+                                    
+                                    fig_pred.update_layout(
+                                        height=300,
+                                        margin=dict(l=40, r=40, t=30, b=30),
+                                        showlegend=True,
+                                        legend=dict(orientation="h", y=1.1),
+                                        title="Monthly Revenue Trajectory"
+                                    )
+                                    st.plotly_chart(fig_pred, use_container_width=True)
+                                else:
+                                    st.info("Insufficient historical data for forecast chart")
+                        
+                        with pred_cols[1]:
+                            st.markdown("#### Annual Projection")
+                            st.metric(
+                                "Est. Annual Revenue",
+                                f"${portfolio_forecast.projected_annual_sales:,.0f}",
+                                delta=None,
+                                help="Based on sustainable run rate and seasonality"
+                            )
+                            
+                            st.markdown("#### Forecast Analysis")
+                            st.info(f"📈 **Trajectory:** On track for ${proj_rev:,.0f} next month.")
+                            
+                            if portfolio_forecast.event_adjustments != 0:
+                                st.warning(f"⚠️ **Event Impact:** ${portfolio_forecast.event_adjustments:,.0f} adjustment included due to upcoming events.")
+                    
+                except Exception as e:
+                    st.warning(f"Note: Predictive pipeline not fully active yet ({str(e)})")
+
         except Exception as e:
             st.error(f"⚠️ Error loading Command Center 2.0: {str(e)}")
-            st.caption("Debug info: Check console for details")
-            import traceback
             st.code(traceback.format_exc())
 
 with main_tab3:
@@ -3275,7 +3409,199 @@ with main_tab1:
         - Total action items available: {portfolio_product_count} products
         """
     
+        # === HOISTED INTELLIGENCE PIPELINE (Command Center 3.0 Core) ===
+        # We calculate this UP FRONT so all UI components (Legacy & New) can use the intelligence
+        
+        # Initialize Intelligence Variables
+        all_triggers = []
+        portfolio_attribution = None
+        portfolio_scenarios = []
+        portfolio_anticipated = []
+        sustainable_run_rate = 0
+        portfolio_forecast = None
+        trigger_detection_available = False
+        
+        # Get data references
+        df_weekly_hist = st.session_state.get('df_weekly', pd.DataFrame())
+        market_snapshot_df = st.session_state.get('active_project_market_snapshot', pd.DataFrame())
+        target_brand_name = st.session_state.get('active_brand', '')
+        
+        # 1. TRIGGER DETECTION ENGINE
+        if not df_weekly_hist.empty and 'asin' in df_weekly_hist.columns:
+            try:
+                from src.trigger_detection import detect_trigger_events
+                trigger_detection_available = True
+                
+                # Get top revenue products for trigger detection (limit to 10 for performance)
+                if target_brand_name and 'brand' in df_weekly_hist.columns:
+                    target_brand_lower = target_brand_name.lower().strip()
+                    brand_asins = df_weekly_hist[df_weekly_hist['brand'].str.lower() == target_brand_lower]['asin'].unique()[:10]
+                else:
+                    # Fallback: Top 10 by mention count
+                    brand_asins = df_weekly_hist['asin'].value_counts().index[:10]
+                
+                for asin in brand_asins:
+                    asin_history = df_weekly_hist[df_weekly_hist['asin'] == asin]
+                    if not asin_history.empty and len(asin_history) >= 3:
+                        try:
+                            # Use market snapshot for competitor context
+                            triggers = detect_trigger_events(
+                                asin=asin,
+                                df_historical=asin_history,
+                                df_competitors=market_snapshot_df,
+                                lookback_days=30
+                            )
+                            # Tag triggers with ASIN
+                            for t in triggers:
+                                t.asin = asin
+                            all_triggers.extend(triggers)
+                        except Exception:
+                            pass
+                
+                # Sort by severity
+                all_triggers = sorted(all_triggers, key=lambda e: e.severity, reverse=True)[:15]
+                
+            except Exception as e:
+                # Silent fail for triggers to keep dashboard robust
+                pass
+
+        # 2. REVENUE ATTRIBUTION ENGINE
+        if ATTRIBUTION_ENABLED and FORECASTING_ENABLED and not df_weekly_hist.empty:
+            try:
+                # Use enriched portfolio for revenue estimate
+                est_monthly_revenue = enriched_portfolio_df['estimated_monthly_revenue'].sum() if 'estimated_monthly_revenue' in enriched_portfolio_df.columns else 0
+                
+                if est_monthly_revenue > 0:
+                    prev_revenue = est_monthly_revenue * 0.95 # Baseline
+                    
+                    # Calculate Attribution
+                    portfolio_attribution = calculate_revenue_attribution(
+                        previous_revenue=prev_revenue,
+                        current_revenue=est_monthly_revenue,
+                        df_weekly=df_weekly_hist,
+                        trigger_events=all_triggers,
+                        market_snapshot=market_snapshot_df.to_dict('records') if not market_snapshot_df.empty else None,
+                        lookback_days=30
+                    )
+                    
+                    # Generate Combined Intelligence (Forecasting)
+                    combined_intel = generate_combined_intelligence(
+                        current_revenue=est_monthly_revenue,
+                        previous_revenue=prev_revenue,
+                        attribution=portfolio_attribution,
+                        trigger_events=all_triggers,
+                        df_historical=df_weekly_hist
+                    )
+                    
+                    if combined_intel:
+                        portfolio_scenarios = combined_intel.scenarios
+                        portfolio_anticipated = combined_intel.anticipated_events
+                        sustainable_run_rate = combined_intel.sustainable_run_rate
+                        # Extract forecast locally if needed for legacy tab (though ideally use hoisted var)
+                        # Actually, portfolio_forecast might be None if hoisted failed, so using local is safe
+                        if combined_intel.forecast:
+                            portfolio_forecast = combined_intel.forecast
+            except Exception:
+                pass
+
         # === COMPETITIVE INTELLIGENCE & ROOT CAUSE ANALYSIS ===
+        # ... [existing code] ...
+
+        # [SKIP DOWN TO AFTER Causality Chart]
+        # Locate end of "Market Causality Analysis" block and insert before "AI ACTION QUEUE"
+
+                    # ... [Chart Logic] ...
+                    
+        # === PREDICTIVE INTELLIGENCE (FORECASTING) ===
+        if portfolio_forecast:
+            st.markdown("---")
+            st.markdown("### 🔮 Predictive Revenue Forecast")
+            
+            pred_cols = st.columns([2, 1])
+            
+            with pred_cols[0]:
+                # Prepare Forecast Chart Data
+                # 1. Historical Data (Monthly)
+                if not df_weekly.empty:
+                    df_weekly['month'] = pd.to_datetime(df_weekly['week_start']).dt.to_period('M')
+                    monthly_rev = df_weekly.groupby('month')['revenue_proxy'].sum().reset_index()
+                    monthly_rev['month'] = monthly_rev['month'].dt.to_timestamp()
+                    
+                    # Filter to last 6 months
+                    cutoff_month = pd.Timestamp.now() - pd.Timedelta(days=180)
+                    monthly_rev = monthly_rev[monthly_rev['month'] >= cutoff_month]
+                    
+                    # 2. Future Data Point
+                    last_date = monthly_rev['month'].max() if not monthly_rev.empty else pd.Timestamp.now()
+                    next_date = last_date + pd.Timedelta(days=30)
+                    
+                    proj_rev = portfolio_forecast.projected_revenue
+                    lower_bound = portfolio_forecast.lower_bound
+                    upper_bound = portfolio_forecast.upper_bound
+                    
+                    # Create Chart
+                    fig_pred = go.Figure()
+                    
+                    # Historical Bars
+                    fig_pred.add_trace(go.Bar(
+                        x=monthly_rev['month'],
+                        y=monthly_rev['revenue_proxy'],
+                        name='Historical Revenue',
+                        marker_color='#e0e0e0'
+                    ))
+                    
+                    # Forecast Line
+                    fig_pred.add_trace(go.Scatter(
+                        x=[last_date, next_date],
+                        y=[monthly_rev['revenue_proxy'].iloc[-1] if not monthly_rev.empty else 0, proj_rev],
+                        name='Projected Trend',
+                        line=dict(color='#007bff', width=3, dash='dot'),
+                        mode='lines+markers'
+                    ))
+                    
+                    # Confidence Interval (Error Bars)
+                    fig_pred.add_trace(go.Scatter(
+                        x=[next_date, next_date],
+                        y=[upper_bound, lower_bound],
+                        mode='markers',
+                        marker=dict(color='#007bff', size=1),
+                        error_y=dict(
+                            type='data',
+                            symmetric=False,
+                            array=[upper_bound - proj_rev],
+                            arrayminus=[proj_rev - lower_bound],
+                            color='rgba(0,123,255,0.3)',
+                            thickness=10,
+                            width=10
+                        ),
+                        name='Confidence Interval (80%)'
+                    ))
+                    
+                    fig_pred.update_layout(
+                        height=300,
+                        margin=dict(l=40, r=40, t=30, b=30),
+                        showlegend=True,
+                        legend=dict(orientation="h", y=1.1),
+                        title="Monthly Revenue Trajectory"
+                    )
+                    st.plotly_chart(fig_pred, use_container_width=True)
+            
+            with pred_cols[1]:
+                st.markdown("#### Annual Projection")
+                st.metric(
+                    "Est. Annual Revenue",
+                    f"${portfolio_forecast.projected_annual_sales:,.0f}",
+                    delta=None,
+                    help="Based on sustainable run rate and seasonality"
+                )
+                
+                st.markdown("#### Forecast Analysis")
+                st.info(f"📈 **Trajectory:** On track for ${proj_rev:,.0f} next month (+{(proj_rev - (monthly_rev['revenue_proxy'].iloc[-1] if not monthly_rev.empty else 0))/monthly_rev['revenue_proxy'].iloc[-1]*100:.1f}% vs last month).")
+                
+                if portfolio_forecast.event_adjustments != 0:
+                    st.warning(f"⚠️ **Event Impact:** ${portfolio_forecast.event_adjustments:,.0f} adjustment included due to upcoming events.")
+
+        # --- AI ACTION QUEUE (Outside of columns - full width) ---
         # Only show if we have enriched portfolio data
         if not enriched_portfolio_df.empty and len(enriched_portfolio_df) > 0:
             # FIX: Calculate metrics FIRST, then render in columns side-by-side
@@ -3655,6 +3981,28 @@ with main_tab1:
                         else:
                             vel_badge = "→ Stable"
                         
+                        # Threat Intelligence (Hoisted)
+                        threat_level = ""
+                        trigger_icon = ""
+                        if all_triggers:
+                            for t in all_triggers:
+                                # Match trigger to this competitor product
+                                t_asin = getattr(t, 'asin', '')
+                                t_comp_asin = getattr(t, 'competitor_asin', '')
+                                t_source_asin = getattr(t, 'source_asin', '')
+                                
+                                row_asin = row.get('asin', '')
+                                
+                                if row_asin and (t_asin == row_asin or t_comp_asin == row_asin or t_source_asin == row_asin):
+                                    if getattr(t, 'nature', '') == 'THREAT':
+                                        threat_level = "High"
+                                        trigger_icon = "🔴"
+                                        break
+                                    elif getattr(t, 'nature', '') == 'OPPORTUNITY':
+                                        threat_level = "Vuln"
+                                        trigger_icon = "🟢"
+                                        break
+                        
                         comp_data.append({
                             'Brand': str(row.get('brand', 'Unknown'))[:15],
                             'Product': str(row.get('title', row.get('asin', '')))[:30] + '...',
@@ -3665,7 +4013,8 @@ with main_tab1:
                             'Sellers': seller_count if seller_count > 0 else 1,
                             'Trend': vel_badge,
                             'Amz': '✓' if is_amazon else '',
-                            'OOS30': f"{oos_30:.0f}" if oos_30 > 0 else '-'
+                            'OOS30': f"{oos_30:.0f}" if oos_30 > 0 else '-',
+                            'Threat': f"{trigger_icon} {threat_level}" if threat_level else "-"
                         })
                     
                     if comp_data:
@@ -3811,36 +4160,11 @@ with main_tab1:
                                     except Exception as e:
                                         st.error(f"Failed to generate intelligence for {target_asin}: {e}")
                                 
-                            # === PORTFOLIO MODE (Original Logic) ===
+                            # === PORTFOLIO MODE (Hoisted Logic) ===
                             else:
-                                # Get portfolio revenue for calculations
-                                portfolio_revenue = st.session_state.get('enriched_df', pd.DataFrame()).get('estimated_monthly_revenue', pd.Series()).sum() if 'enriched_df' in st.session_state else 0
-                                previous_revenue = portfolio_revenue * 0.95  # Estimate 5% change baseline
-                                
-                                if portfolio_revenue > 0 and all_triggers:
-                                    # Calculate portfolio-level attribution
-                                    portfolio_attribution = calculate_revenue_attribution(
-                                        previous_revenue=previous_revenue,
-                                        current_revenue=portfolio_revenue,
-                                        df_weekly=df_weekly,
-                                        trigger_events=all_triggers,
-                                        market_snapshot=market_df.to_dict('records') if not market_df.empty else None,
-                                        lookback_days=30
-                                    )
-                                    
-                                    # Generate combined intelligence
-                                    combined_intel = generate_combined_intelligence(
-                                        current_revenue=portfolio_revenue,
-                                        previous_revenue=previous_revenue,
-                                        attribution=portfolio_attribution,
-                                        trigger_events=all_triggers,
-                                        df_historical=df_weekly
-                                    )
-                                    
-                                    if combined_intel:
-                                        portfolio_scenarios = combined_intel.scenarios
-                                        portfolio_anticipated = combined_intel.anticipated_events
-                                        sustainable_run_rate = combined_intel.sustainable_run_rate
+                                # Using pre-calculated intelligence from Hoisted Pipeline
+                                # Variables (portfolio_attribution, etc.) are already populated at the top of this function
+                                pass
                                 
                         except Exception as e:
                             st.caption(f"📊 Intelligence Error: {str(e)[:50]}")

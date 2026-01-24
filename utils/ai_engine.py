@@ -1485,11 +1485,11 @@ def _determine_state_fallback(
         else:
             reasoning = f"Competitive pressure detected. {int(offer_count)} sellers, BB share {bb_share*100:.0f}%."
             if strategic_bias == "Profit Maximization":
-                action = "Avoid price war. Focus on differentiation. Consider raising price."
+                action = f"Avoid price war. Focus on differentiation. Consider raising price (gap {price_gap*100:+.0f}%)."
             elif strategic_bias == "Aggressive Growth":
-                action = "Defend aggressively. Match pricing. Scale defensive ads."
+                action = f"Defend aggressively. Match pricing (gap {price_gap*100:+.0f}%). Scale defensive ads."
             else:
-                action = "Defend position. Match competitor pricing. Increase visibility spend."
+                action = f"Defend position. Match competitor pricing (gap {price_gap*100:+.0f}%). Increase visibility spend."
         
         if offer_count > 10:
             signals.append(f"Competition HIGH ({int(offer_count)} sellers)")
@@ -1504,11 +1504,11 @@ def _determine_state_fallback(
         confidence = 0.80
         reasoning = f"Strong fundamentals for value extraction. Margin {margin*100:.1f}%, stable velocity."
         if strategic_bias == "Profit Maximization":
-            action = "Maximize extraction. Raise price +10%. Cut ad spend 30%."
+            action = f"Maximize extraction. Raise price +10% (current margin {margin*100:.0f}%). Cut ad spend 30%."
         elif strategic_bias == "Aggressive Growth":
             action = "Invest for scale. Test ad expansion to adjacent keywords."
         else:
-            action = "Test price increase +5%. Reduce ad spend. Maximize profit."
+            action = f"Test price increase +5% (margin {margin*100:.0f}%). Reduce ad spend. Maximize profit."
         signals.append(f"Margin HEALTHY ({margin*100:.1f}%)")
         signals.append(f"Velocity STABLE ({velocity_decay:.2f}x)")
         signals.append(f"Buy Box STRONG ({bb_share*100:.0f}%)")
@@ -1595,9 +1595,28 @@ def _determine_state_fallback(
         brief.expansion_recommendation = expansion.ai_recommendation
         brief.growth_validated = expansion.velocity_validated
         brief.opportunity_type = expansion.opportunity_type
+        
+        # === FIX: Explicitly Map Optimization & Risk for Dashboard ===
+        # Map growth to optimization value
+        brief.optimization_value = expansion.thirty_day_growth
+        
+        # Calculate Risk based on State & Revenue
+        # This was previously missing, causing 0s in the dashboard
+        risk_factor = 0.0
+        if state == StrategicState.TERMINAL:
+            risk_factor = 0.90 # 90% of revenue at risk
+        elif state == StrategicState.DISTRESS:
+            risk_factor = 0.50 # 50% at risk
+        elif state == StrategicState.TRENCH_WAR:
+            risk_factor = 0.20 # 20% at risk due to competition
+        
+        # Set the calculated risk
+        brief.thirty_day_risk = revenue * risk_factor
+        
     except Exception:
-        # If growth calculation fails, defaults are already set in dataclass
-        pass
+        # Fallback values if expansion calc fails
+        brief.optimization_value = 0.0
+        brief.thirty_day_risk = revenue * 0.1 if state in [StrategicState.DISTRESS, StrategicState.TERMINAL] else 0.0
     
     return brief
 

@@ -64,8 +64,10 @@ def render_unified_dashboard():
             trigger_events=[], # Passed empty for speed
             market_snapshot=None
         )
-    except:
-        pass
+    except Exception as e:
+        st.error(f"⚠️ Attribution Error: {str(e)}")
+        # import traceback
+        # st.code(traceback.format_exc())
 
     if attribution:
         # Metric Headers
@@ -93,6 +95,9 @@ def render_unified_dashboard():
         ))
         fig.update_layout(height=350, title=None, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        # Fallback if attribution fails
+        st.info("⚠️ Strategic Context Unavailable: insufficient historical data for attribution.")
         
 
         
@@ -201,10 +206,12 @@ def render_unified_dashboard():
                     help="Based on sustainable run rate and seasonality"
                 )
                  st.info(f"On track for **${proj_rev:,.0f}** next month.")
+        else:
+            st.info("⚠️ Predictive Horizon Unavailable: Insufficient historical data or trigger events for forecast generation.")
                  
     except Exception as e:
-        # st.warning(f"Predictive engine offline: {e}") 
-        pass
+        st.warning(f"Predictive engine offline: {e}") 
+        # pass
 
     # === SECTION 2: TACTICAL EXECUTION (The What) ===
     st.markdown("---")

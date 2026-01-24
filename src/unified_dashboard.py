@@ -94,7 +94,7 @@ def render_unified_dashboard():
         fig.update_layout(height=350, title=None, margin=dict(l=0, r=0, t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
         
-        except: pass
+
         
     # === SECTION 1.5: PREDICTIVE HORIZON ===
     # Forecast Chart (Restored from Command Center 2.0)

@@ -29,19 +29,8 @@ def render_daily_brief_tab():
     """Render the Daily Brief tab with Morning Brew style UI."""
     
     # Header
-    st.markdown("""
-    <div style="text-align: center; padding: 20px 0; border-bottom: 2px solid #eee; margin-bottom: 30px;">
-        <div style="font-size: 14px; letter-spacing: 2px; color: #666; text-transform: uppercase;">
-            ShelfGuard Intelligence
-        </div>
-        <div style="font-size: 36px; font-weight: 800; margin: 10px 0;">
-            📰 Daily Brief
-        </div>
-        <div style="font-size: 14px; color: #888;">
-            Strategic narratives from your AI Analyst
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("# 📰 Daily Brief")
+    st.caption("Strategic narratives from your AI Analyst • ShelfGuard Intelligence")
     
     if not ANALYST_AVAILABLE:
         st.error("⚠️ Analyst module not available. Check import errors.")
@@ -91,17 +80,8 @@ def render_daily_brief_tab():
 
 def _render_no_project_state():
     """Render empty state when no project is active."""
-    st.markdown("""
-    <div style="text-align: center; padding: 60px 40px; background: #f8f9fa; border-radius: 12px;">
-        <div style="font-size: 72px; margin-bottom: 20px;">📭</div>
-        <div style="font-size: 24px; font-weight: 700; color: #333; margin-bottom: 12px;">
-            No Market Loaded
-        </div>
-        <div style="font-size: 16px; color: #666; margin-bottom: 20px;">
-            Load a market in Command Center or Market Discovery to generate your Daily Brief
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("### 📭 No Market Loaded")
+    st.info("Load a market in **Command Center** or **Market Discovery** to generate your Daily Brief.")
 
 
 def _generate_brief(df_weekly: pd.DataFrame, seed_asin: str, target_brand: str) -> Optional[DailyBrief]:
@@ -166,32 +146,20 @@ def _generate_brief(df_weekly: pd.DataFrame, seed_asin: str, target_brand: str) 
 def _render_daily_brief(brief: DailyBrief):
     """Render the Daily Brief in Morning Brew style."""
     
-    # Timestamp and summary
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
-                color: white; padding: 30px; border-radius: 12px; margin-bottom: 30px;">
-        <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.7;">
-            {brief.generated_at.strftime('%A, %B %d, %Y')} • {brief.generated_at.strftime('%I:%M %p')}
-        </div>
-        <div style="font-size: 28px; font-weight: 700; margin: 15px 0;">
-            {brief.market_summary or "Good Morning. Here's what happened while you slept."}
-        </div>
-        <div style="display: flex; gap: 30px; margin-top: 20px;">
-            <div>
-                <div style="font-size: 24px; font-weight: 700;">{len(brief.narratives)}</div>
-                <div style="font-size: 12px; opacity: 0.7;">Strategic Shifts</div>
-            </div>
-            <div>
-                <div style="font-size: 24px; font-weight: 700;">{brief.event_count}</div>
-                <div style="font-size: 12px; opacity: 0.7;">Events Analyzed</div>
-            </div>
-            <div>
-                <div style="font-size: 24px; font-weight: 700; color: #4ade80;">+${brief.total_opportunity_value:,.0f}</div>
-                <div style="font-size: 12px; opacity: 0.7;">Opportunity Value</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Header section
+    st.caption(f"{brief.generated_at.strftime('%A, %B %d, %Y')} • {brief.generated_at.strftime('%I:%M %p')}")
+    st.markdown(f"## {brief.market_summary or 'Good Morning. Here is what happened while you slept.'}")
+    
+    # Metrics row
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Strategic Shifts", len(brief.narratives))
+    with col2:
+        st.metric("Events Analyzed", f"{brief.event_count:,}")
+    with col3:
+        st.metric("Opportunity Value", f"+${brief.total_opportunity_value:,.0f}", delta=None)
+    
+    st.divider()
     
     # Narratives
     for i, narrative in enumerate(brief.narratives, 1):
@@ -199,7 +167,7 @@ def _render_daily_brief(brief: DailyBrief):
     
     # Red Team Section
     if brief.red_team_insight:
-        st.markdown("---")
+        st.divider()
         _render_red_team(brief.red_team_insight)
     
     # Journal Context
@@ -217,100 +185,71 @@ def _render_narrative(narrative: StrategicNarrative, index: int):
     """Render a single narrative card."""
     
     # Color and icon by type
-    type_config = {
-        NarrativeType.CONQUEST: {"icon": "📍", "color": "#10b981", "label": "OPPORTUNITY"},
-        NarrativeType.THREAT: {"icon": "⚔️", "color": "#ef4444", "label": "THREAT"},
-        NarrativeType.OPTIMIZATION: {"icon": "📈", "color": "#3b82f6", "label": "OPTIMIZATION"},
-        NarrativeType.VULNERABILITY: {"icon": "🛡️", "color": "#f59e0b", "label": "VULNERABILITY"},
+    type_styles = {
+        NarrativeType.CONQUEST: ("#10b981", "📍", "OPPORTUNITY"),
+        NarrativeType.THREAT: ("#ef4444", "⚔️", "THREAT"),
+        NarrativeType.OPTIMIZATION: ("#3b82f6", "📈", "OPTIMIZATION"),
+        NarrativeType.VULNERABILITY: ("#f59e0b", "🛡️", "VULNERABILITY"),
     }
     
-    config = type_config.get(narrative.narrative_type, type_config[NarrativeType.OPTIMIZATION])
+    color, icon, label = type_styles.get(narrative.narrative_type, ("#3b82f6", "📈", "OPTIMIZATION"))
     
-    urgency_badge = ""
+    # Urgency badge
     if narrative.action_urgency == ActionUrgency.NOW:
-        urgency_badge = '<span style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 10px;">ACT NOW</span>'
+        urgency_html = '<span style="background:#ef4444;color:white;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:10px;">ACT NOW</span>'
     elif narrative.action_urgency == ActionUrgency.THIS_WEEK:
-        urgency_badge = '<span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 10px;">THIS WEEK</span>'
+        urgency_html = '<span style="background:#f59e0b;color:white;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:10px;">THIS WEEK</span>'
+    else:
+        urgency_html = ""
     
+    # Impact styling
     impact_color = "#10b981" if narrative.expected_impact >= 0 else "#ef4444"
-    impact_sign = "+" if narrative.expected_impact >= 0 else ""
+    impact_str = f"+${abs(narrative.expected_impact):,.0f}" if narrative.expected_impact >= 0 else f"-${abs(narrative.expected_impact):,.0f}"
     
-    st.markdown(f"""
-    <div style="border-left: 4px solid {config['color']}; padding: 20px 25px; 
-                background: white; margin-bottom: 20px; border-radius: 0 8px 8px 0;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
-            <div>
-                <span style="font-size: 12px; color: {config['color']}; font-weight: 600;">
-                    {config['icon']} {config['label']}
-                </span>
-                {urgency_badge}
-            </div>
-            <div style="text-align: right;">
-                <div style="font-size: 20px; font-weight: 700; color: {impact_color};">
-                    {impact_sign}${abs(narrative.expected_impact):,.0f}
-                </div>
-                <div style="font-size: 11px; color: #888;">Expected Impact</div>
-            </div>
-        </div>
+    # Use st.container for proper rendering
+    with st.container():
+        # Card header with type and impact
+        header_cols = st.columns([3, 1])
+        with header_cols[0]:
+            st.markdown(f"<span style='color:{color};font-weight:600;'>{icon} {label}</span> {urgency_html}", unsafe_allow_html=True)
+        with header_cols[1]:
+            st.markdown(f"<div style='text-align:right;'><span style='font-size:20px;font-weight:700;color:{impact_color};'>{impact_str}</span><br><span style='font-size:11px;color:#888;'>Expected Impact</span></div>", unsafe_allow_html=True)
         
-        <div style="font-size: 22px; font-weight: 700; margin: 15px 0 10px 0;">
-            {narrative.title}
-        </div>
+        # Title
+        st.markdown(f"### {narrative.title}")
         
-        <div style="color: #444; line-height: 1.6; margin-bottom: 15px;">
-            {narrative.pattern_summary}
-        </div>
+        # Pattern summary
+        st.write(narrative.pattern_summary)
         
-        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
-            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">PREDICTION</div>
-            <div style="color: #333;">{narrative.prediction}</div>
-        </div>
+        # Prediction box
+        st.info(f"**PREDICTION:** {narrative.prediction}")
         
-        <div style="display: flex; gap: 20px; font-size: 13px; color: #666;">
-            <div>
-                <strong>Confidence:</strong> {narrative.confidence*100:.0f}%
-            </div>
-            <div>
-                <strong>Watch For:</strong> {narrative.trigger_to_watch}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Action button
-    col1, col2 = st.columns([3, 1])
-    with col1:
+        # Confidence and trigger
+        meta_cols = st.columns(2)
+        with meta_cols[0]:
+            st.caption(f"**Confidence:** {narrative.confidence*100:.0f}%")
+        with meta_cols[1]:
+            st.caption(f"**Watch For:** {narrative.trigger_to_watch}")
+        
+        # Action section
         st.markdown(f"**Recommended Action:** {narrative.recommended_action}")
         if narrative.action_rationale:
             st.caption(narrative.action_rationale)
-    with col2:
+        
+        # Button
         if narrative.action_urgency == ActionUrgency.NOW:
-            st.button(f"Execute →", key=f"action_{index}", type="primary")
+            st.button("Execute →", key=f"action_{index}", type="primary")
         else:
-            st.button(f"Review →", key=f"action_{index}")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
+            st.button("Review →", key=f"action_{index}")
+        
+        st.divider()
 
 
 def _render_red_team(insight: str):
     """Render the Red Team vulnerability section."""
-    st.markdown(f"""
-    <div style="border: 2px dashed #f59e0b; padding: 25px; border-radius: 8px; 
-                background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);">
-        <div style="display: flex; align-items: center; margin-bottom: 15px;">
-            <span style="font-size: 28px; margin-right: 10px;">🛡️</span>
-            <div>
-                <div style="font-size: 18px; font-weight: 700; color: #92400e;">
-                    Red Team Analysis
-                </div>
-                <div style="font-size: 12px; color: #b45309;">
-                    What your competitors might be plotting
-                </div>
-            </div>
-        </div>
-        <div style="color: #78350f; line-height: 1.6; white-space: pre-line;">
-            {insight}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("### 🛡️ Red Team Analysis")
+    st.caption("What your competitors might be plotting")
+    
+    # Parse the insight into sections if possible
+    with st.container():
+        st.warning(insight)

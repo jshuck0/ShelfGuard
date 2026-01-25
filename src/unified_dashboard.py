@@ -155,15 +155,34 @@ def render_unified_dashboard():
             # Get category_id from session state (if available)
             category_id = st.session_state.get('active_project_category_id')
 
-            # Get market snapshot from session state for attribution
-            market_snapshot = st.session_state.get('market_df', pd.DataFrame())
+            # Get market snapshot DataFrame from session state
+            market_snapshot_df = st.session_state.get('market_df', pd.DataFrame())
+
+            # Convert DataFrame to Dict format expected by calculate_revenue_attribution
+            market_snapshot_dict = None
+            if isinstance(market_snapshot_df, pd.DataFrame) and not market_snapshot_df.empty:
+                # Extract category benchmarks from market data
+                median_price = 0
+                for price_col in ['price_per_unit', 'buy_box_price', 'price']:
+                    if price_col in market_snapshot_df.columns:
+                        price_series = market_snapshot_df[price_col].dropna()
+                        if len(price_series) > 0:
+                            median_price = float(price_series.median())
+                            break
+
+                market_snapshot_dict = {
+                    'category_benchmarks': {
+                        'growth_rate_30d': 0,  # Will be calculated from category_intelligence if available
+                        'median_price': median_price
+                    }
+                }
 
             attribution = calculate_revenue_attribution(
                 previous_revenue=previous_revenue,
                 current_revenue=current_revenue,
                 df_weekly=df_weekly,
                 trigger_events=trigger_events,  # Now passing real events
-                market_snapshot=market_snapshot if not market_snapshot.empty else None,
+                market_snapshot=market_snapshot_dict,
                 category_id=category_id
             )
 

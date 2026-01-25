@@ -1006,7 +1006,7 @@ with st.sidebar.expander("🔍 AI Engine Debug", expanded=False):
         st.caption(f"Success Rate: {success_rate:.1f}%")
 
 # === TOP LEVEL NAVIGATION ===
-main_tab1, main_tab2, main_tab3, main_tab4 = st.tabs(["🛡️ Command Center", "🧩 Command Center 2.0", "🔍 Market Discovery", "📂 My Projects"])
+main_tab1, main_tab2, main_tab3, main_tab4, main_tab5 = st.tabs(["🛡️ Command Center", "🧩 Command Center 2.0", "🔍 Market Discovery", "📂 My Projects", "📰 Daily Brief"])
 
 with main_tab2:
     # === COMMAND CENTER 2.0: CAUSAL INTELLIGENCE PLATFORM ===
@@ -1589,6 +1589,13 @@ with main_tab4:
         render_project_dashboard(project_id)
     else:
         st.info("💡 Create your first project using the Market Discovery tab!")
+
+with main_tab5:
+    # === DAILY BRIEF: AI STRATEGIC INTELLIGENCE ===
+    # The "Morning Brew" style intelligence report from the Sherlock Engine
+    
+    from apps.daily_brief_tab import render_daily_brief_tab
+    render_daily_brief_tab()
 
 with main_tab1:
     # === URL PERSISTENCE (Cache-First Logic) ===

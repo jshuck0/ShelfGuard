@@ -96,14 +96,24 @@ def detect_competitor_inventory_events(
     """
     events = []
 
-    if df_competitors.empty or 'inventory_count' not in df_competitors.columns:
+    if df_competitors.empty:
         return events
+
+    # Column aliasing - use available inventory columns
+    inv_col = None
+    for col in ['inventory_count', 'fba_inventory', 'stock_estimate', 'stockEstimate', 'fbaInventory']:
+        if col in df_competitors.columns:
+            inv_col = col
+            break
+
+    if inv_col is None:
+        return events  # No inventory data available
 
     # Filter out the product itself
     competitors = df_competitors[df_competitors['asin'] != asin]
 
     for _, comp in competitors.iterrows():
-        inventory = comp.get('inventory_count', 0)
+        inventory = comp.get(inv_col, 0)
         comp_asin = comp.get('asin', '')
 
         # Low inventory (opportunity)
@@ -737,34 +747,54 @@ def detect_amazon_supply_instability(
 ) -> List[TriggerEvent]:
     """
     Detect Amazon 1P supply instability using new Keepa metrics.
-    
+
     Triggers when Amazon has gone OOS 3+ times in 30 days.
     This is a HIGH-VALUE conquest opportunity.
-    
+
     Uses:
     - oos_count_amazon_30: Number of Amazon OOS events in 30 days
     - buybox_is_amazon: Whether Amazon owns the Buy Box
     - has_amazon_seller: Whether Amazon is a seller on the listing
     """
     events = []
-    
+
     if df_competitors.empty:
         return events
-    
-    # Check for Amazon OOS data in competitor listings
-    oos_col = 'oos_count_amazon_30'
-    amazon_bb_col = 'buybox_is_amazon'
-    has_amazon_col = 'has_amazon_seller'
-    
+
+    # Column aliasing - check for available Amazon seller indicators
+    oos_col = None
+    for col in ['oos_count_amazon_30', 'amazon_oos_count', 'amazonOosCount']:
+        if col in df_competitors.columns:
+            oos_col = col
+            break
+
+    amazon_bb_col = None
+    for col in ['buybox_is_amazon', 'isBuyBoxAmazon', 'amazon_buybox', 'buyboxIsAmazon']:
+        if col in df_competitors.columns:
+            amazon_bb_col = col
+            break
+
+    has_amazon_col = None
+    for col in ['has_amazon_seller', 'isAmazonSeller', 'amazon_seller', 'isSNS', 'isAmazonFulfilled']:
+        if col in df_competitors.columns:
+            has_amazon_col = col
+            break
+
+    # Need at least one Amazon indicator column to run this detector
+    if oos_col is None and amazon_bb_col is None and has_amazon_col is None:
+        return events
+
     for _, row in df_competitors.iterrows():
         comp_asin = row.get('asin', '')
         if comp_asin == asin:
             continue  # Skip self
-        
-        oos_count = row.get(oos_col, 0) or 0
-        amazon_owns_bb = row.get(amazon_bb_col, False)
-        has_amazon = row.get(has_amazon_col, False)
-        
+
+        # Get values with safe fallbacks for None columns
+        oos_count = row.get(oos_col, 0) if oos_col else 0
+        oos_count = oos_count or 0  # Handle None values
+        amazon_owns_bb = row.get(amazon_bb_col, False) if amazon_bb_col else False
+        has_amazon = row.get(has_amazon_col, False) if has_amazon_col else False
+
         # Amazon supply instability detected
         if oos_count >= 3 and (amazon_owns_bb or has_amazon):
             # Higher severity for more OOS events

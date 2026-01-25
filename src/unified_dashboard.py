@@ -129,10 +129,11 @@ def render_unified_dashboard():
         try:
             # Get competitor data from session state
             df_competitors = st.session_state.get('df_competitors', pd.DataFrame())
-            active_asin = st.session_state.get('active_asin', '')
+            # Use active_project_asin as primary, fallback to active_asin
+            active_asin = st.session_state.get('active_project_asin', '') or st.session_state.get('active_asin', '')
 
-            # Run trigger detection if we have an ASIN
-            if active_asin and not df_weekly.empty:
+            # Run trigger detection if we have an ASIN and competitor data
+            if active_asin and not df_weekly.empty and not df_competitors.empty:
                 trigger_events = detect_trigger_events(
                     asin=active_asin,
                     df_historical=df_weekly,
@@ -154,12 +155,15 @@ def render_unified_dashboard():
             # Get category_id from session state (if available)
             category_id = st.session_state.get('active_project_category_id')
 
+            # Get market snapshot from session state for attribution
+            market_snapshot = st.session_state.get('market_df', pd.DataFrame())
+
             attribution = calculate_revenue_attribution(
                 previous_revenue=previous_revenue,
                 current_revenue=current_revenue,
                 df_weekly=df_weekly,
                 trigger_events=trigger_events,  # Now passing real events
-                market_snapshot=None,
+                market_snapshot=market_snapshot if not market_snapshot.empty else None,
                 category_id=category_id
             )
 
@@ -167,7 +171,7 @@ def render_unified_dashboard():
             try:
                 from src.supabase_reader import save_attribution_to_history
                 project_id = st.session_state.get('active_project_id')
-                asin = st.session_state.get('active_asin')
+                asin = st.session_state.get('active_project_asin') or st.session_state.get('active_asin', '')
                 if project_id and asin and attribution:
                     save_attribution_to_history(project_id, asin, attribution)
             except Exception:
@@ -308,7 +312,7 @@ def render_unified_dashboard():
             try:
                 from src.supabase_reader import save_forecast_to_history, update_forecast_actuals
                 project_id = st.session_state.get('active_project_id')
-                asin = st.session_state.get('active_asin')
+                asin = st.session_state.get('active_project_asin') or st.session_state.get('active_asin', '')
                 if project_id and asin and combined_intel and combined_intel.forecast:
                     save_forecast_to_history(project_id, asin, combined_intel.forecast)
                     update_forecast_actuals(project_id, asin, current_revenue, pd.Timestamp.today().date())
@@ -606,7 +610,7 @@ def render_unified_dashboard():
             from src.supabase_reader import load_attribution_history, calculate_attribution_trends
 
             project_id = st.session_state.get('active_project_id')
-            asin = st.session_state.get('active_asin')
+            asin = st.session_state.get('active_project_asin') or st.session_state.get('active_asin', '')
 
             if project_id and asin:
                 # Load historical data
@@ -726,7 +730,7 @@ def render_unified_dashboard():
         from src.supabase_reader import calculate_forecast_accuracy_metrics
 
         project_id = st.session_state.get('active_project_id')
-        asin = st.session_state.get('active_asin')
+        asin = st.session_state.get('active_project_asin') or st.session_state.get('active_asin', '')
 
         if project_id and asin:
             accuracy_metrics = calculate_forecast_accuracy_metrics(project_id, asin, lookback_days=90)

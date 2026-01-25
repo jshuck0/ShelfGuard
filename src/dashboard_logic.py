@@ -291,6 +291,13 @@ def ensure_data_loaded():
     portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
     market_df = market_snapshot
 
+    # === STORE COMPETITOR DATA IN SESSION STATE ===
+    # This is CRITICAL for trigger detection and attribution to work
+    # Competitor products = all products NOT your brand
+    df_competitors = market_snapshot[~market_snapshot['is_your_brand']].copy()
+    st.session_state['df_competitors'] = df_competitors
+    st.session_state['market_df'] = market_df  # Full market for attribution calculations
+
     # Competitive Intel
     price_col = 'current_price' if 'current_price' in market_snapshot.columns else 'avg_price'
     if price_col and price_col in market_snapshot.columns:
@@ -323,9 +330,65 @@ def ensure_data_loaded():
         portfolio_snapshot_df['revenue_proxy'] = 0.0
     
     portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['revenue_proxy'].copy()
-    portfolio_snapshot_df['problem_category'] = '✅ Your Brand - Healthy'
-    portfolio_snapshot_df['predictive_zone'] = '✅ HOLD'
-    portfolio_snapshot_df['is_healthy'] = True
+
+    # === CALCULATE ACTUAL STATE VALUES (not hardcoded) ===
+    # Use available signals to differentiate product states
+
+    def calculate_product_state(row):
+        """Calculate product state based on available data signals."""
+        # Get price position vs competitors
+        price_gap = row.get('price_gap_vs_competitor', 0)
+
+        # Get sales rank if available (lower = better)
+        sales_rank = row.get('sales_rank', row.get('salesRank', 50000))
+
+        # Get offer count (competition level)
+        offer_count = row.get('offer_count', row.get('offerCountNew', 5))
+
+        # Get Buy Box share if available
+        bb_share = row.get('buybox_share', row.get('bb_share', 0.8))
+
+        # Get revenue (for sizing)
+        revenue = row.get('revenue_proxy', row.get('revenue', 0))
+
+        # Calculate state based on signals
+        # DEFEND: Priced higher than market, losing position
+        if price_gap > 0.15 or bb_share < 0.5:
+            zone = '🛡️ DEFEND'
+            category = '⚠️ Price Position Risk'
+            healthy = False
+        # EXPLOIT: Priced lower, strong position
+        elif price_gap < -0.10 and bb_share > 0.7:
+            zone = '⚡ EXPLOIT'
+            category = '🚀 Growth Opportunity'
+            healthy = True
+        # REPLENISH: Low revenue or rank degradation
+        elif revenue < 1000 or sales_rank > 100000:
+            zone = '🔄 REPLENISH'
+            category = '📉 Low Momentum'
+            healthy = False
+        # HOLD: Stable position
+        else:
+            zone = '✅ HOLD'
+            category = '✅ Your Brand - Healthy'
+            healthy = True
+
+        return pd.Series({'predictive_zone': zone, 'problem_category': category, 'is_healthy': healthy})
+
+    # Apply state calculation to each product
+    state_cols = portfolio_snapshot_df.apply(calculate_product_state, axis=1)
+    portfolio_snapshot_df['predictive_zone'] = state_cols['predictive_zone']
+    portfolio_snapshot_df['problem_category'] = state_cols['problem_category']
+    portfolio_snapshot_df['is_healthy'] = state_cols['is_healthy']
+
+    # === CALCULATE ACTUAL ZONE REVENUE DISTRIBUTION ===
+    rev_col = 'revenue_proxy'
+    zone_revenue = {
+        '✅ HOLD': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '✅ HOLD'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
+        '🛡️ DEFEND': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '🛡️ DEFEND'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
+        '⚡ EXPLOIT': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '⚡ EXPLOIT'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
+        '🔄 REPLENISH': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '🔄 REPLENISH'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
+    }
 
     # RES Object
     res = {
@@ -333,12 +396,7 @@ def ensure_data_loaded():
         'total_rev': portfolio_revenue,
         'yoy_delta': 0.0,
         'share_delta': 0.0,
-        'predictive_zones': {
-            '✅ HOLD': portfolio_revenue,
-            '🛡️ DEFEND': 0,
-            '⚡ EXPLOIT': 0,
-            '🔄 REPLENISH': 0
-        },
+        'predictive_zones': zone_revenue,  # Actual distribution based on calculated states
         'demand_forecast': {},
         'hierarchy': {}
     }

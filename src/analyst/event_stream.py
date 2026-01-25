@@ -355,6 +355,12 @@ def transform_to_event_stream(
         title = str(row.get('title', ''))[:100] if row.get('title') else ""
         tags = extract_semantic_tags(title)
         
+        # Extract new Keepa metrics (available in df_weekly)
+        monthly_sold = int(row.get('monthly_sold', 0) or 0) if row.get('monthly_sold') else None
+        velocity_30d = _safe_float(row.get('velocity_30d'))
+        oos_pct_30 = _safe_float(row.get('oos_pct_30'))
+        seller_count = int(row.get('seller_count', 0) or 0) if row.get('seller_count') else None
+        
         if asin not in prev_rows:
             # BASELINE event - first time seeing this ASIN
             events.append(EnrichedEvent(
@@ -365,12 +371,20 @@ def transform_to_event_stream(
                 brand=brand,
                 title=title,
                 tags=tags,
+                monthly_sold=monthly_sold,
+                velocity_30d=velocity_30d,
+                oos_pct_30=oos_pct_30,
+                seller_count=seller_count,
                 state_snapshot={
                     "price": _safe_float(row.get('buy_box_price') or row.get('price')),
                     "rank": _safe_float(row.get('sales_rank') or row.get('rank')),
                     "reviews": _safe_float(row.get('review_count')),
                     "rating": _safe_float(row.get('rating')),
                     "bb_share": _safe_float(row.get('amazon_bb_share')),
+                    "monthly_sold": monthly_sold,
+                    "velocity_30d": velocity_30d,
+                    "oos_pct_30": oos_pct_30,
+                    "seller_count": seller_count,
                 },
             ))
         else:
@@ -406,6 +420,10 @@ def transform_to_event_stream(
                     change_pct=change["change_pct"],
                     price_gap_vs_category=price_tier,
                     rank_velocity_7d=rank_velocity,
+                    monthly_sold=monthly_sold,
+                    velocity_30d=velocity_30d,
+                    oos_pct_30=oos_pct_30,
+                    seller_count=seller_count,
                     prior_event=prior_link,
                 ))
         

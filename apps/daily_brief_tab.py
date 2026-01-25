@@ -10,7 +10,7 @@ The vibe: Newsletter (like Morning Brew), NOT a system alert.
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 # Import analyst components
 try:
@@ -120,7 +120,7 @@ def _generate_brief(df_weekly: pd.DataFrame, seed_asin: str, target_brand: str) 
                 competitor_brand = other_brands.index[0]
         
         # Run Sherlock analysis
-        st.write("🔍 Running 4-step Sherlock analysis...")
+        st.write("🔍 Running 5-step Sherlock analysis (Analyst → Skeptic → Editor → Oracle → Red Team)...")
         brief = run_sherlock_sync(
             events=events,
             project_id=seed_asin,
@@ -151,12 +151,14 @@ def _render_daily_brief(brief: DailyBrief):
     st.markdown(f"## {brief.market_summary or 'Good Morning. Here is what happened while you slept.'}")
     
     # Metrics row
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Strategic Shifts", len(brief.narratives))
     with col2:
         st.metric("Events Analyzed", f"{brief.event_count:,}")
     with col3:
+        st.metric("Ideas Filtered", f"{brief.editor_killed_count} killed")
+    with col4:
         st.metric("Opportunity Value", f"+${brief.total_opportunity_value:,.0f}", delta=None)
     
     st.divider()
@@ -164,6 +166,10 @@ def _render_daily_brief(brief: DailyBrief):
     # Narratives
     for i, narrative in enumerate(brief.narratives, 1):
         _render_narrative(narrative, i)
+    
+    # Editor's Desk - Show killed ideas (trust building)
+    if brief.editor_killed_count > 0 and brief.editor_kill_reasons:
+        _render_editor_desk(brief.editor_killed_count, brief.editor_kill_reasons, brief.product_identity)
     
     # Red Team Section
     if brief.red_team_insight:
@@ -243,6 +249,46 @@ def _render_narrative(narrative: StrategicNarrative, index: int):
             st.button("Review →", key=f"action_{index}")
         
         st.divider()
+
+
+def _render_editor_desk(killed_count: int, kill_reasons: List, product_identity: dict):
+    """Render the Editor's Desk section showing killed ideas (trust building)."""
+    with st.expander(f"✂️ Editor's Desk: {killed_count} ideas filtered out", expanded=False):
+        st.caption("Your AI killed these ideas because they failed quality checks. This shows the AI is self-correcting.")
+        
+        # Show product identity that was used
+        if product_identity:
+            st.markdown(f"**Product Identity Used:** {product_identity.get('category', 'Unknown')} | {product_identity.get('brand', 'Unknown')}")
+        
+        # List the killed ideas
+        if kill_reasons:
+            for reason in kill_reasons[:10]:  # Max 10 to avoid clutter
+                if isinstance(reason, dict):
+                    insight_name = reason.get("insight", "Unknown insight")
+                    kill_reason = reason.get("reason", "No reason provided")
+                    test_failed = reason.get("test_failed", "")
+                    
+                    # Color code by test failed
+                    test_colors = {
+                        "RELEVANCE": "#ef4444",  # Red
+                        "FEASIBILITY": "#f59e0b",  # Orange
+                        "SPECIFICITY": "#3b82f6",  # Blue
+                        "TONE": "#8b5cf6",  # Purple
+                    }
+                    color = test_colors.get(test_failed, "#6b7280")
+                    
+                    st.markdown(f"""
+                    <div style="padding:10px;background:#f8f9fa;border-radius:6px;margin-bottom:8px;border-left:3px solid {color};">
+                        <strong>❌ {insight_name}</strong>
+                        <br><span style="color:#666;font-size:13px;">{kill_reason}</span>
+                        <br><span style="background:{color};color:white;padding:2px 6px;border-radius:3px;font-size:11px;">{test_failed}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    # Simple string format
+                    st.markdown(f"- {reason}")
+        else:
+            st.info("No kill reasons recorded")
 
 
 def _render_red_team(insight: str):

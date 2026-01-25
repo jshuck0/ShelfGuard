@@ -67,6 +67,12 @@ class EnrichedEvent:
     rank_velocity_7d: str = ""          # "-20% (Crash)"
     competitive_context: str = ""       # "3 competitors OOS"
     
+    # NEW: Additional Keepa metrics for richer context
+    monthly_sold: Optional[int] = None          # Amazon's actual units/month estimate
+    velocity_30d: Optional[float] = None        # Pre-calculated sales trend (-15% = declining)
+    oos_pct_30: Optional[float] = None          # Out-of-stock frequency (0.3 = 30% OOS)
+    seller_count: Optional[int] = None          # Number of active sellers
+    
     # Chain linking
     prior_event: Optional[str] = None   # "Followed PRICE_DROP by 24hrs"
     
@@ -78,7 +84,16 @@ class EnrichedEvent:
         owner_tag = "📍YOUR" if self.owner == EventOwner.PORTFOLIO else "🎯COMP"
         
         if self.event_type == "BASELINE":
-            return f"[{self.date}] {owner_tag} {self.brand} | BASELINE | {', '.join(self.tags)}"
+            # Include key metrics in baseline
+            baseline_parts = [', '.join(self.tags)] if self.tags else []
+            if self.monthly_sold:
+                baseline_parts.append(f"{self.monthly_sold} units/mo")
+            if self.seller_count:
+                baseline_parts.append(f"{self.seller_count} sellers")
+            if self.oos_pct_30 and self.oos_pct_30 > 0.1:
+                baseline_parts.append(f"OOS {self.oos_pct_30*100:.0f}%")
+            baseline_str = " | ".join(baseline_parts) if baseline_parts else ""
+            return f"[{self.date}] {owner_tag} {self.brand} | BASELINE | {baseline_str}"
         
         change_str = ""
         if self.old_value is not None and self.new_value is not None:
@@ -91,6 +106,11 @@ class EnrichedEvent:
             context_parts.append(self.price_gap_vs_category)
         if self.rank_velocity_7d:
             context_parts.append(self.rank_velocity_7d)
+        if self.velocity_30d is not None and abs(self.velocity_30d) > 10:
+            trend = "↑" if self.velocity_30d > 0 else "↓"
+            context_parts.append(f"Sales {trend}{abs(self.velocity_30d):.0f}%")
+        if self.oos_pct_30 and self.oos_pct_30 > 0.2:
+            context_parts.append(f"OOS risk {self.oos_pct_30*100:.0f}%")
         if self.prior_event:
             context_parts.append(self.prior_event)
         
@@ -115,6 +135,10 @@ class EnrichedEvent:
             "price_gap_vs_category": self.price_gap_vs_category,
             "rank_velocity_7d": self.rank_velocity_7d,
             "competitive_context": self.competitive_context,
+            "monthly_sold": self.monthly_sold,
+            "velocity_30d": self.velocity_30d,
+            "oos_pct_30": self.oos_pct_30,
+            "seller_count": self.seller_count,
             "prior_event": self.prior_event,
             "state_snapshot": self.state_snapshot,
         }
@@ -214,6 +238,11 @@ class DailyBrief:
     # Red Team Finding
     red_team_insight: str = ""          # "Your biggest vulnerability is..."
     
+    # Editor's Desk (NEW) - Track what ideas were killed
+    editor_killed_count: int = 0        # How many ideas the Editor killed
+    editor_kill_reasons: List[Dict[str, str]] = field(default_factory=list)  # {"insight": "", "reason": "", "test_failed": ""}
+    product_identity: Dict[str, str] = field(default_factory=dict)  # category, brand, product_types
+    
     # Aggregate Metrics
     predicted_revenue_30d: float = 0.0
     total_opportunity_value: float = 0.0
@@ -237,6 +266,9 @@ class DailyBrief:
             "market_summary": self.market_summary,
             "narratives": [n.to_dict() for n in self.narratives],
             "red_team_insight": self.red_team_insight,
+            "editor_killed_count": self.editor_killed_count,
+            "editor_kill_reasons": self.editor_kill_reasons,
+            "product_identity": self.product_identity,
             "predicted_revenue_30d": self.predicted_revenue_30d,
             "total_opportunity_value": self.total_opportunity_value,
             "total_risk_value": self.total_risk_value,

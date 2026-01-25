@@ -85,7 +85,7 @@ def _get_model_name() -> str:
 # PROMPT TEMPLATES
 # =============================================================================
 
-ANALYST_PROMPT = """You are a market analyst examining 90 days of market events for an Amazon seller.
+ANALYST_PROMPT = """You are a creative market analyst examining 90 days of market events for an Amazon seller.
 
 {world_context}
 
@@ -94,31 +94,40 @@ ANALYST_PROMPT = """You are a market analyst examining 90 days of market events 
 {event_stream}
 
 === YOUR TASK ===
-Find the 5 most important PATTERNS in this event stream.
+Find the 10 most interesting PATTERNS, OPPORTUNITIES, and THREATS in this data.
+
+BE CREATIVE. Brainstorm freely. Include wild ideas - we will filter later.
+Look for non-obvious connections. What hidden stories does this data tell?
 
 For each pattern:
 1. Describe WHAT happened (specific events, dates, products)
 2. Identify CHAIN REACTIONS (did Event A consistently precede Event B?)
 3. Quantify the IMPACT (revenue, rank, share)
 4. Note which products are YOURS (📍YOUR) vs COMPETITORS (🎯COMP)
+5. Suggest a STRATEGIC OPPORTUNITY or THREAT this creates
 
-Focus on:
+Consider:
 - Competitor OOS events = conquest opportunities
 - Price movements that preceded rank changes
-- Review surges that drove sales
+- Review surges or drops that drove sales
 - Buy Box shifts between sellers
+- Seasonal patterns and upcoming events
+- Velocity trends (accelerating vs decelerating sales)
+- OOS risk indicators
+- Seller count changes (competitive pressure)
 
 Output as JSON:
 {{
     "patterns": [
         {{
-            "title": "Brief title",
+            "title": "Brief catchy title",
             "description": "What happened",
             "chain_reaction": "Event A led to Event B",
             "products_involved": ["ASIN1", "ASIN2"],
             "your_products_affected": true,
             "estimated_impact": "$X or X%",
-            "dates": "Jan 15-20"
+            "dates": "Jan 15-20",
+            "opportunity_or_threat": "What strategic action this suggests"
         }}
     ]
 }}
@@ -157,7 +166,68 @@ Output as JSON:
 }}
 """
 
-ORACLE_PROMPT = """You are a strategic advisor for an Amazon seller. Based on verified patterns, predict what will happen and what to do.
+EDITOR_PROMPT = """You are the Senior Editor at a strategic intelligence agency. Your job is to KILL bad ideas.
+
+=== PRODUCT IDENTITY ===
+Category: {category}
+Brand: {brand}
+Product Types: {product_types}
+
+=== PORTFOLIO INVENTORY ===
+{inventory_list}
+
+=== DRAFT INSIGHTS FROM ANALYST ===
+{raw_insights}
+
+=== YOUR TASK ===
+Review each draft insight and KILL any that fail these tests:
+
+1. RELEVANCE (Category Fit)
+   - Does this strategy physically apply to {category}?
+   - "Snack promotion" for Hair Care = KILL
+   - "Party-ready hair" for Super Bowl = KEEP (tangential angle is OK)
+   - Score 0-10. If < 5, KILL.
+
+2. FEASIBILITY (7-Day Execution)
+   - Can this be executed in 7 days with existing inventory?
+   - "Launch new product line" = KILL (takes months)
+   - "Create virtual bundle of existing SKUs" = KEEP
+   - "Increase PPC on existing SKU" = KEEP
+
+3. SPECIFICITY (Actionable)
+   - Does it name specific products, prices, competitors?
+   - "Optimize your marketing" = KILL (too vague)
+   - "Increase PPC on B08XYZ by 40% to capture Native's stockout" = KEEP
+
+4. TONE (Strategic vs Gimmicky)
+   - Would a Fortune 500 brand manager take this seriously?
+   - "Super Bowl Hair Party!" = KILL (gimmicky)
+   - "Capitalize on competitor stockout during high-traffic period" = KEEP
+
+=== OUTPUT ===
+Return ONLY the top 3 survivors, ranked by expected impact.
+
+Output as JSON:
+{{
+    "killed_count": 7,
+    "kill_reasons": [
+        {{"insight": "Insight title", "reason": "Why killed", "test_failed": "RELEVANCE|FEASIBILITY|SPECIFICITY|TONE"}}
+    ],
+    "survivors": [
+        {{
+            "rank": 1,
+            "original_title": "Insight title",
+            "original_insight": "Full insight description",
+            "why_it_survived": "Which tests it passed and why",
+            "relevance_score": 8,
+            "execution_notes": "Any modifications needed for feasibility",
+            "estimated_impact": "$X"
+        }}
+    ]
+}}
+"""
+
+ORACLE_PROMPT = """You are a strategic advisor for an Amazon seller. Based on EDITOR-APPROVED insights, predict what will happen and what to do.
 
 {world_context}
 
@@ -317,13 +387,103 @@ async def run_skeptic_step(
     return _parse_json_safely(response)
 
 
+def extract_product_identity(events: List[EnrichedEvent]) -> Dict[str, Any]:
+    """
+    Extract product identity from events for the Editor's context.
+    
+    Returns:
+        Dict with category, brand, product_types, and inventory list
+    """
+    from src.analyst.models import EventOwner
+    
+    # Collect portfolio products
+    portfolio_events = [e for e in events if e.owner == EventOwner.PORTFOLIO]
+    
+    # Extract brands
+    brands = set()
+    for e in portfolio_events:
+        if e.brand:
+            brands.add(e.brand)
+    brand = ", ".join(sorted(brands)[:3]) if brands else "Your Brand"
+    
+    # Extract product types from semantic tags
+    product_types = set()
+    for e in portfolio_events:
+        for tag in e.tags:
+            if tag in ["shampoo", "conditioner", "body-wash", "deodorant", "antiperspirant", 
+                       "lotion", "cream", "gel", "spray", "stick"]:
+                product_types.add(tag)
+    product_types_str = ", ".join(sorted(product_types)) if product_types else "Personal Care"
+    
+    # Infer category from product types
+    if any(t in product_types for t in ["shampoo", "conditioner"]):
+        category = "Hair Care"
+    elif any(t in product_types for t in ["deodorant", "antiperspirant"]):
+        category = "Deodorant & Antiperspirant"
+    elif any(t in product_types for t in ["body-wash", "lotion"]):
+        category = "Body Care"
+    else:
+        category = "Personal Care"
+    
+    # Build inventory list (ASIN + title)
+    inventory = []
+    seen_asins = set()
+    for e in portfolio_events:
+        if e.asin not in seen_asins:
+            inventory.append(f"{e.asin}: {e.title[:60]}..." if len(e.title) > 60 else f"{e.asin}: {e.title}")
+            seen_asins.add(e.asin)
+    inventory_str = "\n".join(inventory[:20]) if inventory else "No portfolio products detected"
+    
+    return {
+        "category": category,
+        "brand": brand,
+        "product_types": product_types_str,
+        "inventory_list": inventory_str,
+    }
+
+
+async def run_editor_step(
+    client: AsyncOpenAI,
+    skeptic_output: Dict,
+    product_identity: Dict[str, Any],
+    model: str = "gpt-4o-mini",
+) -> Dict:
+    """
+    Step 2.5 (NEW): Editor kills bad ideas before they reach Oracle.
+    
+    The Editor applies 4 kill-tests:
+    1. RELEVANCE - Does it fit the product category?
+    2. FEASIBILITY - Can it be executed in 7 days?
+    3. SPECIFICITY - Is it actionable with named products?
+    4. TONE - Is it strategic, not gimmicky?
+    """
+    # Format verified patterns from skeptic
+    verified = skeptic_output.get("verified_patterns", [])
+    raw_insights = json.dumps(verified, indent=2)
+    
+    prompt = EDITOR_PROMPT.format(
+        category=product_identity.get("category", "Personal Care"),
+        brand=product_identity.get("brand", "Your Brand"),
+        product_types=product_identity.get("product_types", ""),
+        inventory_list=product_identity.get("inventory_list", ""),
+        raw_insights=raw_insights,
+    )
+    
+    response = await _call_llm(client, prompt, model=model, max_tokens=2000)
+    return _parse_json_safely(response)
+
+
 async def run_oracle_step(
     client: AsyncOpenAI,
-    verified_patterns: Dict,
+    editor_output: Dict,
     world_context: str,
     model: str = "gpt-4o-mini",
 ) -> Dict:
-    """Step 3: Oracle predicts outcomes and recommends actions."""
+    """Step 3: Oracle predicts outcomes and recommends actions based on EDITOR-APPROVED insights."""
+    # Use editor survivors, not raw skeptic output
+    survivors = editor_output.get("survivors", [])
+    verified_patterns = {"verified_patterns": survivors}
+    
     prompt = ORACLE_PROMPT.format(
         world_context=world_context,
         verified_patterns=json.dumps(verified_patterns, indent=2),
@@ -396,21 +556,35 @@ async def run_sherlock_analysis(
     world_context_str = format_world_context_for_llm(world_context_dict)
     journal_context_str = format_journal_context(project_id)
     
-    # Run the 4-step loop
-    print("🔍 Step 1: Analyst finding patterns...")
+    # Extract product identity for Editor
+    product_identity = extract_product_identity(events)
+    print(f"📋 Product Identity: {product_identity['category']} | {product_identity['brand']}")
+    
+    # Run the 5-step loop (Analyst → Skeptic → Editor → Oracle → Red Team)
+    print("🔍 Step 1: Analyst finding patterns (10 ideas, high creativity)...")
     analyst_output = await run_analyst_step(
         client, events, world_context_str, journal_context_str, model
     )
+    pattern_count = len(analyst_output.get("patterns", []))
+    print(f"   Found {pattern_count} patterns")
     
     print("🤔 Step 2: Skeptic verifying causality...")
     skeptic_output = await run_skeptic_step(client, analyst_output, model)
+    verified_count = len(skeptic_output.get("verified_patterns", []))
+    print(f"   {verified_count} patterns verified")
     
-    print("🔮 Step 3: Oracle predicting outcomes...")
+    print("✂️ Step 3: Editor filtering bad ideas (Relevance, Feasibility, Specificity, Tone)...")
+    editor_output = await run_editor_step(client, skeptic_output, product_identity, model)
+    killed_count = editor_output.get("killed_count", 0)
+    survivors = editor_output.get("survivors", [])
+    print(f"   Killed {killed_count} ideas, {len(survivors)} survivors")
+    
+    print("🔮 Step 4: Oracle predicting outcomes from approved insights...")
     oracle_output = await run_oracle_step(
-        client, skeptic_output, world_context_str, model
+        client, editor_output, world_context_str, model
     )
     
-    print("⚔️ Step 4: Red Team finding vulnerabilities...")
+    print("⚔️ Step 5: Red Team finding vulnerabilities...")
     red_team_output = await run_red_team_step(
         client, events, your_brand, competitor_brand, model
     )
@@ -419,6 +593,8 @@ async def run_sherlock_analysis(
     brief = _build_daily_brief(
         oracle_output=oracle_output,
         red_team_output=red_team_output,
+        editor_output=editor_output,
+        product_identity=product_identity,
         world_context=world_context_dict,
         journal_context=journal_context_str,
         events=events,
@@ -431,6 +607,8 @@ async def run_sherlock_analysis(
 def _build_daily_brief(
     oracle_output: Dict,
     red_team_output: Dict,
+    editor_output: Dict,
+    product_identity: Dict[str, Any],
     world_context: Dict,
     journal_context: str,
     events: List[EnrichedEvent],
@@ -482,6 +660,10 @@ def _build_daily_brief(
     total_opp = sum(n.expected_impact for n in narratives if n.expected_impact > 0)
     total_risk = abs(sum(n.expected_impact for n in narratives if n.expected_impact < 0))
     
+    # Extract editor info
+    killed_count = editor_output.get("killed_count", 0)
+    kill_reasons = editor_output.get("kill_reasons", [])
+    
     return DailyBrief(
         generated_at=datetime.now(),
         project_id=project_id,
@@ -490,6 +672,9 @@ def _build_daily_brief(
         market_summary=oracle_output.get("market_summary", ""),
         narratives=narratives,
         red_team_insight=red_team_insight,
+        editor_killed_count=killed_count,
+        editor_kill_reasons=kill_reasons,
+        product_identity=product_identity,
         total_opportunity_value=total_opp,
         total_risk_value=total_risk,
         key_risks=oracle_output.get("key_risks", []),

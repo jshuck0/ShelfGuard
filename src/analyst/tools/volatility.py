@@ -132,7 +132,9 @@ class AnomalySignal:
         
         if self.alerts:
             lines.append("")
-            lines.append("ALERTS: " + " | ".join(self.alerts))
+            # Defensive: ensure all alerts are strings
+            alert_strs = [str(a) if not isinstance(a, str) else a for a in self.alerts]
+            lines.append("ALERTS: " + " | ".join(alert_strs))
         
         return "\n".join(lines)
 

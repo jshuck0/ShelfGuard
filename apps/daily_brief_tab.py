@@ -205,6 +205,9 @@ def _generate_analysis(
         st.write("  → Causal Sensor (Root Cause)")
         st.write("  → LLM Synthesizer (Narratives)")
         
+        # Get OpenAI API key from secrets
+        openai_key = st.secrets.get("openai", {}).get("OPENAI_API_KEY")
+        
         output = run_sherlock_analysis(
             df_weekly=df_weekly,
             asin=seed_asin,
@@ -212,6 +215,7 @@ def _generate_analysis(
             market_context=market_context,
             journal_entries=None,  # TODO: Load from journal
             df_summary=df_summary,
+            openai_api_key=openai_key,
         )
         
         st.write(f"✅ Analysis complete in {output.processing_time_seconds:.1f}s")

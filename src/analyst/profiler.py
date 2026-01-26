@@ -180,7 +180,9 @@ class ProfilerVitals:
         
         if self.active_flags:
             lines.append("")
-            lines.append("FLAGS: " + ", ".join(self.active_flags))
+            # Defensive: ensure all flags are strings
+            flag_strs = [str(f) if not isinstance(f, str) else f for f in self.active_flags]
+            lines.append("FLAGS: " + ", ".join(flag_strs))
         
         return "\n".join(lines)
 

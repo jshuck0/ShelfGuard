@@ -279,7 +279,9 @@ class CalibratedPhysics:
         
         if self.warnings:
             lines.append("")
-            lines.append(f"WARNINGS: {', '.join(self.warnings)}")
+            # Defensive: ensure all warnings are strings
+            warn_strs = [str(w) if not isinstance(w, str) else w for w in self.warnings]
+            lines.append(f"WARNINGS: {', '.join(warn_strs)}")
         
         return "\n".join(lines)
 

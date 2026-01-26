@@ -42,11 +42,15 @@ class MarketContext:
         lines = ["MARKET CONTEXT:"]
         lines.append(f"  Season: {self.season}")
         if self.upcoming_events:
-            lines.append(f"  Upcoming Events: {', '.join(self.upcoming_events)}")
+            # Defensive: ensure all items are strings
+            events = [str(e) if not isinstance(e, str) else e for e in self.upcoming_events]
+            lines.append(f"  Upcoming Events: {', '.join(events)}")
         if self.holidays:
-            lines.append(f"  Holidays: {', '.join(self.holidays)}")
+            holidays = [str(h) if not isinstance(h, str) else h for h in self.holidays]
+            lines.append(f"  Holidays: {', '.join(holidays)}")
         if self.economic_factors:
-            lines.append(f"  Economic Factors: {', '.join(self.economic_factors)}")
+            factors = [str(f) if not isinstance(f, str) else f for f in self.economic_factors]
+            lines.append(f"  Economic Factors: {', '.join(factors)}")
         return "\n".join(lines)
 
 
@@ -294,6 +298,8 @@ class DiagnosticBrief:
         sections.append("END OF DIAGNOSTIC BRIEF")
         sections.append("=" * 60)
         
+        # Defensive: ensure all sections are strings (prevent dict/list items)
+        sections = [str(s) if not isinstance(s, str) else s for s in sections]
         return "\n".join(sections)
     
     def token_estimate(self) -> int:

@@ -26,12 +26,13 @@ from src.persistence import (
 from src.backfill import execute_backfill
 from src.recommendations import generate_resolution_cards, render_resolution_card
 
-# Import cache function for instant return visits
+# Import cache functions for instant return visits
 try:
-    from src.supabase_reader import cache_market_snapshot
+    from src.supabase_reader import cache_market_snapshot, cache_weekly_timeseries
     CACHE_ENABLED = True
 except ImportError:
     cache_market_snapshot = None
+    cache_weekly_timeseries = None
     CACHE_ENABLED = False
 
 
@@ -822,6 +823,13 @@ def render_pin_to_state_ui(market_snapshot: pd.DataFrame, stats: dict, context: 
 
                     # Step 1: Cache product snapshots WITH category metadata (consolidated)
                     cached_count = cache_market_snapshot(market_snapshot, df_weekly, category_context)
+                    
+                    # Step 1.5: Cache FULL weekly time series for profiler/brain on return visits
+                    # This enables the AI analyst to work without re-fetching from Keepa
+                    if cache_weekly_timeseries and df_weekly is not None and not df_weekly.empty:
+                        weekly_cached = cache_weekly_timeseries(df_weekly, category_context)
+                        if weekly_cached > cached_count:
+                            st.caption(f"📦 Cached {weekly_cached} weekly data points for AI analysis")
 
                     # Step 2: Accumulate network intelligence (category benchmarks, patterns)
                     # Skip product snapshot write since we already did it with category metadata

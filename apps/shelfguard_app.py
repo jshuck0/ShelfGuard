@@ -49,7 +49,10 @@ try:
         load_historical_metrics_by_asins,
         # FIX 1.2: Network intelligence for competitive context
         get_market_snapshot_with_network_intelligence,
-        get_supabase_client
+        get_supabase_client,
+        # FIX 1.3: Weekly time series for profiler/brain
+        load_weekly_timeseries,
+        cache_weekly_timeseries,
     )
     SUPABASE_CACHE_ENABLED = True
 except ImportError:
@@ -61,6 +64,8 @@ except ImportError:
     load_historical_metrics_from_db = None
     load_historical_metrics_by_asins = None
     get_market_snapshot_with_network_intelligence = None
+    load_weekly_timeseries = None
+    cache_weekly_timeseries = None
 
 # AI Engine - Strategic Triangulation (Unified AI Engine)
 try:
@@ -1730,6 +1735,17 @@ with main_tab1:
         # The actual weekly time-series data (with week_start) is stored in active_project_data
         # This contains the Keepa historical data with multiple rows per ASIN (one per week)
         df_weekly = st.session_state.get('active_project_data', pd.DataFrame())
+        
+        # FIX 1.3: Fallback to Supabase cached weekly data (for return visits)
+        # This enables the profiler/brain to work without re-fetching from Keepa
+        if df_weekly.empty and project_asins and load_weekly_timeseries:
+            try:
+                df_weekly = load_weekly_timeseries(tuple(project_asins), days=90)
+                if not df_weekly.empty:
+                    st.session_state['active_project_data'] = df_weekly
+                    st.session_state['df_weekly'] = df_weekly
+            except Exception as e:
+                pass  # Silent fail - will try market snapshot next
         
         # Fallback to market snapshot if no weekly data
         if df_weekly.empty:

@@ -742,6 +742,254 @@ def cache_market_snapshot(
         return 0
 
 
+def cache_weekly_timeseries(
+    df_weekly: pd.DataFrame,
+    category_context: Optional[Dict] = None
+) -> int:
+    """
+    Cache the FULL weekly time series to product_snapshots.
+    
+    Unlike cache_market_snapshot (which only stores latest), this stores
+    ALL weekly rows, enabling the profiler to work on return visits.
+    
+    Data is stored at the ASIN level (no project_id), so User A's query
+    benefits User B who searches for the same ASINs later.
+    
+    Args:
+        df_weekly: Weekly time series data with week_start column
+        category_context: Optional dict with category_id, category_name, etc.
+        
+    Returns:
+        Number of records cached
+    """
+    import numpy as np
+    import math
+    from datetime import datetime
+    
+    if df_weekly is None or df_weekly.empty:
+        return 0
+    
+    if "week_start" not in df_weekly.columns:
+        # Fall back to regular snapshot caching
+        return cache_market_snapshot(df_weekly, category_context=category_context)
+    
+    try:
+        supabase = create_supabase_client()
+        
+        # Extract category context if provided
+        category_id = category_context.get("category_id") if category_context else None
+        category_name = category_context.get("category_name") if category_context else None
+        category_tree = category_context.get("category_tree") if category_context else None
+        category_root = category_context.get("category_root") if category_context else None
+        
+        # Build records for each week of each ASIN
+        records = []
+        for _, row in df_weekly.iterrows():
+            asin = row.get("asin")
+            week_start = row.get("week_start")
+            
+            if not asin or pd.isna(week_start):
+                continue
+            
+            # Convert week_start to date string for snapshot_date
+            if isinstance(week_start, pd.Timestamp):
+                snapshot_date = week_start.date().isoformat()
+            elif isinstance(week_start, datetime):
+                snapshot_date = week_start.date().isoformat()
+            else:
+                try:
+                    snapshot_date = pd.to_datetime(week_start).date().isoformat()
+                except:
+                    continue
+            
+            row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+            
+            # Extract price with fallback
+            price_val = _get_first_valid(
+                row_dict,
+                ["buy_box_price", "filled_price", "price", "eff_p"],
+                _safe_float
+            )
+            
+            # Extract sales rank with fallback
+            rank_val = _get_first_valid(
+                row_dict,
+                ["sales_rank_filled", "sales_rank", "bsr"],
+                _safe_int
+            )
+            
+            # Extract revenue
+            revenue_val = _get_first_valid(
+                row_dict,
+                ["weekly_sales_filled", "weekly_revenue", "estimated_weekly_revenue"],
+                _safe_float
+            )
+            
+            # Extract units
+            units_val = _get_first_valid(
+                row_dict,
+                ["estimated_units", "weekly_units"],
+                _safe_int
+            )
+            
+            record = {
+                "asin": str(asin).strip().upper(),
+                "snapshot_date": snapshot_date,
+                "buy_box_price": price_val,
+                "amazon_price": _safe_float(row_dict.get("amazon_price")),
+                "new_fba_price": _safe_float(row_dict.get("new_fba_price")),
+                "sales_rank": rank_val,
+                "amazon_bb_share": _safe_float(row_dict.get("amazon_bb_share")),
+                "buy_box_switches": _safe_int(row_dict.get("buy_box_switches")) or 0,
+                "new_offer_count": _safe_int(row_dict.get("new_offer_count")),
+                "review_count": _safe_int(row_dict.get("review_count")),
+                "rating": _safe_float(row_dict.get("rating")),
+                "estimated_units": units_val,
+                "estimated_weekly_revenue": revenue_val,
+                "filled_price": price_val,
+                "title": str(row_dict.get("title", ""))[:500] if row_dict.get("title") else None,
+                "brand": str(row_dict.get("brand", "")) if row_dict.get("brand") else None,
+                "parent_asin": str(row_dict.get("parent_asin", "")) if row_dict.get("parent_asin") else None,
+                "main_image": str(row_dict.get("main_image", "")) if row_dict.get("main_image") else None,
+                "source": "keepa_weekly",
+                "fetched_at": datetime.now().isoformat(),
+                # Additional metrics
+                "monthly_sold": _safe_int(row_dict.get("monthly_sold")),
+                "seller_count": _safe_int(row_dict.get("seller_count")),
+                "oos_pct_30": _safe_float(row_dict.get("oos_pct_30")),
+                "velocity_30d": _safe_float(row_dict.get("velocity_30d")),
+            }
+            
+            # Add category context if provided
+            if category_id is not None:
+                record["category_id"] = category_id
+            if category_name:
+                record["category_name"] = category_name
+            if category_tree:
+                record["category_tree"] = category_tree
+            if category_root:
+                record["category_root"] = category_root
+            
+            records.append(record)
+        
+        if not records:
+            return 0
+        
+        # Upsert in chunks
+        chunk_size = 100
+        total_cached = 0
+        
+        for i in range(0, len(records), chunk_size):
+            chunk = records[i:i + chunk_size]
+            
+            # Sanitize NaN/inf values
+            sanitized_chunk = []
+            for record in chunk:
+                sanitized_record = {}
+                for key, val in record.items():
+                    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                        sanitized_record[key] = None
+                    else:
+                        sanitized_record[key] = val
+                sanitized_chunk.append(sanitized_record)
+            
+            try:
+                supabase.table("product_snapshots").upsert(
+                    sanitized_chunk,
+                    on_conflict="asin,snapshot_date"
+                ).execute()
+                total_cached += len(sanitized_chunk)
+            except Exception as e:
+                # Log but don't fail
+                st.warning(f"Weekly cache batch failed: {e}")
+        
+        return total_cached
+        
+    except Exception as e:
+        st.caption(f"⚠️ Weekly cache write failed: {e}")
+        return 0
+
+
+@st.cache_data(ttl=300)  # 5 minute cache
+def load_weekly_timeseries(
+    asins: Tuple[str, ...],
+    days: int = 90
+) -> pd.DataFrame:
+    """
+    Load weekly time series for a set of ASINs from product_snapshots.
+    
+    This enables the profiler/brain to work on return visits without
+    hitting Keepa again. Data is shared across all users (ASIN-level).
+    
+    Args:
+        asins: Tuple of ASIN strings (tuple for cache hashability)
+        days: Number of days of history to load (default 90)
+        
+    Returns:
+        DataFrame with weekly data (multiple rows per ASIN)
+    """
+    if not asins:
+        return pd.DataFrame()
+    
+    try:
+        supabase = create_supabase_client()
+        
+        cutoff_date = (date.today() - timedelta(days=days)).isoformat()
+        asin_list = list(asins)
+        
+        # Fetch all snapshots for these ASINs in the date range
+        result = supabase.table("product_snapshots").select("*").in_(
+            "asin", asin_list
+        ).gte("snapshot_date", cutoff_date).order("snapshot_date", desc=False).execute()
+        
+        if not result.data:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(result.data)
+        
+        # Normalize column names for profiler compatibility
+        column_map = {
+            "snapshot_date": "week_start",
+            "buy_box_price": "filled_price",  # Use buy_box_price as filled_price
+            "sales_rank": "sales_rank",
+            "estimated_weekly_revenue": "weekly_revenue",
+            "estimated_units": "estimated_units",
+        }
+        
+        # Rename columns that exist
+        rename_map = {}
+        for src, dst in column_map.items():
+            if src in df.columns and dst not in df.columns:
+                rename_map[src] = dst
+        
+        if rename_map:
+            df = df.rename(columns=rename_map)
+        
+        # Ensure week_start is datetime
+        if "week_start" in df.columns:
+            df["week_start"] = pd.to_datetime(df["week_start"])
+        
+        # If filled_price doesn't exist, try to derive it
+        if "filled_price" not in df.columns:
+            for col in ["buy_box_price", "amazon_price", "new_fba_price"]:
+                if col in df.columns:
+                    df["filled_price"] = df[col]
+                    break
+        
+        # Sort by ASIN and date for time series analysis
+        if "week_start" in df.columns and "asin" in df.columns:
+            df = df.sort_values(["asin", "week_start"])
+        
+        return df
+        
+    except Exception as e:
+        # Silent fail - return empty DataFrame
+        error_str = str(e)
+        if "PGRST205" not in error_str and "could not find" not in error_str.lower():
+            st.caption(f"⚠️ Could not load weekly data: {error_str[:50]}")
+        return pd.DataFrame()
+
+
 def _safe_float(val) -> Optional[float]:
     """Safely convert to float, handling NaN and None."""
     import numpy as np

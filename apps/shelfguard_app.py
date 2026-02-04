@@ -105,6 +105,14 @@ try:
 except ImportError:
     ensure_data_loaded = None
 
+# Workflow Dashboard (Workflow ShelfGuard MVP)
+try:
+    from workflow_dashboard import render_workflow_dashboard
+    WORKFLOW_DASHBOARD_ENABLED = True
+except ImportError:
+    WORKFLOW_DASHBOARD_ENABLED = False
+    render_workflow_dashboard = None
+
 # Predictive Forecasting Engine - Phase 2.5
 try:
     from src.predictive_forecasting import (
@@ -1010,28 +1018,82 @@ with st.sidebar.expander("🔍 AI Engine Debug", expanded=False):
         st.progress(success_rate / 100)
         st.caption(f"Success Rate: {success_rate:.1f}%")
 
+# === LABS MODE TOGGLE ===
+st.sidebar.markdown("---")
+labs_enabled = st.sidebar.toggle(
+    "🧪 Labs Mode",
+    value=False,
+    help="""
+    **Labs Mode** enables experimental features:
+    - Strategic Intelligence & Attribution
+    - Predictive Forecasting
+    - AI Daily Brief (Verbose)
+
+    These features are in development and may change.
+    """,
+    key="labs_enabled"
+)
+
+if labs_enabled:
+    st.sidebar.markdown(
+        '<span style="background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">LABS ACTIVE</span>',
+        unsafe_allow_html=True
+    )
+
 # === TOP LEVEL NAVIGATION ===
-main_tab1, main_tab2, main_tab3, main_tab4, main_tab5 = st.tabs(["🛡️ Command Center", "🧩 Command Center 2.0", "🔍 Market Discovery", "📂 My Projects", "📰 Daily Brief"])
+# Workflow Dashboard is the new default landing page
+# Labs-only tabs are always rendered but gated internally
+tab_workflow, main_tab1, main_tab2, tab_discovery, tab_projects, main_tab5 = st.tabs([
+    "📋 Workflow",
+    "🛡️ Command Center",
+    "🧩 Causal Intelligence",
+    "🔍 Market Discovery",
+    "📂 My Projects",
+    "📰 Daily Brief"
+])
+
+# === WORKFLOW DASHBOARD (NEW DEFAULT) ===
+with tab_workflow:
+    st.markdown("## 📋 Workflow Dashboard")
+
+    if WORKFLOW_DASHBOARD_ENABLED and render_workflow_dashboard:
+        render_workflow_dashboard()
+    else:
+        st.info("Workflow Dashboard module not available. Check that `apps/workflow_dashboard.py` exists.")
 
 with main_tab2:
-    # === COMMAND CENTER 2.0: CAUSAL INTELLIGENCE PLATFORM ===
-    # Transforms revenue analysis from "What happened?" to "Why it happened?"
-    # with quantified attribution across 4 causal categories
+    # === LABS GATE: Show message if Labs mode is disabled ===
+    if not labs_enabled:
+        st.markdown("""
+        <div style="text-align: center; padding: 60px 40px; background: #f8f9fa; border-radius: 12px; border: 2px dashed #dee2e6;">
+            <div style="font-size: 48px; margin-bottom: 20px;">🧪</div>
+            <div style="font-size: 24px; font-weight: 600; color: #495057; margin-bottom: 12px;">
+                Labs Feature
+            </div>
+            <div style="font-size: 14px; color: #6c757d;">
+                Enable <strong>Labs Mode</strong> in the sidebar to access Causal Intelligence features.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # === COMMAND CENTER 2.0: CAUSAL INTELLIGENCE PLATFORM ===
+        # Transforms revenue analysis from "What happened?" to "Why it happened?"
+        # with quantified attribution across 4 causal categories
 
-    st.markdown("## 🧩 Command Center 2.0: Causal Intelligence")
-    st.caption("**Revenue Attribution:** Understand where your revenue came from with 4-category causal breakdown")
+        st.markdown("## 🧩 Command Center 2.0: Causal Intelligence")
+        st.caption("**Revenue Attribution:** Understand where your revenue came from with 4-category causal breakdown")
 
-    # Check if we have an active project
-    active_project_asin = st.session_state.get('active_project_asin', None)
+        # Check if we have an active project
+        active_project_asin = st.session_state.get('active_project_asin', None)
 
-    # === UNIFIED COMMAND CENTER 3.0 (Analysis & Action) ===
-    from src.unified_dashboard import render_unified_dashboard
-    render_unified_dashboard()
+        # === UNIFIED COMMAND CENTER 3.0 (Analysis & Action) ===
+        from src.unified_dashboard import render_unified_dashboard
+        render_unified_dashboard()
 
-    # LEGACY CODE DISABLED (Preserved for reference but unreachable)
-    if False:
-        pass
-    elif False: # Replaces 'else:' to skip the legacy block below
+# LEGACY CODE DISABLED (Preserved for reference but unreachable - outside main_tab2)
+if False:
+    pass
+elif False:  # Replaces 'else:' to skip the legacy block below
         # === ACTIVE PROJECT MODE ===
         try:
             # Get project data from session state - USE SAME KEYS AS COMMAND CENTER 1
@@ -1583,11 +1645,11 @@ with main_tab2:
             st.error(f"⚠️ Error loading Command Center 2.0: {str(e)}")
             st.code(traceback.format_exc())
 
-with main_tab3:
+with tab_discovery:
     # Market Discovery - Always available, no data needed
     render_discovery_ui()
 
-with main_tab4:
+with tab_projects:
     # My Projects - Always available
     project_id = render_project_selector()
     if project_id:
@@ -1596,17 +1658,39 @@ with main_tab4:
         st.info("💡 Create your first project using the Market Discovery tab!")
 
 with main_tab5:
-    # === DAILY BRIEF: AI STRATEGIC INTELLIGENCE ===
-    # The "Morning Brew" style intelligence report from the Sherlock Engine
-    
-    from apps.daily_brief_tab import render_daily_brief_tab
-    render_daily_brief_tab()
+    # === LABS GATE: Show message if Labs mode is disabled ===
+    if not labs_enabled:
+        st.markdown("""
+        <div style="text-align: center; padding: 60px 40px; background: #f8f9fa; border-radius: 12px; border: 2px dashed #dee2e6;">
+            <div style="font-size: 48px; margin-bottom: 20px;">🧪</div>
+            <div style="font-size: 24px; font-weight: 600; color: #495057; margin-bottom: 12px;">
+                Labs Feature
+            </div>
+            <div style="font-size: 14px; color: #6c757d;">
+                Enable <strong>Labs Mode</strong> in the sidebar to access the Daily Brief.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # === DAILY BRIEF: AI STRATEGIC INTELLIGENCE ===
+        # The "Morning Brew" style intelligence report from the Sherlock Engine
+        from apps.daily_brief_tab import render_daily_brief_tab
+        render_daily_brief_tab()
 
 with main_tab1:
+    # === LABS BANNER: Show notice when Labs mode is disabled ===
+    if not labs_enabled:
+        st.markdown("""
+        <div style="background: #fff3cd; color: #856404; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; border-left: 4px solid #ffc107;">
+            <strong>🧪 Labs Feature:</strong> This is an advanced feature. Enable Labs Mode in the sidebar for the full experience.
+            <a href="#" onclick="return false;">For pilots, use the Workflow tab instead.</a>
+        </div>
+        """, unsafe_allow_html=True)
+
     # === URL PERSISTENCE (Cache-First Logic) ===
     # Sync active project with URL query params for page reload persistence
     query_params = st.query_params
-    
+
     # If URL has project params but session doesn't, restore from URL
     # The Oracle will load data from Supabase cache automatically
     if 'project_asin' in query_params and not st.session_state.get('active_project_asin'):
@@ -2199,43 +2283,64 @@ with main_tab1:
             else:
                 market_df['revenue_proxy'] = 0.0
         
-        # === FIX: Use ADJUSTED revenue (variation-deduplicated) to match Market Discovery ===
-        # revenue_proxy_adjusted accounts for sibling variations sharing the same parent ASIN
-        # Without this, variations would be counted multiple times, inflating revenue estimates
-        
-        # Portfolio (Your Brand) metrics - use adjusted if available
-        portfolio_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in portfolio_df.columns else 'revenue_proxy'
-        portfolio_revenue = portfolio_df[portfolio_rev_col].sum() if portfolio_rev_col in portfolio_df.columns else 0
+        # === STANDARDIZED REVENUE (2026-01-30) ===
+        # Base unit: WEEKLY (weekly_revenue is the source of truth)
+        # Monthly is always calculated as weekly * 4.33
+        WEEKS_PER_MONTH = 4.33
+
+        # Use weekly_revenue_adjusted if available, fallback to weekly_revenue or legacy columns
+        portfolio_rev_col = 'weekly_revenue_adjusted' if 'weekly_revenue_adjusted' in portfolio_df.columns else \
+                           'weekly_revenue' if 'weekly_revenue' in portfolio_df.columns else \
+                           'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in portfolio_df.columns else 'revenue_proxy'
+        portfolio_weekly_revenue = portfolio_df[portfolio_rev_col].sum() if portfolio_rev_col in portfolio_df.columns else 0
+        portfolio_monthly_revenue = portfolio_weekly_revenue * WEEKS_PER_MONTH
         portfolio_product_count = len(portfolio_df)
 
-        # Market (Total Category) metrics - use adjusted if available
-        market_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
-        total_market_revenue = market_df[market_rev_col].sum() if market_rev_col in market_df.columns else 0
+        # Market (Total Category) metrics
+        market_rev_col = 'weekly_revenue_adjusted' if 'weekly_revenue_adjusted' in market_df.columns else \
+                        'weekly_revenue' if 'weekly_revenue' in market_df.columns else \
+                        'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
+        total_market_weekly_revenue = market_df[market_rev_col].sum() if market_rev_col in market_df.columns else 0
+        total_market_monthly_revenue = total_market_weekly_revenue * WEEKS_PER_MONTH
         total_market_products = len(market_df)
 
         # Competitor metrics
-        competitor_revenue = total_market_revenue - portfolio_revenue
+        competitor_weekly_revenue = total_market_weekly_revenue - portfolio_weekly_revenue
+        competitor_monthly_revenue = competitor_weekly_revenue * WEEKS_PER_MONTH
         competitor_product_count = total_market_products - portfolio_product_count
 
+        # Legacy aliases for backward compatibility
+        portfolio_revenue = portfolio_weekly_revenue
+        total_market_revenue = total_market_weekly_revenue
+        competitor_revenue = competitor_weekly_revenue
+
         # Market share
-        your_market_share = (portfolio_revenue / total_market_revenue * 100) if total_market_revenue > 0 else 0
+        your_market_share = (portfolio_weekly_revenue / total_market_weekly_revenue * 100) if total_market_weekly_revenue > 0 else 0
 
         # Transform portfolio_df into dashboard format
         # IMPORTANT: Dashboard should show ONLY the target brand's products
         portfolio_snapshot_df = portfolio_df.copy()
 
-        # Add required columns for dashboard
-        # NOTE: revenue_proxy is MONTHLY revenue (calculated from avg_weekly_revenue * 4.33)
-        # We use 'weekly_sales_filled' as column name for backward compatibility with dashboard
-        # but the value represents MONTHLY revenue (90-day average monthly estimate)
-        # CRITICAL: Ensure numeric dtype to prevent 'nlargest' errors
-        # FIX: Always ensure revenue_proxy exists as a column (not scalar)
-        if 'revenue_proxy' in portfolio_snapshot_df.columns:
-            portfolio_snapshot_df['revenue_proxy'] = pd.to_numeric(portfolio_snapshot_df['revenue_proxy'], errors='coerce').fillna(0)
+        # === STANDARDIZED REVENUE COLUMNS (2026-01-30) ===
+        # Base unit: WEEKLY (weekly_revenue is the source of truth)
+        # Monthly is always calculated as weekly * 4.33
+
+        # Ensure weekly_revenue exists
+        if 'weekly_revenue' in portfolio_snapshot_df.columns:
+            portfolio_snapshot_df['weekly_revenue'] = pd.to_numeric(portfolio_snapshot_df['weekly_revenue'], errors='coerce').fillna(0)
+        elif 'weekly_sales_filled' in portfolio_snapshot_df.columns:
+            portfolio_snapshot_df['weekly_revenue'] = pd.to_numeric(portfolio_snapshot_df['weekly_sales_filled'], errors='coerce').fillna(0)
+        elif 'revenue_proxy' in portfolio_snapshot_df.columns:
+            portfolio_snapshot_df['weekly_revenue'] = pd.to_numeric(portfolio_snapshot_df['revenue_proxy'], errors='coerce').fillna(0)
         else:
-            portfolio_snapshot_df['revenue_proxy'] = 0.0  # Create as column of zeros
-        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['revenue_proxy'].copy()
-        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df['revenue_proxy'].copy()
+            portfolio_snapshot_df['weekly_revenue'] = 0.0
+
+        # Derived monthly
+        portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df['weekly_revenue'] * WEEKS_PER_MONTH
+
+        # Legacy aliases for backward compatibility
+        portfolio_snapshot_df['revenue_proxy'] = portfolio_snapshot_df['weekly_revenue'].copy()
+        portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['weekly_revenue'].copy()
         portfolio_snapshot_df['asin'] = portfolio_snapshot_df.get('asin', '')
 
         # All products in portfolio_df are "Your Brand - Healthy" (predictive state: HOLD)
@@ -2299,11 +2404,11 @@ with main_tab1:
         BRAND PERFORMANCE SNAPSHOT:
         - Brand: {target_brand}
         - Market Share: {your_market_share:.1f}%
-        - Portfolio Revenue: ${portfolio_revenue:,.0f}/month
-        - Total Market Size: ${total_market_revenue:,.0f}/month
+        - Portfolio Revenue: ${portfolio_weekly_revenue:,.0f}/week (${portfolio_monthly_revenue:,.0f}/month)
+        - Total Market Size: ${total_market_weekly_revenue:,.0f}/week (${total_market_monthly_revenue:,.0f}/month)
         - Your Products: {portfolio_product_count} ASINs
         - Market Total: {total_market_products} ASINs
-        - Competitor Revenue: ${competitor_revenue:,.0f}/month ({competitor_product_count} products)
+        - Competitor Revenue: ${competitor_weekly_revenue:,.0f}/week (${competitor_monthly_revenue:,.0f}/month) ({competitor_product_count} products)
         - Position: {"Market Leader" if your_market_share > 50 else "Challenger" if your_market_share > 20 else "Niche Player"}
         """
 

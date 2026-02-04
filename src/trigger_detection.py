@@ -393,32 +393,58 @@ def detect_new_competitor_events(
     if df_competitors.empty:
         return events
 
+    # Column aliasing - find first_seen equivalent
+    date_col = None
+    for col in ['first_seen', 'firstSeen', 'listed_since', 'listedSince',
+                'tracking_since', 'trackingSince', 'first_available',
+                'firstAvailable', 'created_at', 'createdAt']:
+        if col in df_competitors.columns:
+            date_col = col
+            break
+
+    # Column aliasing - find BSR/sales rank column
+    bsr_col = None
+    for col in ['bsr', 'salesRank', 'sales_rank', 'currentSalesRank', 'current_sales_rank']:
+        if col in df_competitors.columns:
+            bsr_col = col
+            break
+
+    # Need a date column to detect "new" competitors
+    if date_col is None:
+        return events
+
     # Filter for recent entrants
-    if 'first_seen' in df_competitors.columns:
-        recent_cutoff = datetime.now() - timedelta(days=30)
-        new_competitors = df_competitors[
-            (df_competitors['first_seen'] >= recent_cutoff) &
-            (df_competitors['asin'] != asin)
+    recent_cutoff = datetime.now() - timedelta(days=30)
+
+    # Handle date parsing - column might be datetime or string
+    try:
+        df_competitors_copy = df_competitors.copy()
+        df_competitors_copy[date_col] = pd.to_datetime(df_competitors_copy[date_col], errors='coerce')
+        new_competitors = df_competitors_copy[
+            (df_competitors_copy[date_col] >= recent_cutoff) &
+            (df_competitors_copy['asin'] != asin)
         ]
+    except Exception:
+        return events
 
-        for _, comp in new_competitors.iterrows():
-            bsr = comp.get('bsr', 999999)
+    for _, comp in new_competitors.iterrows():
+        bsr = comp.get(bsr_col, 999999) if bsr_col else 999999
 
-            # Strong new competitor (BSR < 10k)
-            if bsr < 10000:
-                severity = 7 if bsr < 5000 else 6
+        # Strong new competitor (BSR < 10k)
+        if bsr is not None and bsr < 10000:
+            severity = 7 if bsr < 5000 else 6
 
-                events.append(TriggerEvent(
-                    event_type="new_competitor_entered",
-                    severity=severity,
-                    detected_at=datetime.now(),
-                    metric_name="sales_rank",
-                    baseline_value=999999.0,  # Didn't exist before
-                    current_value=float(bsr),
-                    delta_pct=-100.0,  # New entry
-                    affected_asin=asin,
-                    related_asin=comp.get('asin')
-                ))
+            events.append(TriggerEvent(
+                event_type="new_competitor_entered",
+                severity=severity,
+                detected_at=datetime.now(),
+                metric_name="sales_rank",
+                baseline_value=999999.0,  # Didn't exist before
+                current_value=float(bsr),
+                delta_pct=-100.0,  # New entry
+                affected_asin=asin,
+                related_asin=comp.get('asin')
+            ))
 
     return events
 
@@ -1483,7 +1509,108 @@ def detect_competition_intensity(
                     affected_asin=asin,
                     related_asin=None
                 ))
-    
+
     return events
+
+
+# ========================================
+# V1 DETECTOR FILTER (Workflow ShelfGuard MVP)
+# ========================================
+
+# V1 event types that can be detected from Keepa/public data only
+V1_EVENT_TYPES = {
+    # Price-related (Detector 1)
+    "price_war_active",
+    "price_compression",
+    "promo_shock",
+
+    # Competition-related (Detector 6)
+    "competitor_oos_imminent",
+    "competitor_promo",
+
+    # Rank-related (Detector 4)
+    "rank_degradation",
+    "rank_volatility_high",
+    "momentum_acceleration",
+    "momentum_sustained",
+
+    # BuyBox-related (Detector 3)
+    "buybox_share_collapse",
+    "buybox_instability",
+
+    # Platform-related (Detector 5)
+    "platform_amazon_oos",
+    "platform_fba_oos",
+    "oos_artifact",
+    "demand_shift",
+}
+
+
+def detect_v1_trigger_events(
+    asin: str,
+    df_historical: pd.DataFrame,
+    df_competitors: pd.DataFrame,
+    lookback_days: int = 30
+) -> List[TriggerEvent]:
+    """
+    Detect only V1 trigger events (Keepa/public data only).
+
+    V1 Detectors (6 total):
+    1. Price War / Price Compression - 3+ price drops in 7d OR >15% decline
+    2. Coupon/Promo Shock - Competitor promo patterns
+    3. Seller Churn (BuyBox Instability) - BuyBox share collapse
+    4. Rank Momentum Regime Shift - BSR change >30% in 30d
+    5. OOS Artifact vs Demand Shift - Platform OOS vs organic change
+    6. Competitor Promo / OOS - Competitor inventory issues
+
+    Args:
+        asin: Product ASIN to analyze
+        df_historical: Historical data for this ASIN
+        df_competitors: Current competitor data
+        lookback_days: How far back to detect events
+
+    Returns:
+        List of V1-only TriggerEvent objects, sorted by severity
+    """
+    events: List[TriggerEvent] = []
+
+    # Run only V1 detectors
+    events.extend(detect_price_war_events(asin, df_historical, lookback_days))
+    events.extend(detect_buybox_events(asin, df_historical, lookback_days))
+    events.extend(detect_rank_events(asin, df_historical, lookback_days))
+    events.extend(detect_competitor_inventory_events(asin, df_competitors))
+    events.extend(detect_momentum_events(asin, df_historical, lookback_days))
+    events.extend(detect_platform_changes(asin, df_historical, df_competitors))
+
+    # Filter to V1 event types only
+    events = [e for e in events if e.event_type in V1_EVENT_TYPES]
+
+    # Sort by severity (highest first)
+    events = sorted(events, key=lambda e: e.severity, reverse=True)
+
+    return events
+
+
+def filter_v1_events(events: List[TriggerEvent]) -> List[TriggerEvent]:
+    """
+    Filter an existing list of TriggerEvents to V1 types only.
+
+    Args:
+        events: List of TriggerEvents from any detector
+
+    Returns:
+        Filtered list containing only V1 event types
+    """
+    return [e for e in events if e.event_type in V1_EVENT_TYPES]
+
+
+def get_v1_event_types() -> set:
+    """
+    Get the set of V1 event types.
+
+    Returns:
+        Set of event type strings supported in V1
+    """
+    return V1_EVENT_TYPES.copy()
 
 

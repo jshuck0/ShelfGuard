@@ -1392,18 +1392,23 @@ def render_seed_search_and_map_mvp():
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
             with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
                 try:
-                    df_weekly, _ = phase2_category_market_mapping(
+                    from src.two_phase_discovery import fetch_detailed_weekly_data
+                    df_snapshot, _ = phase2_category_market_mapping(
                         category_id=int(seed_row.get("category_id", 0)),
                         seed_product_title=str(seed_row.get("title", "")),
                         seed_asin=str(seed_row.get("asin", "")),
                         target_brand=brand,
                         max_products=100,
                     )
+                    asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
+                    df_weekly = fetch_detailed_weekly_data(tuple(asins), days=90) if asins else df_snapshot
+                    if df_weekly.empty:
+                        df_weekly = df_snapshot  # last-resort fallback
                     st.session_state["active_project_data"] = df_weekly
                     st.session_state["active_project_seed_brand"] = brand
                     st.session_state["active_project_name"] = f"{brand} Arena"
-                    st.session_state["active_project_all_asins"] = list(df_weekly["asin"].unique())
-                    st.success(f"Loaded {df_weekly['asin'].nunique()} ASINs.")
+                    st.session_state["active_project_all_asins"] = asins
+                    st.success(f"Loaded {df_weekly['asin'].nunique() if 'asin' in df_weekly.columns else len(asins)} ASINs.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Market mapping failed: {e}")

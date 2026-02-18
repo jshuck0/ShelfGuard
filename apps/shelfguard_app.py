@@ -122,6 +122,14 @@ except ImportError:
     is_golden_run_active = lambda: False
     get_golden_session_state = lambda: {}
 
+# Market Misattribution Brief
+try:
+    from report.weekly_brief import render_brief_tab
+    BRIEF_TAB_ENABLED = True
+except ImportError:
+    BRIEF_TAB_ENABLED = False
+    render_brief_tab = None
+
 # Predictive Forecasting Engine - Phase 2.5
 try:
     from src.predictive_forecasting import (
@@ -1062,8 +1070,9 @@ if GOLDEN_RUN_AVAILABLE and is_golden_run_active():
             st.session_state[key] = val
     st.sidebar.success("🏆 Golden Run active — discovery bypassed")
 
-tab_workflow, main_tab1, main_tab2, tab_discovery, tab_projects, main_tab5 = st.tabs([
+tab_workflow, tab_brief, main_tab1, main_tab2, tab_discovery, tab_projects, main_tab5 = st.tabs([
     "📋 Workflow",
+    "📊 Brief",
     "🛡️ Command Center",
     "🧩 Causal Intelligence",
     "🔍 Market Discovery",
@@ -1079,6 +1088,41 @@ with tab_workflow:
         render_workflow_dashboard()
     else:
         st.info("Workflow Dashboard module not available. Check that `apps/workflow_dashboard.py` exists.")
+
+# === MARKET MISATTRIBUTION BRIEF ===
+with tab_brief:
+    st.markdown("## 📊 Market Misattribution Brief")
+
+    _df_weekly = st.session_state.get("active_project_data", pd.DataFrame())
+    _your_brand = st.session_state.get("active_project_seed_brand", "")
+    _arena_name = st.session_state.get("active_project_name", "")
+    _runs_ads = st.session_state.get("golden_runs_ads", None)
+    _project_id = st.session_state.get("active_project_id")
+
+    if BRIEF_TAB_ENABLED and render_brief_tab:
+        try:
+            from eval.scoreboard import get_scoreboard_lines, save_brief_predictions_from_brief
+            _scoreboard_lines = get_scoreboard_lines(_your_brand, {}, "Unknown")
+        except Exception:
+            _scoreboard_lines = []
+
+        render_brief_tab(
+            _df_weekly,
+            _your_brand,
+            _arena_name,
+            _runs_ads,
+            scoreboard_lines=_scoreboard_lines,
+            project_id=_project_id,
+        )
+
+        if "last_brief" in st.session_state:
+            try:
+                from eval.scoreboard import save_brief_predictions_from_brief
+                save_brief_predictions_from_brief(st.session_state["last_brief"])
+            except Exception:
+                pass
+    else:
+        st.info("Brief module not available. Check that `report/weekly_brief.py` exists.")
 
 with main_tab2:
     # === LABS GATE: Show message if Labs mode is disabled ===

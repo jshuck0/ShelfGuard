@@ -687,16 +687,29 @@ def render_brief_tab(
     runs_ads: Optional[bool] = None,
     df_daily: Optional[pd.DataFrame] = None,
     scoreboard_lines: List[str] = None,
+    project_id: Optional[str] = None,
 ):
     """
     Streamlit entry point. Renders the brief in a tab.
     Import and call from shelfguard_app.py or a dedicated tab.
+
+    Args:
+        project_id: Supabase project_id, used to fetch daily panel for discount persistence.
     """
     import streamlit as st
 
     if df_weekly.empty:
         st.info("Run Market Discovery to generate a brief.")
         return
+
+    # Auto-fetch daily panel if project_id provided and df_daily not supplied
+    if df_daily is None and project_id:
+        try:
+            from data.daily_panel import get_daily_panel
+            asins = list(df_weekly["asin"].unique()) if "asin" in df_weekly.columns else None
+            df_daily, _fidelity = get_daily_panel(project_id=project_id, asins=asins)
+        except Exception:
+            df_daily = None
 
     with st.spinner("Building brief…"):
         brief = build_brief(

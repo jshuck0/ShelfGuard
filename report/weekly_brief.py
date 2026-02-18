@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from features.regimes import RegimeSignal, detect_all_regimes, active_regimes
+from features.regimes import RegimeSignal, detect_all_regimes, active_regimes, build_baseline_signal
 from features.asin_metrics import ASINMetrics, compute_asin_metrics, to_compact_table, receipts_list
 from scoring.confidence import ConfidenceScore, score_confidence, score_driver_confidence
 
@@ -85,6 +85,7 @@ class WeeklyBrief:
     confidence_score: Optional[ConfidenceScore] = None
     runs_ads: Optional[bool] = None   # None = omit budget language
     active_regime_names: List[str] = field(default_factory=list)
+    secondary_signals: List[str] = field(default_factory=list)
     data_quality: str = "Partial"
     data_fidelity: str = "weekly"     # "daily" | "weekly proxy"
 
@@ -151,11 +152,12 @@ def build_brief(
     # ── Detect regimes ────────────────────────────────────────────────────────
     regime_signals = detect_all_regimes(df_weekly, your_brand, regime_cfg, df_daily)
     firing = active_regimes(regime_signals)
-    active_names = [s.regime for s in firing]
 
-    # ── ASIN metrics ──────────────────────────────────────────────────────────
+    # ── ASIN metrics — pass competitor_pressure from pre-baseline firing ──────
+    competitor_pressure = any(s.regime in ("promo_war", "tier_compression") for s in firing)
     asin_metrics = compute_asin_metrics(
-        df_weekly, role_cfg, risk_cfg, your_brand, df_daily
+        df_weekly, role_cfg, risk_cfg, your_brand, df_daily,
+        competitor_pressure=competitor_pressure,
     )
 
     # ── Confidence score ─────────────────────────────────────────────────────
@@ -178,6 +180,12 @@ def build_brief(
     # Demand: use median arena BSR change as proxy
     arena_bsr_wow = _compute_arena_bsr_wow(df_weekly, latest_week, prev_week, rank_col)
     your_bsr_wow = _compute_bsr_wow(your_asins_df, latest_week, prev_week, rank_col)
+
+    # Inject Baseline if no regime fired — must come AFTER arena/brand BSR computed
+    if not firing:
+        firing = [build_baseline_signal(your_bsr_wow, arena_bsr_wow, band_fn=band_value)]
+
+    active_names = [s.regime for s in firing]
 
     # Price/promo regime — use comparable ASINs only for tier median
     # (exclude extreme pack-size outliers that would skew the arena baseline)
@@ -205,6 +213,11 @@ def build_brief(
 
     # Biggest mover (ASIN with largest BSR change WoW)
     biggest_mover = _find_biggest_mover(asin_metrics)
+
+    # ── Secondary signals (max 2 — surfaced only when not already a driver) ──
+    secondary_signals = _build_secondary_signals(
+        price_vs_tier, asin_metrics, your_brand, firing, band_value
+    )
 
     # ── Section 1: Headline ───────────────────────────────────────────────────
     headline = _build_headline(your_brand, your_bsr_wow, arena_bsr_wow, firing, conf_score)
@@ -257,6 +270,7 @@ def build_brief(
         confidence_score=conf_score,
         runs_ads=runs_ads,
         active_regime_names=active_names,
+        secondary_signals=secondary_signals,
         data_quality=conf_score.data_quality,
         data_fidelity="daily" if (df_daily is not None and not df_daily.empty) else "weekly proxy",
     )
@@ -397,7 +411,7 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
             and (your_bsr - arena_bsr) <= 0.07
         )
         if _tracking:
-            verdict = "Market baseline"
+            verdict = "Baseline (No dominant market regime)"
             verdict_conf = "Low"
             receipts = [
                 "Arena-wide BSR stable WoW — no active regime detected",
@@ -459,12 +473,22 @@ def _build_implications(
             )
             plan_stance = "Hold"
 
-    # Budget action (only if runs_ads is not None)
-    if runs_ads is not None:
-        high_risk_asins = [
-            m for m in asin_metrics.values()
-            if m.ad_waste_risk == "High" and m.brand.lower() == your_brand.lower()
-        ]
+    # Budget action
+    high_risk_asins = [
+        m for m in asin_metrics.values()
+        if m.ad_waste_risk == "High" and m.brand.lower() == your_brand.lower()
+    ]
+    is_baseline_week = any(s.regime == "baseline" for s in firing)
+    if is_baseline_week and runs_ads is not False:
+        # Baseline week: conservative posture, always show if ads in scope (True or None)
+        bullets.append(
+            "**If you're supporting these ASINs with ads:** Don't scale incremental spend "
+            "unless the SKU is price-competitive and momentum is positive. "
+            "Reallocate away from High Ad Waste Risk SKUs."
+        )
+        if high_risk_asins:
+            plan_stance = "Reallocate"
+    elif runs_ads is not None:
         if runs_ads and high_risk_asins:
             asin_list = ", ".join(a.asin[-6:] for a in high_risk_asins[:3])
             bullets.append(
@@ -524,10 +548,7 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
             "explain rank gains concentrated among discounters? (Y/N)"
         )
     else:
-        asks.append(
-            "Have you received any signals from your agency or internal team about "
-            "algorithm changes affecting this category? (Y/N)"
-        )
+        asks.append("Any OOS events on Core SKUs last week? (Y/N)")
 
     # Coordination ask
     high_risk = [m for m in asin_metrics.values()
@@ -544,8 +565,8 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
         )
     else:
         coordination = (
-            "Brand manager: Flag this brief to agency with the misattribution verdict — "
-            "ensure reporting reflects market context before the next performance review."
+            "Agency: Annotate reporting with 'Baseline market week' — avoid attributing "
+            "small performance deltas to creative or ads changes this period."
         )
 
     return asks[:2], coordination
@@ -598,6 +619,33 @@ def _build_watch_triggers(firing, all_signals, your_bsr, band_fn=None) -> List[s
         )
 
     return triggers[:2]
+
+
+def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, band_fn) -> List[str]:
+    """Secondary market signals — capped at 2 — shown only when not already a driver regime."""
+    signals = []
+    regime_names = {s.regime for s in firing}
+
+    # Signal 1: Price pressure — only if not already a driver regime
+    if (price_vs_tier is not None and price_vs_tier > 0.05
+            and "tier_compression" not in regime_names
+            and "promo_war" not in regime_names):
+        tier_label = band_fn(price_vs_tier, "price_vs_tier")
+        signals.append(f"Price pressure: brand Core SKUs priced {tier_label} vs arena median (Med confidence)")
+
+    # Signal 2: Discount concentration — arena-level, only if promo_war not already active
+    if "promo_war" not in regime_names:
+        core_asins = [m for m in asin_metrics.values() if m.role == "Core"]
+        if core_asins:
+            discounted = sum(1 for m in core_asins if m.discount_persistence >= 4 / 7)
+            pct = discounted / len(core_asins)
+            if pct >= 0.40:
+                signals.append(
+                    f"Discount concentration: {round(pct * 100)}% of arena Core SKUs "
+                    f"discounted ≥4/7 days (Med confidence)"
+                )
+
+    return signals[:2]
 
 
 # ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
@@ -676,6 +724,13 @@ def generate_brief_markdown(
     for r in brief.misattribution_receipts:
         lines.append(f"- {r}")
     lines.append("")
+
+    # ── Section 4.5: Secondary Signals ───────────────────────────────────────
+    if brief.secondary_signals:
+        lines += ["", "## Secondary Signals (monitor — not dominant)", ""]
+        for sig in brief.secondary_signals:
+            lines.append(f"- {sig}")
+        lines.append("")
 
     # ── Section 5: Implications ───────────────────────────────────────────────
     lines += ["## 5. Implications", ""]

@@ -833,3 +833,66 @@ def active_regimes(signals: Dict[str, RegimeSignal]) -> List[RegimeSignal]:
     order = {"High": 0, "Med": 1, "Low": 2}
     active = [s for s in signals.values() if s.active]
     return sorted(active, key=lambda s: order.get(s.confidence, 3))
+
+
+def build_baseline_signal(
+    your_bsr_wow: Optional[float],
+    arena_bsr_wow: Optional[float],
+    band_fn=None,
+) -> RegimeSignal:
+    """
+    Explicit Baseline RegimeSignal for weeks when no other regime fires.
+
+    Provides Driver 1 receipts (brand vs arena divergence card) and routes
+    to the "Baseline (No dominant market regime)" verdict path.
+    driver_type="Unknown" so _build_misattribution_verdict() uses the
+    tracking/divergence branch rather than the Market-driven branch.
+    """
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
+
+    receipts: List[Receipt] = []
+
+    if arena_bsr_wow is not None:
+        receipts.append(Receipt(
+            label=f"Arena median BSR {band_fn(arena_bsr_wow, 'rank_change')} WoW — no structural shift",
+            metric="arena_bsr_wow",
+            value=arena_bsr_wow,
+            baseline=0.0,
+            delta_pct=arena_bsr_wow,
+        ))
+
+    if your_bsr_wow is not None:
+        delta = (your_bsr_wow - arena_bsr_wow) if arena_bsr_wow is not None else your_bsr_wow
+        if arena_bsr_wow is not None:
+            r2_label = (
+                f"Brand BSR {band_fn(your_bsr_wow, 'rank_change')} WoW vs arena "
+                f"{band_fn(arena_bsr_wow, 'rank_change')} — delta {band_fn(delta, 'rank_change')}"
+            )
+        else:
+            r2_label = f"Brand BSR {band_fn(your_bsr_wow, 'rank_change')} WoW — no arena context"
+        receipts.append(Receipt(
+            label=r2_label,
+            metric="brand_vs_arena_delta",
+            value=delta,
+            baseline=0.0,
+            delta_pct=delta,
+        ))
+
+    while len(receipts) < 2:
+        receipts.append(Receipt(
+            label="No regime-level signals above confidence threshold",
+            metric="",
+            value=0.0,
+            baseline=0.0,
+            delta_pct=0.0,
+        ))
+
+    return RegimeSignal(
+        regime="baseline",
+        active=True,
+        confidence="Low",
+        verdict="Baseline (No dominant market regime)",
+        driver_type="Unknown",
+        receipts=receipts[:2],
+    )

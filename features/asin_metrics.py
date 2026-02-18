@@ -57,6 +57,7 @@ class ASINMetrics:
     bsr_wow: float                  # BSR week-over-week % change
     has_momentum: bool              # True if rank improving
     fidelity: str                   # "daily" | "weekly" | "snapshot"
+    ads_stance: str = "Hold"        # "Scale" | "Defend" | "Hold" | "Pause+Diagnose"
 
 
 def compute_asin_metrics(
@@ -65,6 +66,7 @@ def compute_asin_metrics(
     risk_cfg: dict,
     your_brand: str = "",
     df_daily: Optional[pd.DataFrame] = None,
+    competitor_pressure: bool = False,
 ) -> Dict[str, ASINMetrics]:
     """
     Compute role, tag, and Ad Waste Risk for every ASIN in the arena.
@@ -254,6 +256,20 @@ def compute_asin_metrics(
         else:
             tag = "Stable leader"
 
+        # ── Ads Stance ────────────────────────────────────────────────────────
+        # Keepa-safe: uses only price competitiveness + BSR momentum + promo pressure
+        # Phrased as conditional — does NOT assert brand is running ads
+        if not tier_comparable:
+            ads_stance = "Hold"
+        elif not is_competitive and is_deteriorating and competitor_pressure:
+            ads_stance = "Pause+Diagnose"
+        elif is_competitive and bsr_wow < -0.10:   # significant rank gain
+            ads_stance = "Scale"
+        elif is_competitive:                        # competitive, flat or modest gain
+            ads_stance = "Defend"
+        else:
+            ads_stance = "Hold"
+
         results[asin] = ASINMetrics(
             asin=asin,
             brand=brand,
@@ -267,6 +283,7 @@ def compute_asin_metrics(
             bsr_wow=round(bsr_wow, 4),
             has_momentum=has_momentum,
             fidelity=fidelity_map.get(asin, "snapshot"),
+            ads_stance=ads_stance,
         )
 
     return results
@@ -348,6 +365,9 @@ def to_compact_table(
             price_band = m.price_vs_tier_band  # "well below tier" … "not comparable"
             bsr_band = f"{m.bsr_wow*100:+.1f}%"
 
+        ads_cell = (
+            f"If on ads: {m.ads_stance}" if m.ads_stance != "Hold" else "Hold"
+        )
         rows.append({
             "ASIN": short_name,
             "Brand": m.brand,
@@ -357,6 +377,7 @@ def to_compact_table(
             "BSR WoW": bsr_band,
             "Momentum": "Y" if m.has_momentum else "N",
             "Tag": m.tag,
+            "Ads stance": ads_cell,
             "_role_sort": role_order.get(m.role, 3),
             "_bsr_sort": m.bsr_wow,
             "_asin": asin,
@@ -377,22 +398,46 @@ def receipts_list(
     band_fn=None,
 ) -> List[str]:
     """
-    Build Layer A: the 5–8 line ASIN receipts list for the brief.
-    Format: "Brand (ASIN…): 2 signals + confidence"
+    Build Layer A: curated ads-relevant ASIN receipts.
+
+    Selection order:
+      1. Your brand Pause+Diagnose / Hold SKUs (up to 3) — action items
+      2. Your brand Scale / Defend SKUs (up to 2) — opportunity items
+      3. Top competitor by |bsr_wow| (up to 1) — pressure driver
+    Falls back to pure |bsr_wow| sort if no brand ASINs in dict.
     """
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
     lines = []
-    sorted_asins = sorted(asin_metrics.values(), key=lambda m: -abs(m.bsr_wow))
 
-    for m in sorted_asins[:max_items]:
+    yours = [m for m in asin_metrics.values() if m.brand.lower() == your_brand.lower()]
+    comps = [m for m in asin_metrics.values() if m.brand.lower() != your_brand.lower()]
+
+    pause_hold = sorted(
+        [m for m in yours if m.ads_stance in ("Pause+Diagnose", "Hold")],
+        key=lambda m: -abs(m.bsr_wow),
+    )
+    scale_defend = sorted(
+        [m for m in yours if m.ads_stance in ("Scale", "Defend")],
+        key=lambda m: -abs(m.bsr_wow),
+    )
+    top_comp = sorted(comps, key=lambda m: -abs(m.bsr_wow))[:1]
+
+    curated = (pause_hold[:3] + scale_defend[:2] + top_comp)[:max_items]
+    if not curated:
+        curated = sorted(asin_metrics.values(), key=lambda m: -abs(m.bsr_wow))[:max_items]
+
+    for m in curated:
         conf = "High" if m.ad_waste_risk == "Low" and m.has_momentum else (
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
         price_str = f"price {m.price_vs_tier_band}"
         bsr_str = f"BSR {band_fn(m.bsr_wow, 'rank_change')} WoW"
+        ads_hint = (
+            f" | If on ads: {m.ads_stance}" if m.ads_stance != "Hold" else ""
+        )
         lines.append(
-            f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]"
+            f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]{ads_hint}"
         )
 
     return lines

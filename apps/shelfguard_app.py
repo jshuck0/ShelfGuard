@@ -107,7 +107,7 @@ except ImportError:
 
 # Workflow Dashboard (Workflow ShelfGuard MVP)
 try:
-    from workflow_dashboard import render_workflow_dashboard
+    from apps.workflow_dashboard import render_workflow_dashboard
     WORKFLOW_DASHBOARD_ENABLED = True
 except ImportError:
     WORKFLOW_DASHBOARD_ENABLED = False

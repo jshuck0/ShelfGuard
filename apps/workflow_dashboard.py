@@ -41,18 +41,38 @@ def render_workflow_dashboard():
 
     Renders tabs: Memo | Action Queue | Alerts | Scoreboard | Diagnostics
     """
-    st.markdown("## 📋 Workflow Dashboard")
-
-    # Check if project is loaded
-    project_id = st.session_state.get("active_project_id")
-    if not project_id:
+    # Check if project is loaded (use same key as shelfguard_app.py)
+    project_asin = st.session_state.get("active_project_asin")
+    if not project_asin:
         _render_no_project_state()
         return
 
-    # Get project data
+    # Try to load data using ensure_data_loaded() for consistent access
+    try:
+        from src.dashboard_logic import ensure_data_loaded
+        res, fin, portfolio_df, portfolio_context = ensure_data_loaded()
+        if not res:
+            _render_no_data_state()
+            return
+    except ImportError:
+        # Fallback if ensure_data_loaded not available
+        pass
+
+    # Get project data - map to correct session state keys used by shelfguard_app.py
     df_weekly = st.session_state.get("df_weekly", pd.DataFrame())
-    df_competitors = st.session_state.get("df_competitors", pd.DataFrame())
-    portfolio_asins = st.session_state.get("portfolio_asins", [])
+    if df_weekly.empty:
+        # Fallback to active_project_data key
+        df_weekly = st.session_state.get("active_project_data", pd.DataFrame())
+
+    # Get competitors data - map to correct key
+    df_competitors = st.session_state.get("active_project_market_snapshot", pd.DataFrame())
+
+    # Get portfolio ASINs - map to correct key
+    portfolio_asins = st.session_state.get("active_project_all_asins", [])
+    if not portfolio_asins:
+        # Fallback: extract from df_weekly
+        if "asin" in df_weekly.columns:
+            portfolio_asins = list(df_weekly["asin"].unique())
 
     if df_weekly.empty:
         _render_no_data_state()

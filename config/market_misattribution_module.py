@@ -264,3 +264,96 @@ def band_value(value: float, band_type: str) -> str:
         if low <= value < high:
             return label
     return "unknown"
+
+
+# ─── MODULE TAXONOMY ─────────────────────────────────────────────────────────
+
+# Token set for inferring skincare module from category_path breadcrumb
+SKINCARE_MODULE_TOKENS = {
+    "skincare", "skin care", "facial", "face moisturizer", "face serum",
+    "beauty", "body wash", "lotion", "cleanser", "toner", "sunscreen",
+    "moisturizer", "serum",
+}
+
+# Keyword → product_type mapping (ordered — first match wins)
+# More specific patterns must come before generic ones
+PRODUCT_TYPE_KEYWORDS = [
+    ("micellar", "micellar water"),
+    ("retinol", "retinol"),
+    ("exfoliant", "exfoliant"),
+    ("exfoliating", "exfoliant"),
+    (" aha ", "exfoliant"),
+    (" bha ", "exfoliant"),
+    ("sunscreen", "sunscreen"),
+    (" spf ", "sunscreen"),
+    ("sun protect", "sunscreen"),
+    ("body wash", "body wash"),
+    ("shower gel", "body wash"),
+    ("face wash", "cleanser"),
+    ("gel cleanser", "cleanser"),
+    ("foaming wash", "cleanser"),
+    ("cleanser", "cleanser"),
+    ("toner", "toner"),
+    ("essence", "toner"),
+    ("eye cream", "eye cream"),
+    ("eye gel", "eye cream"),
+    ("sheet mask", "mask"),
+    ("clay mask", "mask"),
+    (" mask", "mask"),
+    ("serum", "serum"),
+    ("ampoule", "serum"),
+    ("balm", "balm"),
+    ("scrub", "scrub"),
+    ("body lotion", "lotion"),
+    ("body milk", "lotion"),
+    ("lotion", "lotion"),
+    ("moisturizer", "moisturizer"),
+    ("moisturising", "moisturizer"),
+    ("moisturizing", "moisturizer"),
+    ("face cream", "moisturizer"),
+    ("day cream", "moisturizer"),
+    ("night cream", "moisturizer"),
+    ("hydrat", "moisturizer"),
+    ("body oil", "oil"),
+    ("face oil", "oil"),
+    (" oil", "oil"),
+]
+
+
+def classify_title(title: str) -> str:
+    """
+    Map ASIN title to product_type using fixed keyword dictionary.
+    Returns "other" if no keyword matches.
+
+    Args:
+        title: ASIN title string (from Keepa data)
+
+    Returns:
+        product_type string e.g. "serum", "moisturizer", "cleanser", "other"
+    """
+    if not title:
+        return "other"
+    title_lower = " " + title.lower() + " "  # pad for whole-word boundary matching
+    for keyword, ptype in PRODUCT_TYPE_KEYWORDS:
+        if keyword in title_lower:
+            return ptype
+    return "other"
+
+
+def infer_module(category_path: str) -> str:
+    """
+    Infer module ID from the category breadcrumb string.
+
+    Args:
+        category_path: Full category breadcrumb, e.g.
+                       "Health & Household > Skin Care > Face Moisturizers"
+
+    Returns:
+        "skincare" or "generic"
+    """
+    if not category_path:
+        return "generic"
+    path_lower = category_path.lower()
+    if any(token in path_lower for token in SKINCARE_MODULE_TOKENS):
+        return "skincare"
+    return "generic"

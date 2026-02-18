@@ -29,7 +29,10 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from features.regimes import RegimeSignal, detect_all_regimes, active_regimes, build_baseline_signal
-from features.asin_metrics import ASINMetrics, compute_asin_metrics, to_compact_table, receipts_list
+from features.asin_metrics import (
+    ASINMetrics, compute_asin_metrics, to_compact_table, receipts_list,
+    ProductGroupMetrics, compute_group_metrics, to_group_table,
+)
 from scoring.confidence import ConfidenceScore, score_confidence, score_driver_confidence
 
 
@@ -95,6 +98,8 @@ class WeeklyBrief:
     secondary_signals: List[SecondarySignal] = field(default_factory=list)
     data_quality: str = "Partial"
     data_fidelity: str = "weekly"     # "daily" | "weekly proxy"
+    module_id: str = "generic"        # "skincare" | "generic" — controls taxonomy rendering
+    group_summary: List = field(default_factory=list)   # List[ProductGroupMetrics]
 
 
 # ─── BRIEF ASSEMBLY ──────────────────────────────────────────────────────────
@@ -110,6 +115,8 @@ def build_brief(
     confidence_cfg: dict = None,
     df_daily: Optional[pd.DataFrame] = None,
     scoreboard_lines: List[str] = None,
+    category_path: str = "",      # For infer_module() — pass from session state or golden_run
+    module_id: str = "",          # Override infer_module() if already known
 ) -> WeeklyBrief:
     """
     Build a WeeklyBrief from the arena weekly panel.
@@ -152,6 +159,13 @@ def build_brief(
         except ImportError:
             band_value = lambda v, t: f"{v*100:+.1f}%"
 
+    # ── Module / taxonomy ─────────────────────────────────────────────────────
+    try:
+        from config.market_misattribution_module import infer_module as _infer_module
+        _module_id = module_id or (_infer_module(category_path) if category_path else "generic")
+    except ImportError:
+        _module_id = module_id or "generic"
+
     week_label = _format_week_label(df_weekly)
     price_col = "price_per_unit" if "price_per_unit" in df_weekly.columns else "filled_price"
     rank_col = "sales_rank_filled" if "sales_rank_filled" in df_weekly.columns else "sales_rank"
@@ -166,6 +180,9 @@ def build_brief(
         df_weekly, role_cfg, risk_cfg, your_brand, df_daily,
         competitor_pressure=competitor_pressure,
     )
+
+    # ── Group metrics (product_type × brand aggregation) ─────────────────────
+    group_metrics = compute_group_metrics(asin_metrics, df_weekly, your_brand)
 
     # ── Confidence score ─────────────────────────────────────────────────────
     conf_score = score_confidence(df_weekly, regime_signals, confidence_cfg)
@@ -231,11 +248,15 @@ def build_brief(
     )
 
     # ── Section 1: Headline ───────────────────────────────────────────────────
-    headline = _build_headline(your_brand, your_bsr_wow, arena_bsr_wow, firing, conf_score)
+    headline = _build_headline(
+        your_brand, your_bsr_wow, arena_bsr_wow, firing, conf_score,
+        module_id=_module_id, group_metrics=group_metrics,
+    )
 
     # ── Section 2: What Changed ───────────────────────────────────────────────
     what_changed = _build_what_changed(
-        your_bsr_wow, arena_bsr_wow, price_vs_tier, biggest_mover, firing, band_value
+        your_bsr_wow, arena_bsr_wow, price_vs_tier, biggest_mover, firing, band_value,
+        module_id=_module_id, asin_metrics=asin_metrics,
     )
 
     # ── Section 3: Drivers ────────────────────────────────────────────────────
@@ -254,13 +275,15 @@ def build_brief(
 
     # ── Section 6: Requests ───────────────────────────────────────────────────
     validation_asks, coordination_ask = _build_requests(
-        firing, verdict, your_brand, asin_metrics
+        firing, verdict, your_brand, asin_metrics,
+        module_id=_module_id, group_metrics=group_metrics,
     )
 
     # ── Section 7: Watch Triggers ─────────────────────────────────────────────
     watch_triggers = _build_watch_triggers(
         firing, regime_signals, your_bsr_wow, band_fn=band_value,
         asin_metrics=asin_metrics, your_brand=your_brand,
+        module_id=_module_id, group_metrics=group_metrics,
     )
 
     return WeeklyBrief(
@@ -287,6 +310,8 @@ def build_brief(
         secondary_signals=secondary_signals,
         data_quality=conf_score.data_quality,
         data_fidelity="daily" if (df_daily is not None and not df_daily.empty) else "weekly proxy",
+        module_id=_module_id,
+        group_summary=group_metrics,
     )
 
 
@@ -325,11 +350,22 @@ def _find_biggest_mover(asin_metrics: Dict[str, ASINMetrics]) -> Optional[ASINMe
     return max(asin_metrics.values(), key=lambda m: abs(m.bsr_wow), default=None)
 
 
-def _build_headline(brand, your_bsr, arena_bsr, firing, conf) -> str:
+def _build_headline(brand, your_bsr, arena_bsr, firing, conf,
+                    module_id="generic", group_metrics=None) -> str:
     if firing:
         top = firing[0]
         regime_label = top.regime.replace("_", " ").title()
-        return f"{brand}: {regime_label} detected this week [{conf.label} confidence]"
+        # Skincare: append top brand product_type bucket context
+        bucket_note = ""
+        if module_id == "skincare" and group_metrics:
+            brand_groups = [
+                g for g in group_metrics
+                if g.brand.lower() == brand.lower() and g.product_type != "other"
+            ]
+            if brand_groups:
+                top_g = brand_groups[0]  # sorted by rev_share_pct desc already
+                bucket_note = f" — led by {top_g.product_type.replace('_', ' ').title()} bucket"
+        return f"{brand}: {regime_label} detected this week{bucket_note} [{conf.label} confidence]"
     if your_bsr is not None:
         direction = "gaining" if your_bsr < -0.03 else ("losing" if your_bsr > 0.03 else "holding")
         arena_note = "in a broadly stable arena" if (arena_bsr is None or abs(arena_bsr) < 0.03) else "alongside broad arena movement"
@@ -337,7 +373,8 @@ def _build_headline(brand, your_bsr, arena_bsr, firing, conf) -> str:
     return f"{brand} arena — weekly brief [{conf.label} confidence]"
 
 
-def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firing, band_fn) -> List[str]:
+def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firing, band_fn,
+                        module_id="generic", asin_metrics=None) -> List[str]:
     bullets = []
 
     # Demand bullet
@@ -356,8 +393,15 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     # Biggest mover bullet
     if biggest_mover and abs(biggest_mover.bsr_wow) > 0.05:
         bsr_move = band_fn(biggest_mover.bsr_wow, "rank_change")
+        # Skincare: add product_type tag if available
+        ptype_note = ""
+        if module_id == "skincare" and asin_metrics:
+            m = asin_metrics.get(biggest_mover.asin, biggest_mover)
+            ptype = getattr(m, "product_type", "other")
+            if ptype != "other":
+                ptype_note = f" [{ptype.replace('_', ' ').title()}]"
         bullets.append(
-            f"**Biggest mover:** {biggest_mover.brand} ({biggest_mover.asin[-6:]}) "
+            f"**Biggest mover:** {biggest_mover.brand} ({biggest_mover.asin[-6:]}){ptype_note} "
             f"— BSR {bsr_move} this week"
         )
 
@@ -531,9 +575,21 @@ def _build_implications(
     return bullets[:3], plan_stance, measurement_focus
 
 
-def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
+def _build_requests(firing, verdict, your_brand, asin_metrics,
+                    module_id="generic", group_metrics=None) -> tuple:
     asks = []
     coordination = ""
+
+    # Skincare: resolve top brand product_type for bucket-aware ask language
+    _sku_label = "Core SKUs"
+    if module_id == "skincare" and group_metrics:
+        _brand_groups = [
+            g for g in group_metrics
+            if g.brand.lower() == your_brand.lower() and g.product_type != "other"
+        ]
+        if _brand_groups:
+            _top_ptype = _brand_groups[0].product_type.replace("_", " ").title()
+            _sku_label = f"Core {_top_ptype} SKUs"
 
     # Validation ask 1: confirm market driver
     if "Market-driven" in verdict:
@@ -543,7 +599,7 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
         )
     else:
         asks.append(
-            "Are any core SKUs currently out of stock or facing Buy Box suppression? (Y/N)"
+            f"Are any {_sku_label} currently out of stock or facing Buy Box suppression? (Y/N)"
         )
 
     # Validation ask 2: tied to specific regime
@@ -562,7 +618,7 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
             "explain rank gains concentrated among discounters? (Y/N)"
         )
     else:
-        asks.append("Any OOS events on Core SKUs last week? (Y/N)")
+        asks.append(f"Any OOS events on {_sku_label} last week? (Y/N)")
 
     # Coordination ask
     high_risk = [m for m in asin_metrics.values()
@@ -589,6 +645,7 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
 def _build_watch_triggers(
     firing, all_signals, your_bsr, band_fn=None,
     asin_metrics=None, your_brand="",
+    module_id="generic", group_metrics=None,
 ) -> List[str]:
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
@@ -636,8 +693,17 @@ def _build_watch_triggers(
         ]
         if pause_skus:
             skus = ", ".join(m.asin[-6:] for m in pause_skus[:3])
+            # Skincare: add product_type context to SKU pressure trigger
+            bucket_note = ""
+            if module_id == "skincare" and asin_metrics:
+                ptypes = list({
+                    getattr(asin_metrics.get(m.asin, m), "product_type", "other")
+                    for m in pause_skus[:3]
+                } - {"other"})
+                if ptypes:
+                    bucket_note = f" [{', '.join(p.replace('_', ' ').title() for p in ptypes[:2])}]"
             triggers.append(
-                f"{len(pause_skus)} Core SKU(s) above tier + losing visibility ({skus}) — "
+                f"{len(pause_skus)} Core SKU(s) above tier + losing visibility{bucket_note} ({skus}) — "
                 "confirm in-stock and listing health before next week."
             )
         else:
@@ -832,12 +898,6 @@ def generate_brief_markdown(
             lines.append(f"- {line}")
         lines.append("")
 
-        # Layer B: Compact table — brand first, then competitor pressure block
-        brand_metrics = {a: m for a, m in asin_metrics.items()
-                         if m.brand.lower() == your_brand.lower()}
-        comp_metrics = {a: m for a, m in asin_metrics.items()
-                        if m.brand.lower() != your_brand.lower()}
-
         def _render_md_table(tdf):
             if tdf.empty:
                 return
@@ -847,18 +907,51 @@ def generate_brief_markdown(
             for row in tdf.itertuples(index=False, name=None):
                 lines.append("| " + " | ".join(str(v) if v is not None else "" for v in row) + " |")
 
-        lines += ["### Layer B: Your Brand SKUs", ""]
-        brand_table = to_compact_table(brand_metrics, df_weekly, max_asins=20, band_fn=band_value)
-        _render_md_table(brand_table)
-        lines.append("")
-
-        # Competitor block: top 5 by |bsr_wow|
-        comp_top5 = dict(sorted(comp_metrics.items(), key=lambda kv: -abs(kv[1].bsr_wow))[:5])
-        if comp_top5:
-            lines += ["### Layer B: Competitor Pressure (top movers)", ""]
-            comp_table = to_compact_table(comp_top5, df_weekly, max_asins=5, band_fn=band_value)
-            _render_md_table(comp_table)
+        # Layer B: group view (skincare) or flat brand/competitor view (generic)
+        if brief.module_id == "skincare" and brief.group_summary:
+            lines += ["### Layer B: Product Type Groups", ""]
+            group_df = to_group_table(brief.group_summary, band_fn=band_value)
+            _render_md_table(group_df)
             lines.append("")
+
+            # Per-group ASIN receipts (up to 5 ASINs per group)
+            lines += ["#### ASIN Detail by Group", ""]
+            for g in brief.group_summary[:12]:
+                if not g.top_asins:
+                    continue
+                lines.append(
+                    f"**{g.brand} — {g.product_type.replace('_', ' ').title()}** "
+                    f"({g.asin_count} SKUs, {g.rev_share_pct:.0%} rev share)"
+                )
+                for asin in g.top_asins[:5]:
+                    m = asin_metrics.get(asin)
+                    if m:
+                        price_str = band_value(m.price_vs_tier, "price_vs_tier")
+                        bsr_str = band_value(m.bsr_wow, "rank_change")
+                        lines.append(
+                            f"  - {m.brand} ({asin[-6:]}): {price_str}, "
+                            f"BSR {bsr_str} — {m.tag} | If on ads: {m.ads_stance}"
+                        )
+                lines.append("")
+        else:
+            # Flat view — unchanged for generic mode
+            brand_metrics = {a: m for a, m in asin_metrics.items()
+                             if m.brand.lower() == your_brand.lower()}
+            comp_metrics = {a: m for a, m in asin_metrics.items()
+                            if m.brand.lower() != your_brand.lower()}
+
+            lines += ["### Layer B: Your Brand SKUs", ""]
+            brand_table = to_compact_table(brand_metrics, df_weekly, max_asins=20, band_fn=band_value)
+            _render_md_table(brand_table)
+            lines.append("")
+
+            # Competitor block: top 5 by |bsr_wow|
+            comp_top5 = dict(sorted(comp_metrics.items(), key=lambda kv: -abs(kv[1].bsr_wow))[:5])
+            if comp_top5:
+                lines += ["### Layer B: Competitor Pressure (top movers)", ""]
+                comp_table = to_compact_table(comp_top5, df_weekly, max_asins=5, band_fn=band_value)
+                _render_md_table(comp_table)
+                lines.append("")
 
     # ── Footer ────────────────────────────────────────────────────────────────
     lines += [
@@ -883,6 +976,8 @@ def render_brief_tab(
     df_daily: Optional[pd.DataFrame] = None,
     scoreboard_lines: List[str] = None,
     project_id: Optional[str] = None,
+    category_path: str = "",    # Category breadcrumb — for module inference
+    module_id: str = "",        # Override infer_module() if already known
 ):
     """
     Streamlit entry point. Renders the brief in a tab.
@@ -896,6 +991,10 @@ def render_brief_tab(
     if df_weekly.empty:
         st.info("Run Market Discovery to generate a brief.")
         return
+
+    # Read category_path from session state if not supplied
+    _cat_path = category_path or st.session_state.get("last_phase2_params", {}).get("category_path", "")
+    _mod_id = module_id or st.session_state.get("category_module_id", "")
 
     # Auto-fetch daily panel if project_id provided and df_daily not supplied
     if df_daily is None and project_id:
@@ -915,6 +1014,8 @@ def render_brief_tab(
                 runs_ads=runs_ads,
                 df_daily=df_daily,
                 scoreboard_lines=scoreboard_lines,
+                category_path=_cat_path,
+                module_id=_mod_id,
             )
             asin_metrics_map = compute_asin_metrics(
                 df_weekly,

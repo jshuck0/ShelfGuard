@@ -58,6 +58,22 @@ class ASINMetrics:
     has_momentum: bool              # True if rank improving
     fidelity: str                   # "daily" | "weekly" | "snapshot"
     ads_stance: str = "Hold"        # "Scale" | "Defend" | "Hold" | "Pause+Diagnose"
+    product_type: str = "other"     # e.g. "serum", "moisturizer" — from classify_title(title)
+    family_id: str = ""             # parent_asin if known, else own asin — used for group dedup
+
+
+@dataclass
+class ProductGroupMetrics:
+    """Aggregated metrics for a product_type × brand group."""
+    product_type: str
+    brand: str
+    asin_count: int
+    rev_share_pct: float            # fraction of total arena revenue (0.0–1.0)
+    median_price_vs_tier: float     # median price_vs_tier across group ASINs
+    pct_discounted: float           # fraction with discount_persistence >= 4/7
+    momentum_label: str             # "gaining" | "mixed" | "losing" | "flat"
+    dominant_ads_stance: str        # most common ads_stance across group
+    top_asins: List[str]            # up to 5 ASINs sorted by |bsr_wow| for receipt expansion
 
 
 def compute_asin_metrics(
@@ -160,9 +176,31 @@ def compute_asin_metrics(
 
     results = {}
 
+    # Import taxonomy classifier (lazy — avoids hard dep at module level)
+    try:
+        from config.market_misattribution_module import classify_title as _classify_title
+    except ImportError:
+        _classify_title = lambda t: "other"
+
     for asin in latest.index:
         row = latest.loc[asin]
         brand = str(row.get("brand", "Unknown"))
+
+        # ── Product taxonomy ───────────────────────────────────────────────
+        _title = str(row.get("title", "")) if "title" in row.index else ""
+        product_type = _classify_title(_title)
+
+        # family_id: parent_asin when available (for variant grouping), else own asin
+        _parent_rows = (
+            df_weekly[df_weekly["asin"] == asin]["parent_asin"]
+            if "parent_asin" in df_weekly.columns
+            else pd.Series(dtype=str)
+        )
+        family_id = (
+            str(_parent_rows.iloc[0])
+            if not _parent_rows.empty and pd.notna(_parent_rows.iloc[0])
+            else asin
+        )
 
         # ── Role Assignment ────────────────────────────────────────────────
         bsr = row.get(rank_col, np.nan)
@@ -284,9 +322,109 @@ def compute_asin_metrics(
             has_momentum=has_momentum,
             fidelity=fidelity_map.get(asin, "snapshot"),
             ads_stance=ads_stance,
+            product_type=product_type,
+            family_id=family_id,
         )
 
     return results
+
+
+def compute_group_metrics(
+    asin_metrics: Dict[str, "ASINMetrics"],
+    df_weekly: pd.DataFrame,
+    your_brand: str,
+) -> List["ProductGroupMetrics"]:
+    """
+    Aggregate ASINMetrics into product_type × brand groups.
+
+    Returns list sorted: your brand first, then by rev_share_pct descending.
+    """
+    from collections import defaultdict
+
+    # Total arena revenue for share calculation (latest week)
+    rev_col = "weekly_revenue_adjusted" if "weekly_revenue_adjusted" in df_weekly.columns else "weekly_revenue"
+    latest_week = df_weekly["week_start"].max() if "week_start" in df_weekly.columns else None
+    latest_snap = df_weekly[df_weekly["week_start"] == latest_week] if latest_week is not None else df_weekly
+    total_rev = (
+        latest_snap.groupby("asin")[rev_col].mean().sum()
+        if rev_col in latest_snap.columns else 0
+    )
+
+    # Group by (product_type, brand)
+    groups: dict = defaultdict(list)
+    for m in asin_metrics.values():
+        groups[(m.product_type, m.brand)].append(m)
+
+    result = []
+    for (ptype, brand), members in groups.items():
+        asin_set = {m.asin for m in members}
+
+        # Revenue share
+        group_snap = latest_snap[latest_snap["asin"].isin(asin_set)] if rev_col in latest_snap.columns else pd.DataFrame()
+        group_rev = group_snap.groupby("asin")[rev_col].mean().sum() if not group_snap.empty else 0
+        rev_share = group_rev / total_rev if total_rev > 0 else 0
+
+        med_price = float(np.median([m.price_vs_tier for m in members]))
+        pct_disc = sum(1 for m in members if m.discount_persistence >= 4 / 7) / len(members)
+
+        gaining = sum(1 for m in members if m.has_momentum)
+        losing = sum(1 for m in members if m.bsr_wow > 0.05)
+        n = len(members)
+        if gaining > losing and gaining > n // 3:
+            momentum = "gaining"
+        elif losing > gaining and losing > n // 3:
+            momentum = "losing"
+        elif gaining == 0 and losing == 0:
+            momentum = "flat"
+        else:
+            momentum = "mixed"
+
+        stances = [m.ads_stance for m in members]
+        dominant_stance = max(set(stances), key=stances.count)
+        top_5 = sorted(members, key=lambda m: -abs(m.bsr_wow))[:5]
+
+        result.append(ProductGroupMetrics(
+            product_type=ptype,
+            brand=brand,
+            asin_count=len(members),
+            rev_share_pct=round(rev_share, 4),
+            median_price_vs_tier=round(med_price, 4),
+            pct_discounted=round(pct_disc, 2),
+            momentum_label=momentum,
+            dominant_ads_stance=dominant_stance,
+            top_asins=[m.asin for m in top_5],
+        ))
+
+    # Sort: your brand first, then by rev_share_pct desc
+    result.sort(key=lambda g: (0 if g.brand.lower() == your_brand.lower() else 1, -g.rev_share_pct))
+    return result
+
+
+def to_group_table(
+    group_metrics: List["ProductGroupMetrics"],
+    band_fn=None,
+    max_groups: int = 15,
+) -> pd.DataFrame:
+    """
+    Build a product_type × brand summary DataFrame for Layer B group view.
+
+    One row per group. Used in skincare module mode instead of flat per-ASIN table.
+    """
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
+    rows = []
+    for g in group_metrics[:max_groups]:
+        rows.append({
+            "Product Type": g.product_type.replace("_", " ").title(),
+            "Brand": g.brand,
+            "SKUs": g.asin_count,
+            "Rev Share": f"{g.rev_share_pct:.0%}",
+            "Price vs Tier": band_fn(g.median_price_vs_tier, "price_vs_tier"),
+            "% Disc (d/7)": f"{round(g.pct_discounted * 7)}/7",
+            "Momentum": g.momentum_label.title(),
+            "If on ads": g.dominant_ads_stance,
+        })
+    return pd.DataFrame(rows)
 
 
 def to_compact_table(

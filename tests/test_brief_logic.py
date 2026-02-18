@@ -58,6 +58,8 @@ def _make_metrics(
     has_momentum=False,
     fidelity="weekly",
     ads_stance="Hold",
+    product_type="other",
+    family_id="",
 ):
     from features.asin_metrics import ASINMetrics
     return ASINMetrics(
@@ -67,6 +69,7 @@ def _make_metrics(
         price_vs_tier=price_vs_tier, price_vs_tier_band=price_vs_tier_band,
         tier_comparable=tier_comparable, bsr_wow=bsr_wow,
         has_momentum=has_momentum, fidelity=fidelity, ads_stance=ads_stance,
+        product_type=product_type, family_id=family_id,
     )
 
 
@@ -412,3 +415,151 @@ class TestReceiptsList:
         result = receipts_list(metrics, "MyBrand", max_items=6)
         combined = " ".join(result)
         assert "Pause+Diagnose" in combined or "ads" in combined.lower()
+
+
+# ─── 7. Taxonomy — classify_title + infer_module + group metrics ──────────────
+
+class TestTaxonomy:
+    """Tests for Round 5 taxonomy: classify_title(), infer_module(), compute_group_metrics()."""
+
+    # classify_title -----------------------------------------------------------
+
+    def test_classify_serum(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("CeraVe Hyaluronic Acid Serum for Face") == "serum"
+
+    def test_classify_moisturizer_from_cream(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Neutrogena Hydro Boost Face Cream") == "moisturizer"
+
+    def test_classify_cleanser(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Cetaphil Gentle Skin Cleanser 16 fl oz") == "cleanser"
+
+    def test_classify_face_wash(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("CeraVe Foaming Face Wash Facial Cleanser") == "cleanser"
+
+    def test_classify_sunscreen(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("EltaMD UV Clear Broad-Spectrum SPF 46") == "sunscreen"
+
+    def test_classify_body_wash(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Dove Sensitive Skin Body Wash") == "body wash"
+
+    def test_classify_retinol(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("RoC Retinol Correxion Line Smoothing Serum") == "retinol"
+
+    def test_classify_other(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Some Random Nutrition Supplement") == "other"
+
+    def test_classify_empty_string(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("") == "other"
+
+    def test_classify_case_insensitive(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("VITAMIN C SERUM 20% FACE BRIGHTENING") == "serum"
+
+    # infer_module -------------------------------------------------------------
+
+    def test_infer_skincare_from_skin_care(self):
+        from config.market_misattribution_module import infer_module
+        assert infer_module("Health & Household > Skin Care > Face Moisturizers") == "skincare"
+
+    def test_infer_skincare_from_serum(self):
+        from config.market_misattribution_module import infer_module
+        assert infer_module("Beauty > Face Serum Products") == "skincare"
+
+    def test_infer_generic_grocery(self):
+        from config.market_misattribution_module import infer_module
+        assert infer_module("Grocery & Gourmet Food > Beverages > Soft Drinks") == "generic"
+
+    def test_infer_generic_empty(self):
+        from config.market_misattribution_module import infer_module
+        assert infer_module("") == "generic"
+
+    # ASINMetrics has product_type field ---------------------------------------
+
+    def test_asin_metrics_has_product_type_default(self):
+        """New product_type field defaults to 'other' — backward compatible."""
+        m = _make_metrics("B01", "TestBrand")
+        assert hasattr(m, "product_type")
+        assert m.product_type == "other"
+
+    def test_asin_metrics_has_family_id_default(self):
+        """New family_id field defaults to '' — backward compatible."""
+        m = _make_metrics("B01", "TestBrand")
+        assert hasattr(m, "family_id")
+        assert m.family_id == ""
+
+    # compute_asin_metrics populates product_type via classify_title -----------
+
+    def test_compute_asin_metrics_populates_product_type(self):
+        """compute_asin_metrics() reads title and classifies it."""
+        df = _make_df_weekly([("B01", "Nat", 25.0, 3000, 3100)])
+        # Add title column so classify_title can fire
+        df["title"] = "Naturium Vitamin C Complex Serum"
+        from features.asin_metrics import compute_asin_metrics
+        metrics = compute_asin_metrics(df, {}, {}, "Nat")
+        assert "B01" in metrics
+        assert metrics["B01"].product_type == "serum"
+
+    # compute_group_metrics ----------------------------------------------------
+
+    def test_compute_group_metrics_groups_by_product_type_and_brand(self):
+        """Two ASINs with different product_types produce two separate groups."""
+        m1 = _make_metrics("B01", "Nat", bsr_wow=0.0, product_type="serum")
+        m2 = _make_metrics("B02", "Nat", bsr_wow=0.0, product_type="moisturizer")
+        df = _make_df_weekly([
+            ("B01", "Nat", 25.0, 3000, 3100),
+            ("B02", "Nat", 18.0, 4000, 4100),
+        ])
+        from features.asin_metrics import compute_group_metrics
+        groups = compute_group_metrics({"B01": m1, "B02": m2}, df, "Nat")
+        ptypes = {g.product_type for g in groups}
+        assert "serum" in ptypes
+        assert "moisturizer" in ptypes
+
+    def test_compute_group_metrics_your_brand_first(self):
+        """Your brand groups appear before competitor groups."""
+        m1 = _make_metrics("B01", "Nat", bsr_wow=0.0, product_type="serum")
+        m2 = _make_metrics("B02", "Comp", bsr_wow=0.0, product_type="serum")
+        df = _make_df_weekly([
+            ("B01", "Nat", 25.0, 1000, 1100),
+            ("B02", "Comp", 20.0, 800, 850),
+        ])
+        from features.asin_metrics import compute_group_metrics
+        groups = compute_group_metrics({"B01": m1, "B02": m2}, df, "Nat")
+        assert groups[0].brand == "Nat"
+
+    def test_compute_group_metrics_momentum_gaining(self):
+        """Group with majority has_momentum=True → momentum_label='gaining'."""
+        m1 = _make_metrics("B01", "Nat", bsr_wow=-0.15, has_momentum=True, product_type="serum")
+        m2 = _make_metrics("B02", "Nat", bsr_wow=-0.12, has_momentum=True, product_type="serum")
+        df = _make_df_weekly([
+            ("B01", "Nat", 25.0, 2000, 2400),
+            ("B02", "Nat", 25.0, 2500, 2900),
+        ])
+        from features.asin_metrics import compute_group_metrics
+        groups = compute_group_metrics({"B01": m1, "B02": m2}, df, "Nat")
+        serum_group = next(g for g in groups if g.product_type == "serum")
+        assert serum_group.momentum_label == "gaining"
+
+    # to_group_table -----------------------------------------------------------
+
+    def test_to_group_table_returns_dataframe(self):
+        from features.asin_metrics import ProductGroupMetrics, to_group_table
+        g = ProductGroupMetrics(
+            product_type="serum", brand="Nat", asin_count=3,
+            rev_share_pct=0.24, median_price_vs_tier=0.05, pct_discounted=0.2,
+            momentum_label="gaining", dominant_ads_stance="Scale", top_asins=["B01"],
+        )
+        df = to_group_table([g])
+        assert not df.empty
+        assert "Product Type" in df.columns
+        assert "Brand" in df.columns
+        assert df.iloc[0]["Product Type"] == "Serum"

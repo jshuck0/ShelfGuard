@@ -664,7 +664,15 @@ def generate_brief_markdown(
         lines += ["### Layer B: Compact Table", ""]
         table_df = to_compact_table(asin_metrics, df_weekly, max_asins=30, band_fn=band_value)
         if not table_df.empty:
-            lines.append(table_df.to_markdown(index=False))
+            # Manual markdown table — avoids tabulate dependency
+            cols = list(table_df.columns)
+            header = "| " + " | ".join(str(c) for c in cols) + " |"
+            sep = "| " + " | ".join("---" for _ in cols) + " |"
+            rows = [
+                "| " + " | ".join(str(v) if v is not None else "" for v in row) + " |"
+                for row in table_df.itertuples(index=False, name=None)
+            ]
+            lines += [header, sep] + rows
         lines.append("")
 
     # ── Footer ────────────────────────────────────────────────────────────────

@@ -156,7 +156,7 @@ pip install -r requirements.txt
 # Add: keepa.api_key, openai.api_key, supabase.url, supabase.key
 
 # Run
-streamlit run apps/shelfguard_app.py
+streamlit run apps/mvp_app.py
 ```
 
 ---

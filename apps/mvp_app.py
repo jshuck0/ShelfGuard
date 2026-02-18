@@ -45,6 +45,13 @@ st.set_page_config(
     layout="wide",
 )
 
+# ─── MVP SESSION FLAGS ────────────────────────────────────────────────────────
+# Downstream components (search_to_state_ui, etc.) can check these to suppress
+# verbose debug output and advanced UI that doesn't belong in the MVP flow.
+
+st.session_state["mvp_mode"] = True
+st.session_state.setdefault("show_advanced_debug", False)
+
 
 # ─── GOLDEN RUN INIT ─────────────────────────────────────────────────────────
 

@@ -153,8 +153,9 @@ if use_golden:
         if st.button("⬇ Load Market", type="primary"):
             with st.spinner("Mapping market — this pulls ~90 days of Keepa history. Takes ~60s…"):
                 try:
-                    from src.two_phase_discovery import phase2_category_market_mapping, fetch_detailed_weekly_data
-                    df_snapshot, _ = phase2_category_market_mapping(
+                    from src.two_phase_discovery import phase2_category_market_mapping
+                    from apps.search_to_state_ui import ensure_weekly_panel
+                    df_snapshot, market_stats = phase2_category_market_mapping(
                         category_id=GOLDEN_CATEGORY_ID,
                         seed_product_title=GOLDEN_PROJECT_NAME,
                         seed_asin=GOLDEN_SEED_ASIN,
@@ -163,15 +164,15 @@ if use_golden:
                         max_products=GOLDEN_MARKET_SIZE,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
-                    df_new = fetch_detailed_weekly_data(tuple(asins), days=90) if asins else df_snapshot
-                    if df_new.empty:
-                        df_new = df_snapshot  # last-resort fallback
+                    df_new = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
                     st.session_state["active_project_data"] = df_new
                     st.session_state["active_project_seed_brand"] = GOLDEN_BRAND
                     st.session_state["active_project_name"] = GOLDEN_PROJECT_NAME
                     st.session_state["active_project_all_asins"] = asins
-                    st.success(f"Loaded {len(asins)} ASINs.")
+                    st.success(f"Loaded {df_new['asin'].nunique()} ASINs × {df_new['week_start'].nunique()} weeks.")
                     st.rerun()
+                except SystemExit:
+                    pass  # st.stop() — let spinner clear cleanly
                 except Exception as e:
                     st.error(f"Market load failed: {e}")
     else:

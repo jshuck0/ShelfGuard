@@ -1392,8 +1392,7 @@ def render_seed_search_and_map_mvp():
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
             with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
                 try:
-                    from src.two_phase_discovery import fetch_detailed_weekly_data
-                    df_snapshot, _ = phase2_category_market_mapping(
+                    df_snapshot, market_stats = phase2_category_market_mapping(
                         category_id=int(seed_row.get("category_id", 0)),
                         seed_product_title=str(seed_row.get("title", "")),
                         seed_asin=str(seed_row.get("asin", "")),
@@ -1401,14 +1400,94 @@ def render_seed_search_and_map_mvp():
                         max_products=100,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
-                    df_weekly = fetch_detailed_weekly_data(tuple(asins), days=90) if asins else df_snapshot
-                    if df_weekly.empty:
-                        df_weekly = df_snapshot  # last-resort fallback
+                    df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
                     st.session_state["active_project_data"] = df_weekly
                     st.session_state["active_project_seed_brand"] = brand
                     st.session_state["active_project_name"] = f"{brand} Arena"
                     st.session_state["active_project_all_asins"] = asins
-                    st.success(f"Loaded {df_weekly['asin'].nunique() if 'asin' in df_weekly.columns else len(asins)} ASINs.")
+                    st.success(f"Loaded {df_weekly['asin'].nunique()} ASINs × {df_weekly['week_start'].nunique()} weeks.")
                     st.rerun()
+                except SystemExit:
+                    pass  # st.stop() — let spinner clear cleanly
                 except Exception as e:
                     st.error(f"Market mapping failed: {e}")
+
+
+# ─── MVP: WEEKLY PANEL LOADER ─────────────────────────────────────────────────
+
+def ensure_weekly_panel(
+    df_snapshot: pd.DataFrame,
+    market_stats: dict,
+    asins: list,
+    days: int = 90,
+    mvp_mode: bool = True,
+) -> pd.DataFrame:
+    """
+    Strategy A: retrieve the ASIN×week panel from phase2 output, with ordered
+    fallbacks. In mvp_mode, validates before returning and stops loudly on failure.
+
+    Fallback order:
+      1. market_stats["df_weekly"]      — phase2 success path; zero extra cost
+      2. load_weekly_timeseries(asins)  — Supabase product_snapshots; no Keepa call
+      3. fetch_detailed_weekly_data()   — Keepa; last resort only
+    """
+
+    def _is_valid_weekly(df) -> bool:
+        return (
+            isinstance(df, pd.DataFrame)
+            and not df.empty
+            and "week_start" in df.columns
+            and "asin" in df.columns
+            and len(df) > df["asin"].nunique()
+        )
+
+    # 1. Primary: phase2 success path already built this
+    df = market_stats.get("df_weekly")
+    if _is_valid_weekly(df):
+        return df
+
+    # 2. Supabase weekly cache (no Keepa call)
+    if asins:
+        try:
+            from src.supabase_reader import load_weekly_timeseries
+            df_cache = load_weekly_timeseries(tuple(asins), days=days)
+            if _is_valid_weekly(df_cache):
+                return df_cache
+        except Exception:
+            pass  # Supabase unavailable — fall through
+
+    # 3. Last resort: Keepa
+    if asins:
+        try:
+            from src.two_phase_discovery import fetch_detailed_weekly_data
+            df_keepa = fetch_detailed_weekly_data(tuple(asins), days=days)
+            if _is_valid_weekly(df_keepa):
+                return df_keepa
+        except Exception as e:
+            if mvp_mode:
+                st.error(f"Failed to load weekly panel from Keepa: {e}")
+                st.stop()
+
+    # Validation gate — explain exactly what went wrong
+    if mvp_mode:
+        df_check = df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+        reasons = []
+        if df_check.empty:
+            reasons.append("all three sources returned empty data")
+        elif "week_start" not in df_check.columns:
+            reasons.append("week_start column missing — snapshot returned instead of time-series")
+        elif "asin" not in df_check.columns:
+            reasons.append("asin column missing")
+        elif len(df_check) <= df_check["asin"].nunique():
+            reasons.append(
+                f"{len(df_check)} rows for {df_check['asin'].nunique()} ASINs "
+                "— this is a snapshot, not a time-series"
+            )
+        st.error(
+            f"❌ Weekly panel unavailable: {'; '.join(reasons) or 'unknown reason'}. "
+            "Check Keepa connectivity and Supabase access."
+        )
+        st.stop()
+
+    df_check = df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    return df_check

@@ -1391,19 +1391,10 @@ def render_seed_search_and_map_mvp():
             key="_mvp_brand_input",
         )
 
-        # Arena preset selector
-        _preset = st.selectbox(
-            "Arena size",
-            ["Fast (200 ASINs)", "Standard (300 ASINs)", "Deep (500 ASINs)"],
-            index=1,
-            key="_mvp_arena_preset",
-            help="Deep mode may exceed Keepa token budget.",
-        )
-        _arena_size, _min_comps, _brand_cap_mv = {
-            "Fast (200 ASINs)": (200, 100, 100),
-            "Standard (300 ASINs)": (300, 150, 150),
-            "Deep (500 ASINs)": (500, 250, 250),
-        }[_preset]
+        # Arena preset — read from session state (set by sidebar selectbox in mvp_app.py)
+        _arena_size  = st.session_state.get("_mvp_arena_size", 300)
+        _min_comps   = st.session_state.get("_mvp_min_comps", 150)
+        _brand_cap_mv = st.session_state.get("_mvp_brand_cap", 150)
 
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
             with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):

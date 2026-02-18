@@ -162,10 +162,13 @@ def build_brief(
     conf_score = score_confidence(df_weekly, regime_signals, confidence_cfg)
 
     # ── Portfolio-level aggregates ────────────────────────────────────────────
-    your_asins_df = df_weekly[df_weekly["brand"].str.lower() == your_brand.lower()]
-    comp_df = df_weekly[df_weekly["brand"].str.lower() != your_brand.lower()]
+    _brand_lower = df_weekly["brand"].fillna("").str.lower() if "brand" in df_weekly.columns else pd.Series("", index=df_weekly.index)
+    your_asins_df = df_weekly[_brand_lower == your_brand.lower()]
+    comp_df = df_weekly[_brand_lower != your_brand.lower()]
 
-    latest_week = df_weekly["week_start"].max()
+    latest_week = df_weekly["week_start"].max() if "week_start" in df_weekly.columns else None
+    if latest_week is None:
+        raise ValueError("df_weekly missing week_start column — cannot build brief")
     prev_week_opts = sorted(df_weekly["week_start"].unique())
     prev_week = prev_week_opts[-2] if len(prev_week_opts) >= 2 else None
 
@@ -722,31 +725,36 @@ def render_brief_tab(
             df_daily = None
 
     with st.spinner("Building brief…"):
-        brief = build_brief(
-            df_weekly=df_weekly,
-            your_brand=your_brand,
-            arena_name=arena_name,
-            runs_ads=runs_ads,
-            df_daily=df_daily,
-            scoreboard_lines=scoreboard_lines,
-        )
-        asin_metrics_map = compute_asin_metrics(
-            df_weekly,
-            role_cfg={},
-            risk_cfg={},
-            your_brand=your_brand,
-            df_daily=df_daily,
-        )
         try:
-            from config.market_misattribution_module import ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS
-            asin_metrics_map = compute_asin_metrics(
-                df_weekly, ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS,
-                your_brand=your_brand, df_daily=df_daily
+            brief = build_brief(
+                df_weekly=df_weekly,
+                your_brand=your_brand,
+                arena_name=arena_name,
+                runs_ads=runs_ads,
+                df_daily=df_daily,
+                scoreboard_lines=scoreboard_lines,
             )
-        except ImportError:
-            pass
+            asin_metrics_map = compute_asin_metrics(
+                df_weekly,
+                role_cfg={},
+                risk_cfg={},
+                your_brand=your_brand,
+                df_daily=df_daily,
+            )
+            try:
+                from config.market_misattribution_module import ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS
+                asin_metrics_map = compute_asin_metrics(
+                    df_weekly, ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS,
+                    your_brand=your_brand, df_daily=df_daily
+                )
+            except ImportError:
+                pass
 
-        md = generate_brief_markdown(brief, df_weekly, asin_metrics_map, your_brand)
+            md = generate_brief_markdown(brief, df_weekly, asin_metrics_map, your_brand)
+        except Exception as e:
+            st.error(f"❌ Brief generation failed: {e}")
+            st.caption("Check that the market data loaded correctly and the brand name matches listings.")
+            return
 
     # Persist for scoreboard
     import streamlit as st

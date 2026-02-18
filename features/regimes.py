@@ -380,12 +380,16 @@ def detect_competitor_compounding(
     if "sales_rank_filled" not in df_weekly.columns:
         return _empty_signal(regime, "No rank data")
 
-    df = df_weekly[["asin", "brand", "week_start", "sales_rank_filled", "price_per_unit",
-                     "filled_price"]].dropna(subset=["sales_rank_filled"]).copy()
-    price_col = "price_per_unit" if "price_per_unit" in df.columns else "filled_price"
+    _price_col = "price_per_unit" if "price_per_unit" in df_weekly.columns else "filled_price"
+    _sel = ["asin", "brand", "week_start", "sales_rank_filled"]
+    if _price_col in df_weekly.columns:
+        _sel.append(_price_col)
+    df = df_weekly[[c for c in _sel if c in df_weekly.columns]].dropna(subset=["sales_rank_filled"]).copy()
+    price_col = _price_col if _price_col in df.columns else None
 
-    your_df = df[df["brand"].str.lower() == your_brand.lower()]
-    comp_df = df[df["brand"].str.lower() != your_brand.lower()]
+    _brand_lower = df["brand"].fillna("").str.lower()
+    your_df = df[_brand_lower == your_brand.lower()]
+    comp_df = df[_brand_lower != your_brand.lower()]
 
     if your_df.empty or comp_df.empty:
         return _empty_signal(regime, "Missing your brand or competitor data")

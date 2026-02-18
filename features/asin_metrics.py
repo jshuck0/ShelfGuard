@@ -29,6 +29,20 @@ ALLOWED_TAGS = {
 }
 
 
+def _band_price_vs_tier(ratio: float) -> str:
+    """Convert price_vs_tier ratio to a readable position band."""
+    if ratio < -0.15:
+        return "well below tier"
+    elif ratio < -0.05:
+        return "below tier"
+    elif ratio <= 0.05:
+        return "in line"
+    elif ratio <= 0.15:
+        return "above tier"
+    else:
+        return "well above tier"
+
+
 @dataclass
 class ASINMetrics:
     asin: str
@@ -37,7 +51,9 @@ class ASINMetrics:
     tag: str                        # One of ALLOWED_TAGS
     ad_waste_risk: str              # "High" | "Med" | "Low"
     discount_persistence: float     # days/7 (0.0–1.0) or None if unknown
-    price_vs_tier: float            # (own_price - tier_median) / tier_median
+    price_vs_tier: float            # (own_price - tier_median) / tier_median — used for calc
+    price_vs_tier_band: str         # "well below tier" … "well above tier" | "not comparable"
+    tier_comparable: bool           # False if number_of_items is missing/extreme
     bsr_wow: float                  # BSR week-over-week % change
     has_momentum: bool              # True if rank improving
     fidelity: str                   # "daily" | "weekly" | "snapshot"
@@ -79,7 +95,29 @@ def compute_asin_metrics(
 
     # Arena-level aggregates (use last 4 weeks for stability)
     recent = df_weekly[df_weekly["week_start"] >= latest_week - pd.Timedelta(weeks=4)]
-    tier_median = recent[price_col].median() if price_col in recent.columns else None
+
+    # Comparability gating: exclude pack-size outliers from tier stats.
+    # An ASIN is "comparable" if number_of_items is present, > 0, and
+    # not more than 4× the arena median (catches 48-pack vs single-unit mismatch).
+    items_col = "number_of_items"
+    items_median: Optional[float] = None
+    comparable_asins: set = set()
+    if items_col in recent.columns:
+        items_vals = recent[items_col].replace(0, np.nan).dropna()
+        if not items_vals.empty:
+            items_median = float(items_vals.median())
+            comparable_mask = (
+                recent[items_col].notna()
+                & (recent[items_col] > 0)
+                & (recent[items_col] <= items_median * 4)
+            )
+            comparable_asins = set(recent.loc[comparable_mask, "asin"].unique())
+    if not comparable_asins:
+        comparable_asins = set(recent["asin"].unique())  # all comparable if no items data
+
+    # Tier median computed from comparable ASINs only (normalized price_per_unit)
+    recent_comparable = recent[recent["asin"].isin(comparable_asins)]
+    tier_median = recent_comparable[price_col].median() if price_col in recent_comparable.columns else None
 
     # Total arena revenue for share calculation
     rev_col = "weekly_revenue_adjusted" if "weekly_revenue_adjusted" in recent.columns else "weekly_revenue"
@@ -153,10 +191,23 @@ def compute_asin_metrics(
 
         # ── Price vs Tier ─────────────────────────────────────────────────
         own_price = row.get(price_col, np.nan)
+
+        # Comparability: ASIN must have a valid, non-extreme number_of_items
+        asin_items = row.get(items_col, np.nan) if items_col in row.index else np.nan
+        tier_comparable = (
+            pd.notna(asin_items)
+            and asin_items > 0
+            and (items_median is None or asin_items <= items_median * 4)
+        ) if items_median is not None else True  # treat all as comparable when no items data
+
         price_vs_tier = (
             (own_price - tier_median) / tier_median
-            if pd.notna(own_price) and tier_median and tier_median > 0
+            if (tier_comparable and pd.notna(own_price) and tier_median and tier_median > 0)
             else 0.0
+        )
+        price_vs_tier_band = (
+            _band_price_vs_tier(price_vs_tier) if tier_comparable and tier_median
+            else "not comparable"
         )
 
         # ── Ad Waste Risk ─────────────────────────────────────────────────
@@ -211,6 +262,8 @@ def compute_asin_metrics(
             ad_waste_risk=ad_waste_risk,
             discount_persistence=round(discount_pers, 2),
             price_vs_tier=round(price_vs_tier, 4),
+            price_vs_tier_band=price_vs_tier_band,
+            tier_comparable=tier_comparable,
             bsr_wow=round(bsr_wow, 4),
             has_momentum=has_momentum,
             fidelity=fidelity_map.get(asin, "snapshot"),
@@ -257,12 +310,12 @@ def to_compact_table(
     for asin, m in asin_metrics.items():
         short_name = title_map.get(asin, asin[-8:])
 
-        # Band display
+        # Band display — use pre-computed band (normalized, pack-size aware)
         if band_fn:
             price_band = band_fn(m.price_vs_tier, "price_vs_tier")
             bsr_band = band_fn(m.bsr_wow, "rank_change")
         else:
-            price_band = f"{m.price_vs_tier*100:+.1f}%"
+            price_band = m.price_vs_tier_band  # "well below tier" … "not comparable"
             bsr_band = f"{m.bsr_wow*100:+.1f}%"
 
         rows.append({
@@ -306,7 +359,7 @@ def receipts_list(
         conf = "High" if m.ad_waste_risk == "Low" and m.has_momentum else (
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
-        price_str = f"price {m.price_vs_tier*100:+.1f}% vs tier"
+        price_str = f"price {m.price_vs_tier_band}"
         bsr_str = f"BSR {m.bsr_wow*100:+.1f}% WoW"
         lines.append(
             f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]"

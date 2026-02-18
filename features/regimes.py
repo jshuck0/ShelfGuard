@@ -135,9 +135,26 @@ def detect_tier_compression(
     if price_col not in df_weekly.columns:
         return _empty_signal(regime, "No price column available")
 
-    df = df_weekly[["asin", "brand", "week_start", price_col]].dropna(subset=[price_col]).copy()
+    cols = ["asin", "brand", "week_start", price_col]
+    if "number_of_items" in df_weekly.columns:
+        cols.append("number_of_items")
+    df = df_weekly[cols].dropna(subset=[price_col]).copy()
     if df.empty:
         return _empty_signal(regime)
+
+    # Comparability gating: exclude pack-size outliers from tier stats.
+    # Uses same 4× median rule as asin_metrics.py for consistency.
+    if "number_of_items" in df.columns:
+        items_med = df["number_of_items"].replace(0, np.nan).median()
+        if pd.notna(items_med) and items_med > 0:
+            comparable_mask = (
+                df["number_of_items"].notna()
+                & (df["number_of_items"] > 0)
+                & (df["number_of_items"] <= items_med * 4)
+            )
+            df = df[comparable_mask].copy()
+    if df.empty:
+        return _empty_signal(regime, "No comparable ASINs after pack-size gating")
 
     all_weeks = sorted(df["week_start"].unique())
     if len(all_weeks) < persist_weeks + 1:

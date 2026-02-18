@@ -966,7 +966,8 @@ def phase2_category_market_mapping(
     min_products: int = 10,
     check_cache: bool = False,
     brand_filter: Optional[str] = None,
-    target_brand: Optional[str] = None  # NEW: Fetch ALL products from this brand first
+    target_brand: Optional[str] = None,  # NEW: Fetch ALL products from this brand first
+    mvp_mode: bool = False,              # MVP: strict leaf membership enforcement + capped fallback
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Phase 2: Map competitive market with brand-first fetching.
@@ -1071,18 +1072,40 @@ def phase2_category_market_mapping(
         category_level_names = list(reversed(names))  # Now leaf → root
     
     # ========== TEST EACH CATEGORY LEVEL ==========
-    # Quick count query to find the first level with enough products
+    # Quick count query to find the first level with enough products.
+    # MVP mode: caps at leaf (level 0) + one-step parent (level 1). Never falls to root-only.
     st.caption("🔍 Finding optimal category depth...")
-    
+
+    # Observability counters (populated below; used in market_stats)
+    excluded_off_leaf_count = 0
+    _mvp_search_scope = "leaf"  # "leaf" | "parent" (root never used in mvp_mode)
+
     for level_idx, test_cat_id in enumerate(category_levels):
-        # Skip testing if we're at the root category (always has enough products)
+        # MVP mode: stop after testing leaf (0) and immediate parent (1)
+        if mvp_mode and level_idx >= 2:
+            st.warning(
+                f"⚠️ MVP mode: capping category search at 1 level above leaf. "
+                f"Using search category {effective_category_id}. "
+                f"Arena may be smaller than target — leaf membership enforced post-fetch."
+            )
+            break
+
+        # Root category detected
         if test_cat_id == category_id and level_idx > 0:
+            if mvp_mode:
+                # MVP: never drop to root-only; keep the subcategory from the last iteration
+                st.warning(
+                    f"⚠️ MVP mode: reached root — NOT falling back to root-only query. "
+                    f"Keeping search category {effective_category_id} with categories_include active."
+                )
+                break
+            # Legacy: fall back to root with no categories_include
             st.caption(f"  → Falling back to root category")
             effective_category_id = category_id
             use_categories_include = False
             effective_category_path = category_level_names[-1] if category_level_names else "Root Category"
             break
-        
+
         # Build a quick count query for this category level
         count_query = {
             "perPage": min_products,  # Just need to know if >= min_products exist
@@ -1090,33 +1113,34 @@ def phase2_category_market_mapping(
             "current_SALES_gte": 1,
             "current_SALES_lte": 100000,
         }
-        
+
         # Add category filter
         if test_cat_id != category_id:
             count_query["categories_include"] = [int(test_cat_id)]
             count_query["rootCategory"] = [int(category_id)]
         else:
             count_query["rootCategory"] = [int(category_id)]
-        
+
         # Add brand filter if provided
         if brand_filter:
             count_query["brand"] = [brand_filter]
-        
+
         try:
             url = f"https://api.keepa.com/query?key={api_key}&domain={domain_id}&stats=0"
             response = requests.post(url, json=count_query, timeout=15)
-            
+
             if response.status_code == 200:
                 result = response.json()
                 product_count = len(result.get("asinList", []))
-                
+
                 level_name = category_level_names[level_idx] if level_idx < len(category_level_names) else f"Level {level_idx}"
-                
+
                 if product_count >= min_products:
                     st.caption(f"  ✅ '{level_name}' has {product_count}+ products → using this category")
                     effective_category_id = test_cat_id
                     use_categories_include = test_cat_id != category_id
                     effective_category_path = " > ".join(list(reversed(category_level_names[:level_idx+1]))) if category_level_names else category_path
+                    _mvp_search_scope = "leaf" if level_idx == 0 else "parent"
                     break
                 else:
                     st.caption(f"  ⚠️ '{level_name}' has only {product_count} products → trying broader category...")
@@ -1126,13 +1150,15 @@ def phase2_category_market_mapping(
                 st.caption(f"  ⚠️ Could not count products in category {test_cat_id}, using it anyway")
                 effective_category_id = test_cat_id
                 use_categories_include = test_cat_id != category_id
+                _mvp_search_scope = "leaf" if level_idx == 0 else "parent"
                 break
-                
+
         except Exception as e:
             # Timeout or other error, just use current level
             st.caption(f"  ⚠️ Category test failed: {str(e)[:50]}, using current level")
             effective_category_id = test_cat_id
             use_categories_include = test_cat_id != category_id
+            _mvp_search_scope = "leaf" if level_idx == 0 else "parent"
             break
     
     # Show final category being used
@@ -1232,7 +1258,14 @@ def phase2_category_market_mapping(
                                 # Skip variation parents (no data)
                                 if product.get("productType") == 5:
                                     continue
-                                
+
+                                # MVP mode: enforce leaf membership for brand products
+                                if mvp_mode and leaf_category_id:
+                                    product_cats = product.get("categories", [])
+                                    if int(leaf_category_id) not in [int(c) for c in product_cats]:
+                                        excluded_off_leaf_count += 1
+                                        continue
+
                                 # Extract product data (using safe extraction to handle nested lists)
                                 csv = product.get("csv", [])
                                 stats = product.get("stats", {})
@@ -1594,17 +1627,21 @@ def phase2_category_market_mapping(
                 if asin and asin in brand_asins_fetched:
                     continue
                 
-                # LIGHT CATEGORY VALIDATION: Just verify root category matches
-                # Since we're using categories_include, Keepa should return correct products
-                # This is a sanity check, not a strict filter
+                # CATEGORY VALIDATION
+                # MVP mode: enforce leaf membership — product.categories must contain leaf_id.
+                # Legacy mode: root-only sanity check (previous behavior).
                 product_root_category = product.get("rootCategory", 0)
-                
-                # Only reject products from completely different root categories
-                is_valid_category = product_root_category == category_id
-                
+                if mvp_mode and leaf_category_id:
+                    product_cats = product.get("categories", [])
+                    is_valid_category = int(leaf_category_id) in [int(c) for c in product_cats]
+                    if not is_valid_category:
+                        excluded_off_leaf_count += 1
+                else:
+                    is_valid_category = product_root_category == category_id
+
                 if not is_valid_category:
                     products_filtered_by_category += 1
-                    continue  # Skip products from different root categories
+                    continue  # Skip off-category products
                 
                 # Calculate revenue proxy (using safe extraction to handle nested lists)
                 csv = product.get("csv", [])
@@ -2283,7 +2320,12 @@ def phase2_category_market_mapping(
             "time_period": "90 days (weekly aggregated)",
             "target_brand": target_brand,
             "brand_product_count": brand_product_count,
-            "competitor_count": competitor_count
+            "competitor_count": competitor_count,
+            # MVP observability
+            "leaf_category_id": leaf_category_id,
+            "mvp_search_scope": _mvp_search_scope,
+            "excluded_off_leaf_count": excluded_off_leaf_count if mvp_mode else None,
+            "mvp_mode": mvp_mode,
         }
 
         if target_brand:

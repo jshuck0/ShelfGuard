@@ -162,6 +162,8 @@ if use_golden:
                         target_brand=GOLDEN_BRAND,
                         domain="US" if GOLDEN_DOMAIN == 1 else str(GOLDEN_DOMAIN),
                         max_products=GOLDEN_MARKET_SIZE,
+                        leaf_category_id=GOLDEN_CATEGORY_ID,  # treat configured ID as leaf for MVP filtering
+                        mvp_mode=True,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
                     df_new = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)

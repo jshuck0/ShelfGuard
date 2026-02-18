@@ -179,8 +179,23 @@ def build_brief(
     arena_bsr_wow = _compute_arena_bsr_wow(df_weekly, latest_week, prev_week, rank_col)
     your_bsr_wow = _compute_bsr_wow(your_asins_df, latest_week, prev_week, rank_col)
 
-    # Price/promo regime
-    tier_median = df_weekly[df_weekly["week_start"] == latest_week][price_col].median()
+    # Price/promo regime — use comparable ASINs only for tier median
+    # (exclude extreme pack-size outliers that would skew the arena baseline)
+    _latest_snap = df_weekly[df_weekly["week_start"] == latest_week]
+    if "number_of_items" in _latest_snap.columns:
+        import numpy as _np
+        _items_med = _latest_snap["number_of_items"].replace(0, _np.nan).median()
+        if _items_med and _items_med > 0:
+            _cmp = _latest_snap[
+                _latest_snap["number_of_items"].notna()
+                & (_latest_snap["number_of_items"] > 0)
+                & (_latest_snap["number_of_items"] <= _items_med * 4)
+            ]
+            tier_median = _cmp[price_col].median() if not _cmp.empty and price_col in _cmp.columns else _latest_snap[price_col].median()
+        else:
+            tier_median = _latest_snap[price_col].median()
+    else:
+        tier_median = _latest_snap[price_col].median()
     your_price = your_latest[price_col].mean() if not your_latest.empty and price_col in your_latest.columns else None
     price_vs_tier = (your_price - tier_median) / tier_median if your_price and tier_median and tier_median > 0 else None
 

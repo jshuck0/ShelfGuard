@@ -1398,6 +1398,9 @@ def render_seed_search_and_map_mvp():
                         seed_asin=str(seed_row.get("asin", "")),
                         target_brand=brand,
                         max_products=100,
+                        leaf_category_id=seed_row.get("leaf_category_id"),
+                        category_tree_ids=seed_row.get("category_tree_ids"),
+                        mvp_mode=True,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
                     df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)

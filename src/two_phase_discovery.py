@@ -968,6 +968,9 @@ def phase2_category_market_mapping(
     brand_filter: Optional[str] = None,
     target_brand: Optional[str] = None,  # NEW: Fetch ALL products from this brand first
     mvp_mode: bool = False,              # MVP: strict leaf membership enforcement + capped fallback
+    arena_size: int = 300,              # mvp_mode only: total ASINs in final arena
+    min_competitors: int = 150,          # mvp_mode only: guaranteed competitor slots
+    brand_cap: Optional[int] = None,    # mvp_mode only: max brand ASINs; defaults to arena_size - min_competitors
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     Phase 2: Map competitive market with brand-first fetching.
@@ -1035,7 +1038,15 @@ def phase2_category_market_mapping(
     all_products = []
     page = 0
     cumulative_revenue = 0
-    target_valid_products = 200
+    if mvp_mode:
+        _brand_cap = brand_cap if brand_cap is not None else (arena_size - min_competitors)
+        target_valid_products = arena_size        # replaces hardcoded 200
+        _min_competitors = min_competitors
+    else:
+        MAX_BRAND_ASINS_LEGACY = 100             # used below in brand fetch cap
+        _brand_cap = MAX_BRAND_ASINS_LEGACY
+        target_valid_products = 200             # existing value, unchanged
+        _min_competitors = 0                    # no floor enforced in legacy mode
 
     # Convert domain string to domain ID
     domain_map = {"US": 1, "GB": 2, "DE": 3, "FR": 4, "JP": 5, "CA": 6, "IT": 8, "ES": 9, "IN": 10, "MX": 11, "BR": 12}
@@ -1203,11 +1214,11 @@ def phase2_category_market_mapping(
                 if brand_asins:
                     # CRITICAL FIX: Hard cap on brand products to prevent runaway fetching
                     # Keepa returns ALL matching ASINs (can be 24,000+ for large brands like Purina)
-                    MAX_BRAND_ASINS = 100  # Hard limit - fetch at most 100 brand products
+                    # In mvp_mode: _brand_cap = arena_size - min_competitors (guarantees competitor slots)
                     original_count = len(brand_asins)
-                    if original_count > MAX_BRAND_ASINS:
-                        st.warning(f"⚠️ Found {original_count} **{target_brand}** products - limiting to top {MAX_BRAND_ASINS} by Sales Rank")
-                        brand_asins = brand_asins[:MAX_BRAND_ASINS]  # Take first 100 (best sellers due to sort by current_SALES asc)
+                    if original_count > _brand_cap:
+                        st.warning(f"⚠️ Found {original_count} **{target_brand}** products - limiting to top {_brand_cap} by Sales Rank")
+                        brand_asins = brand_asins[:_brand_cap]  # Take best sellers (sorted by current_SALES asc)
                     else:
                         st.success(f"✅ Found {len(brand_asins)} **{target_brand}** products")
                     
@@ -1450,7 +1461,10 @@ def phase2_category_market_mapping(
         
         # Pre-populate all_products with brand products
         all_products = brand_products.copy()
-    
+
+    # Track initial brand count so we can compute valid competitor count in the loop
+    _initial_brand_count = len(all_products)
+
     # ========== MAIN FETCH LOOP (Competitors) ==========
     max_pages = 10  # Safety limit (10 pages x 100 = 1000 products max)
     
@@ -1894,11 +1908,15 @@ def phase2_category_market_mapping(
                 )
                 break
 
-            # Stop when we have 100 ASINs
-            if len(all_products) >= 100:
+            # Stop condition: arena cap OR competitor floor (mvp_mode), or total cap (legacy)
+            _valid_comp_count = len(all_products) - _initial_brand_count
+            _hit_arena_cap = len(all_products) >= (arena_size if mvp_mode else 100)
+            _hit_comp_floor = mvp_mode and _valid_comp_count >= _min_competitors
+            if _hit_arena_cap or _hit_comp_floor:
                 st.success(
-                    f"✅ **Fetched {len(all_products)} ASINs**\n\n"
-                    f"Raw revenue estimate: **${cumulative_revenue:,.0f}** _(before variation deduplication)_"
+                    f"✅ **{len(all_products)} ASINs selected** "
+                    f"({_initial_brand_count} brand + {_valid_comp_count} competitors) | "
+                    f"Raw revenue: ${cumulative_revenue:,.0f}"
                 )
                 break
 
@@ -2330,6 +2348,12 @@ def phase2_category_market_mapping(
             "mvp_search_scope": _mvp_search_scope,
             "excluded_off_leaf_count": excluded_off_leaf_count if mvp_mode else None,
             "mvp_mode": mvp_mode,
+            # Arena sizing (new — populated in mvp_mode)
+            "brand_selected_count": brand_product_count,
+            "competitor_selected_count": competitor_count,
+            "selected_asins_count": len(df),
+            "arena_size_target": arena_size if mvp_mode else None,
+            "coverage_note": "estimated within scanned universe" if mvp_mode else None,
         }
 
         if target_brand:

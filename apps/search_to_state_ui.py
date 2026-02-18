@@ -1391,6 +1391,20 @@ def render_seed_search_and_map_mvp():
             key="_mvp_brand_input",
         )
 
+        # Arena preset selector
+        _preset = st.selectbox(
+            "Arena size",
+            ["Fast (200 ASINs)", "Standard (300 ASINs)", "Deep (500 ASINs)"],
+            index=1,
+            key="_mvp_arena_preset",
+            help="Deep mode may exceed Keepa token budget.",
+        )
+        _arena_size, _min_comps, _brand_cap_mv = {
+            "Fast (200 ASINs)": (200, 100, 100),
+            "Standard (300 ASINs)": (300, 150, 150),
+            "Deep (500 ASINs)": (500, 250, 250),
+        }[_preset]
+
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
             with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
                 try:
@@ -1407,10 +1421,13 @@ def render_seed_search_and_map_mvp():
                         seed_product_title=str(seed_row.get("title", "")),
                         seed_asin=str(seed_row.get("asin", "")),
                         target_brand=brand,
-                        max_products=100,
+                        max_products=2000,
                         leaf_category_id=seed_row.get("leaf_category_id"),
                         category_tree_ids=_tree_ids,
                         mvp_mode=True,
+                        arena_size=_arena_size,
+                        min_competitors=_min_comps,
+                        brand_cap=_brand_cap_mv,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
                     df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
@@ -1418,7 +1435,23 @@ def render_seed_search_and_map_mvp():
                     st.session_state["active_project_seed_brand"] = brand
                     st.session_state["active_project_name"] = f"{brand} Arena"
                     st.session_state["active_project_all_asins"] = asins
-                    st.success(f"Loaded {df_weekly['asin'].nunique()} ASINs × {df_weekly['week_start'].nunique()} weeks.")
+                    st.session_state["last_market_stats"] = market_stats
+                    _ms = market_stats
+                    st.success(
+                        f"Arena loaded — {_ms.get('brand_selected_count', '?')} brand + "
+                        f"{_ms.get('competitor_selected_count', '?')} competitors selected"
+                    )
+                    with st.expander("Market contract", expanded=True):
+                        st.markdown(f"""\
+| | |
+|---|---|
+| **Brand ASINs** | {_ms.get('brand_selected_count', '?')} |
+| **Competitor ASINs** | {_ms.get('competitor_selected_count', '?')} |
+| **Weeks of history** | {df_weekly['week_start'].nunique() if 'week_start' in df_weekly.columns else '?'} |
+| **Excluded off-leaf** | {_ms.get('excluded_off_leaf_count', 0)} |
+| **Selection basis** | Best sellers first (BSR ascending) |
+| **Coverage** | {_ms.get('coverage_note', 'estimated within scanned universe')} |
+""")
                     st.rerun()
                 except SystemExit:
                     pass  # st.stop() — let spinner clear cleanly

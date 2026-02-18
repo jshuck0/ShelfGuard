@@ -17,6 +17,16 @@ This file imports ONLY the MVP pipeline. No workflow_dashboard, analyst,
 ai_engine, unified_dashboard, revenue_attribution, or predictive_forecasting.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root and apps directory to sys.path (required on Streamlit Cloud)
+_PROJECT_ROOT = Path(__file__).parent.parent
+_APPS_DIR = Path(__file__).parent
+for _p in [str(_PROJECT_ROOT), str(_APPS_DIR)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import streamlit as st
 import pandas as pd
 from typing import Optional

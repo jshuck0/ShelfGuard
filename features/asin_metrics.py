@@ -365,9 +365,7 @@ def to_compact_table(
             price_band = m.price_vs_tier_band  # "well below tier" … "not comparable"
             bsr_band = f"{m.bsr_wow*100:+.1f}%"
 
-        ads_cell = (
-            f"If on ads: {m.ads_stance}" if m.ads_stance != "Hold" else "Hold"
-        )
+        ads_cell = f"If on ads: {m.ads_stance}"
         rows.append({
             "ASIN": short_name,
             "Brand": m.brand,
@@ -433,9 +431,7 @@ def receipts_list(
         )
         price_str = f"price {m.price_vs_tier_band}"
         bsr_str = f"BSR {band_fn(m.bsr_wow, 'rank_change')} WoW"
-        ads_hint = (
-            f" | If on ads: {m.ads_stance}" if m.ads_stance != "Hold" else ""
-        )
+        ads_hint = f" | If on ads: {m.ads_stance}"
         lines.append(
             f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]{ads_hint}"
         )

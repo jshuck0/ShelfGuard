@@ -839,6 +839,7 @@ def build_baseline_signal(
     your_bsr_wow: Optional[float],
     arena_bsr_wow: Optional[float],
     band_fn=None,
+    data_confidence: str = "Med",
 ) -> RegimeSignal:
     """
     Explicit Baseline RegimeSignal for weeks when no other regime fires.
@@ -847,6 +848,9 @@ def build_baseline_signal(
     to the "Baseline (No dominant market regime)" verdict path.
     driver_type="Unknown" so _build_misattribution_verdict() uses the
     tracking/divergence branch rather than the Market-driven branch.
+
+    data_confidence: pass conf_score.label from build_brief() so the Baseline
+    signal's confidence matches the data quality — not a hardcoded "Low".
     """
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
@@ -891,7 +895,7 @@ def build_baseline_signal(
     return RegimeSignal(
         regime="baseline",
         active=True,
-        confidence="Low",
+        confidence=data_confidence,   # inherits data confidence — not a forced "Low"
         verdict="Baseline (No dominant market regime)",
         driver_type="Unknown",
         receipts=receipts[:2],

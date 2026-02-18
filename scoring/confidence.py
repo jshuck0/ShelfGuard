@@ -117,8 +117,15 @@ def score_confidence(
             tally += 1
             reasons.append(f"{high_conf} regimes agree at High confidence → upgrade")
         elif high_conf == 0:
-            tally -= 1
-            reasons.append("No regimes at High confidence → downgrade")
+            # Only penalize if some regime reached Med confidence (was borderline — genuine ambiguity).
+            # A clean quiet week (ALL regimes at Low) means detectors ran and nothing was even close.
+            # That is a confident "no regime" finding, not a data gap — don't penalize it.
+            med_conf = sum(1 for s in regime_signals.values() if s.confidence == "Med")
+            if med_conf > 0:
+                tally -= 1
+                reasons.append(f"No regimes at High confidence ({med_conf} borderline at Med) → downgrade")
+            else:
+                reasons.append("All regimes at Low confidence (clean Baseline) → no cross-signal penalty")
 
     # ── Criterion 6: Pack size comparability ──────────────────────────────────
     if "number_of_items" in df_weekly.columns:

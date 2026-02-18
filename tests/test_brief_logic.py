@@ -94,10 +94,17 @@ class TestBuildBaselineSignal:
         sig = build_baseline_signal(0.05, 0.03)
         assert sig.driver_type == "Unknown"
 
-    def test_confidence_is_low(self):
+    def test_confidence_defaults_to_med(self):
+        """data_confidence defaults to 'Med' — not hardcoded 'Low'."""
         from features.regimes import build_baseline_signal
         sig = build_baseline_signal(0.05, 0.03)
-        assert sig.confidence == "Low"
+        assert sig.confidence == "Med"
+
+    def test_confidence_passthrough(self):
+        """Caller can pass data_confidence to propagate actual data quality."""
+        from features.regimes import build_baseline_signal
+        sig = build_baseline_signal(0.05, 0.03, data_confidence="High")
+        assert sig.confidence == "High"
 
     def test_verdict_text(self):
         from features.regimes import build_baseline_signal
@@ -155,9 +162,12 @@ class TestBaselineVerdict:
         verdict, conf, _ = self._run_verdict(your_bsr=0.05, arena_bsr=0.03)
         assert verdict == "Baseline (No dominant market regime)"
 
-    def test_tracking_confidence_is_low(self):
+    def test_tracking_confidence_uses_data_confidence(self):
+        """Baseline verdict_conf now uses conf_score.label, not hardcoded 'Low'.
+        With conf_score=None passed, it falls back to 'Med'."""
         verdict, conf, _ = self._run_verdict(0.05, 0.03)
-        assert conf == "Low"
+        # conf_score=None in test → fallback is "Med"
+        assert conf == "Med"
 
     def test_diverging_returns_unknown(self):
         """Brand diverging from arena (delta > 7pp) → 'Unknown'."""
@@ -187,23 +197,29 @@ class TestSecondarySignals:
 
     def test_price_pressure_above_threshold(self):
         signals = self._run(price_vs_tier=0.10, asin_metrics={}, your_brand="X")
-        assert any("Price pressure" in s for s in signals)
+        assert any("Price pressure" in s.claim for s in signals)
+
+    def test_price_pressure_has_two_receipts(self):
+        signals = self._run(price_vs_tier=0.10, asin_metrics={}, your_brand="X")
+        price_signals = [s for s in signals if "Price pressure" in s.claim]
+        assert price_signals
+        assert len(price_signals[0].receipts) == 2
 
     def test_price_pressure_below_threshold_not_included(self):
         signals = self._run(price_vs_tier=0.03, asin_metrics={}, your_brand="X")
-        assert not any("Price pressure" in s for s in signals)
+        assert not any("Price pressure" in s.claim for s in signals)
 
     def test_price_pressure_none_not_included(self):
         signals = self._run(price_vs_tier=None, asin_metrics={}, your_brand="X")
-        assert not any("Price pressure" in s for s in signals)
+        assert not any("Price pressure" in s.claim for s in signals)
 
     def test_price_pressure_suppressed_when_tier_compression_active(self):
         signals = self._run(0.10, {}, "X", regime_names=["tier_compression"])
-        assert not any("Price pressure" in s for s in signals)
+        assert not any("Price pressure" in s.claim for s in signals)
 
     def test_price_pressure_suppressed_when_promo_war_active(self):
         signals = self._run(0.10, {}, "X", regime_names=["promo_war"])
-        assert not any("Price pressure" in s for s in signals)
+        assert not any("Price pressure" in s.claim for s in signals)
 
     def test_discount_concentration_above_threshold(self):
         asin_metrics = {
@@ -215,7 +231,17 @@ class TestSecondarySignals:
         }
         # 4 out of 5 = 80% ≥ 40%
         signals = self._run(None, asin_metrics, "X")
-        assert any("Discount concentration" in s for s in signals)
+        assert any("Discount concentration" in s.claim for s in signals)
+
+    def test_discount_concentration_has_two_receipts(self):
+        asin_metrics = {
+            "A1": _make_metrics(role="Core", discount_persistence=4/7 + 0.01),
+            "A2": _make_metrics(role="Core", discount_persistence=4/7 + 0.01),
+        }
+        signals = self._run(None, asin_metrics, "X")
+        disc_signals = [s for s in signals if "Discount concentration" in s.claim]
+        assert disc_signals
+        assert len(disc_signals[0].receipts) == 2
 
     def test_discount_concentration_below_threshold(self):
         asin_metrics = {
@@ -226,7 +252,7 @@ class TestSecondarySignals:
         }
         # 1 out of 4 = 25% < 40%
         signals = self._run(None, asin_metrics, "X")
-        assert not any("Discount concentration" in s for s in signals)
+        assert not any("Discount concentration" in s.claim for s in signals)
 
     def test_discount_concentration_suppressed_when_promo_war_active(self):
         asin_metrics = {
@@ -234,7 +260,7 @@ class TestSecondarySignals:
             "A2": _make_metrics(role="Core", discount_persistence=4/7 + 0.01),
         }
         signals = self._run(None, asin_metrics, "X", regime_names=["promo_war"])
-        assert not any("Discount concentration" in s for s in signals)
+        assert not any("Discount concentration" in s.claim for s in signals)
 
     def test_max_two_signals(self):
         asin_metrics = {

@@ -45,6 +45,13 @@ class BriefDriver:
 
 
 @dataclass
+class SecondarySignal:
+    """A secondary market signal with 2 auditable receipts."""
+    claim: str
+    receipts: List[str]          # Exactly 2
+
+
+@dataclass
 class WeeklyBrief:
     """Complete brief for one arena × one week."""
     brand: str
@@ -85,7 +92,7 @@ class WeeklyBrief:
     confidence_score: Optional[ConfidenceScore] = None
     runs_ads: Optional[bool] = None   # None = omit budget language
     active_regime_names: List[str] = field(default_factory=list)
-    secondary_signals: List[str] = field(default_factory=list)
+    secondary_signals: List[SecondarySignal] = field(default_factory=list)
     data_quality: str = "Partial"
     data_fidelity: str = "weekly"     # "daily" | "weekly proxy"
 
@@ -183,7 +190,11 @@ def build_brief(
 
     # Inject Baseline if no regime fired — must come AFTER arena/brand BSR computed
     if not firing:
-        firing = [build_baseline_signal(your_bsr_wow, arena_bsr_wow, band_fn=band_value)]
+        firing = [build_baseline_signal(
+            your_bsr_wow, arena_bsr_wow,
+            band_fn=band_value,
+            data_confidence=conf_score.label,  # Baseline inherits data confidence
+        )]
 
     active_names = [s.regime for s in firing]
 
@@ -247,7 +258,10 @@ def build_brief(
     )
 
     # ── Section 7: Watch Triggers ─────────────────────────────────────────────
-    watch_triggers = _build_watch_triggers(firing, regime_signals, your_bsr_wow, band_fn=band_value)
+    watch_triggers = _build_watch_triggers(
+        firing, regime_signals, your_bsr_wow, band_fn=band_value,
+        asin_metrics=asin_metrics, your_brand=your_brand,
+    )
 
     return WeeklyBrief(
         brand=your_brand,
@@ -412,7 +426,7 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
         )
         if _tracking:
             verdict = "Baseline (No dominant market regime)"
-            verdict_conf = "Low"
+            verdict_conf = conf_score.label if conf_score else "Med"  # data confidence, not forced "Low"
             receipts = [
                 "Arena-wide BSR stable WoW — no active regime detected",
                 "Brand tracking arena: performance consistent with steady-state",
@@ -572,7 +586,10 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
     return asks[:2], coordination
 
 
-def _build_watch_triggers(firing, all_signals, your_bsr, band_fn=None) -> List[str]:
+def _build_watch_triggers(
+    firing, all_signals, your_bsr, band_fn=None,
+    asin_metrics=None, your_brand="",
+) -> List[str]:
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
     triggers = []
@@ -600,14 +617,35 @@ def _build_watch_triggers(firing, all_signals, your_bsr, band_fn=None) -> List[s
                 "If the new entrant accumulates 50+ reviews next week, "
                 "flag for competitive intel — aggressive launch likely."
             )
+        elif top.regime == "baseline":
+            triggers.append(
+                "If brand vs arena BSR delta exceeds ≥7pp next week, "
+                "investigate internal factors (listing, stock, pricing) before attributing to market."
+            )
         else:
             triggers.append(
                 "If this regime persists for a third consecutive week, "
                 "escalate from monitoring to active response."
             )
 
-    # Trigger 2: portfolio-level watch
-    if your_bsr is not None and your_bsr > 0.10:
+    # Trigger 2: for Baseline → SKU-pressure; otherwise → portfolio-level BSR/BB watch
+    if firing and firing[0].regime == "baseline" and asin_metrics and your_brand:
+        pause_skus = [
+            m for m in asin_metrics.values()
+            if m.brand.lower() == your_brand.lower() and m.ads_stance == "Pause+Diagnose"
+        ]
+        if pause_skus:
+            skus = ", ".join(m.asin[-6:] for m in pause_skus[:3])
+            triggers.append(
+                f"{len(pause_skus)} Core SKU(s) above tier + losing visibility ({skus}) — "
+                "confirm in-stock and listing health before next week."
+            )
+        else:
+            triggers.append(
+                "If any Core SKU flips to 'above tier + losing visibility' next week, "
+                "treat as SKU-level issue: check Buy Box, OOS, and listing status."
+            )
+    elif your_bsr is not None and your_bsr > 0.10:
         triggers.append(
             f"If your brand BSR continues declining next week (currently {band_fn(your_bsr, 'rank_change')} WoW), "
             "cross-check with Seller Central for listing suppression or stock issues."
@@ -621,9 +659,9 @@ def _build_watch_triggers(firing, all_signals, your_bsr, band_fn=None) -> List[s
     return triggers[:2]
 
 
-def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, band_fn) -> List[str]:
+def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, band_fn) -> List[SecondarySignal]:
     """Secondary market signals — capped at 2 — shown only when not already a driver regime."""
-    signals = []
+    signals: List[SecondarySignal] = []
     regime_names = {s.regime for s in firing}
 
     # Signal 1: Price pressure — only if not already a driver regime
@@ -631,7 +669,17 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
             and "tier_compression" not in regime_names
             and "promo_war" not in regime_names):
         tier_label = band_fn(price_vs_tier, "price_vs_tier")
-        signals.append(f"Price pressure: brand Core SKUs priced {tier_label} vs arena median (Med confidence)")
+        # Build 2 auditable receipts
+        core_brand = [m for m in asin_metrics.values()
+                      if m.role == "Core" and m.brand.lower() == your_brand.lower()]
+        n_above = sum(1 for m in core_brand if m.price_vs_tier > 0.05) if core_brand else 0
+        r1 = (f"{n_above}/{len(core_brand)} brand Core SKUs priced above tier median"
+              if core_brand else "Brand Core SKUs priced above arena tier median")
+        r2 = f"Brand vs arena price gap: {tier_label} — exceeds 5% monitoring threshold"
+        signals.append(SecondarySignal(
+            claim=f"Price pressure: brand Core SKUs priced {tier_label} vs arena median (Med confidence)",
+            receipts=[r1, r2],
+        ))
 
     # Signal 2: Discount concentration — arena-level, only if promo_war not already active
     if "promo_war" not in regime_names:
@@ -640,10 +688,14 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
             discounted = sum(1 for m in core_asins if m.discount_persistence >= 4 / 7)
             pct = discounted / len(core_asins)
             if pct >= 0.40:
-                signals.append(
-                    f"Discount concentration: {round(pct * 100)}% of arena Core SKUs "
-                    f"discounted ≥4/7 days (Med confidence)"
-                )
+                signals.append(SecondarySignal(
+                    claim=(f"Discount concentration: {round(pct * 100)}% of arena Core SKUs "
+                           f"discounted ≥4/7 days (Med confidence)"),
+                    receipts=[
+                        f"{discounted}/{len(core_asins)} arena Core SKUs discounted ≥4 of 7 days last week",
+                        "Promo war regime not yet active — monitoring for escalation next week",
+                    ],
+                ))
 
     return signals[:2]
 
@@ -729,8 +781,10 @@ def generate_brief_markdown(
     if brief.secondary_signals:
         lines += ["", "## Secondary Signals (monitor — not dominant)", ""]
         for sig in brief.secondary_signals:
-            lines.append(f"- {sig}")
-        lines.append("")
+            lines.append(f"**{sig.claim}**")
+            for r in sig.receipts[:2]:
+                lines.append(f"  - {r}")
+            lines.append("")
 
     # ── Section 5: Implications ───────────────────────────────────────────────
     lines += ["## 5. Implications", ""]
@@ -778,20 +832,33 @@ def generate_brief_markdown(
             lines.append(f"- {line}")
         lines.append("")
 
-        # Layer B: Compact table
-        lines += ["### Layer B: Compact Table", ""]
-        table_df = to_compact_table(asin_metrics, df_weekly, max_asins=30, band_fn=band_value)
-        if not table_df.empty:
-            # Manual markdown table — avoids tabulate dependency
-            cols = list(table_df.columns)
-            header = "| " + " | ".join(str(c) for c in cols) + " |"
-            sep = "| " + " | ".join("---" for _ in cols) + " |"
-            rows = [
-                "| " + " | ".join(str(v) if v is not None else "" for v in row) + " |"
-                for row in table_df.itertuples(index=False, name=None)
-            ]
-            lines += [header, sep] + rows
+        # Layer B: Compact table — brand first, then competitor pressure block
+        brand_metrics = {a: m for a, m in asin_metrics.items()
+                         if m.brand.lower() == your_brand.lower()}
+        comp_metrics = {a: m for a, m in asin_metrics.items()
+                        if m.brand.lower() != your_brand.lower()}
+
+        def _render_md_table(tdf):
+            if tdf.empty:
+                return
+            cols = list(tdf.columns)
+            lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+            lines.append("| " + " | ".join("---" for _ in cols) + " |")
+            for row in tdf.itertuples(index=False, name=None):
+                lines.append("| " + " | ".join(str(v) if v is not None else "" for v in row) + " |")
+
+        lines += ["### Layer B: Your Brand SKUs", ""]
+        brand_table = to_compact_table(brand_metrics, df_weekly, max_asins=20, band_fn=band_value)
+        _render_md_table(brand_table)
         lines.append("")
+
+        # Competitor block: top 5 by |bsr_wow|
+        comp_top5 = dict(sorted(comp_metrics.items(), key=lambda kv: -abs(kv[1].bsr_wow))[:5])
+        if comp_top5:
+            lines += ["### Layer B: Competitor Pressure (top movers)", ""]
+            comp_table = to_compact_table(comp_top5, df_weekly, max_asins=5, band_fn=band_value)
+            _render_md_table(comp_table)
+            lines.append("")
 
     # ── Footer ────────────────────────────────────────────────────────────────
     lines += [

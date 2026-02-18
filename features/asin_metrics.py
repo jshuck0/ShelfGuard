@@ -328,6 +328,9 @@ def to_compact_table(
                 ),
             )
             _keeper_asins.add(_best)
+        # Safety: if dedup produced empty set (shouldn't happen), show all
+        if not _keeper_asins:
+            _keeper_asins = set(asin_metrics.keys())
 
     role_order = {"Core": 0, "Challenger": 1, "Long-tail": 2}
     rows = []
@@ -371,11 +374,14 @@ def receipts_list(
     asin_metrics: Dict[str, ASINMetrics],
     your_brand: str,
     max_items: int = 8,
+    band_fn=None,
 ) -> List[str]:
     """
     Build Layer A: the 5–8 line ASIN receipts list for the brief.
     Format: "Brand (ASIN…): 2 signals + confidence"
     """
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
     lines = []
     sorted_asins = sorted(
         asin_metrics.values(),
@@ -387,7 +393,7 @@ def receipts_list(
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
         price_str = f"price {m.price_vs_tier_band}"
-        bsr_str = f"BSR {m.bsr_wow*100:+.1f}% WoW"
+        bsr_str = f"BSR {band_fn(m.bsr_wow, 'rank_change')} WoW"
         lines.append(
             f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]"
         )

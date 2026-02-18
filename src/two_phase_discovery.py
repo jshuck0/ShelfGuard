@@ -1632,8 +1632,12 @@ def phase2_category_market_mapping(
                 # Legacy mode: root-only sanity check (previous behavior).
                 product_root_category = product.get("rootCategory", 0)
                 if mvp_mode and leaf_category_id:
-                    product_cats = product.get("categories", [])
-                    is_valid_category = int(leaf_category_id) in [int(c) for c in product_cats]
+                    product_cats = product.get("categories", []) or []
+                    try:
+                        cat_ids = {int(c) for c in product_cats if c is not None}
+                        is_valid_category = int(leaf_category_id) in cat_ids
+                    except (TypeError, ValueError):
+                        is_valid_category = False
                     if not is_valid_category:
                         excluded_off_leaf_count += 1
                 else:

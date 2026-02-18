@@ -215,11 +215,11 @@ def build_brief(
     )
 
     # ── Section 3: Drivers ────────────────────────────────────────────────────
-    drivers = _build_drivers(firing, regime_signals, conf_score, your_bsr_wow, arena_bsr_wow)
+    drivers = _build_drivers(firing, regime_signals, conf_score, your_bsr_wow, arena_bsr_wow, band_fn=band_value)
 
     # ── Section 4: Misattribution Verdict ─────────────────────────────────────
     verdict, verdict_conf, verdict_receipts = _build_misattribution_verdict(
-        firing, regime_signals, conf_score, your_bsr_wow, arena_bsr_wow
+        firing, regime_signals, conf_score, your_bsr_wow, arena_bsr_wow, band_fn=band_value
     )
 
     # ── Section 5: Implications ───────────────────────────────────────────────
@@ -234,7 +234,7 @@ def build_brief(
     )
 
     # ── Section 7: Watch Triggers ─────────────────────────────────────────────
-    watch_triggers = _build_watch_triggers(firing, regime_signals, your_bsr_wow)
+    watch_triggers = _build_watch_triggers(firing, regime_signals, your_bsr_wow, band_fn=band_value)
 
     return WeeklyBrief(
         brand=your_brand,
@@ -339,7 +339,9 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     return bullets[:3]
 
 
-def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr) -> List[BriefDriver]:
+def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr, band_fn=None) -> List[BriefDriver]:
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
     drivers = []
 
     for signal in firing[:2]:
@@ -361,7 +363,7 @@ def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr) -> List
     if not drivers:
         if arena_bsr is not None:
             drivers.append(BriefDriver(
-                claim=f"Arena-wide rank movement ({arena_bsr*100:+.1f}% median BSR WoW) — no specific regime detected",
+                claim=f"Arena-wide rank movement ({band_fn(arena_bsr, 'rank_change')} median BSR WoW) — no specific regime detected",
                 receipts=["Arena median BSR shift vs prior week", "No single brand driving movement"],
                 confidence=conf_score.label,
             ))
@@ -369,7 +371,9 @@ def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr) -> List
     return drivers[:2]
 
 
-def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, arena_bsr):
+def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, arena_bsr, band_fn=None):
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
     market_regimes = [s for s in firing if s.driver_type == "Market-driven"]
     brand_signals = []  # Would require Seller Central data — not available
 
@@ -387,7 +391,7 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
         if market_regimes[0].receipts:
             receipts.append(market_regimes[0].receipts[0].label)
         if arena_bsr is not None:
-            receipts.append(f"Arena BSR {arena_bsr*100:+.1f}% WoW (market context)")
+            receipts.append(f"Arena BSR {band_fn(arena_bsr, 'rank_change')} WoW (market context)")
     else:
         verdict = "Unknown"
         verdict_conf = "Low"
@@ -536,7 +540,9 @@ def _build_requests(firing, verdict, your_brand, asin_metrics) -> tuple:
     return asks[:2], coordination
 
 
-def _build_watch_triggers(firing, all_signals, your_bsr) -> List[str]:
+def _build_watch_triggers(firing, all_signals, your_bsr, band_fn=None) -> List[str]:
+    if band_fn is None:
+        band_fn = lambda v, t: f"{v*100:+.1f}%"
     triggers = []
 
     # Trigger 1: based on most active regime
@@ -571,7 +577,7 @@ def _build_watch_triggers(firing, all_signals, your_bsr) -> List[str]:
     # Trigger 2: portfolio-level watch
     if your_bsr is not None and your_bsr > 0.10:
         triggers.append(
-            f"If your brand BSR continues declining next week (currently {your_bsr*100:+.1f}% this week), "
+            f"If your brand BSR continues declining next week (currently {band_fn(your_bsr, 'rank_change')} WoW), "
             "cross-check with Seller Central for listing suppression or stock issues."
         )
     else:
@@ -701,7 +707,7 @@ def generate_brief_markdown(
 
         # Layer A: Receipts list
         lines += ["### Layer A: ASIN Receipts", ""]
-        receipt_lines = receipts_list(asin_metrics, your_brand, max_items=8)
+        receipt_lines = receipts_list(asin_metrics, your_brand, max_items=8, band_fn=band_value)
         for line in receipt_lines:
             lines.append(f"- {line}")
         lines.append("")

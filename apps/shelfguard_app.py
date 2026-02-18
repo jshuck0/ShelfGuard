@@ -113,6 +113,15 @@ except ImportError:
     WORKFLOW_DASHBOARD_ENABLED = False
     render_workflow_dashboard = None
 
+# Golden Run Config (Market Misattribution Shield rapid iteration)
+try:
+    from config.golden_run import is_golden_run_active, get_golden_session_state
+    GOLDEN_RUN_AVAILABLE = True
+except ImportError:
+    GOLDEN_RUN_AVAILABLE = False
+    is_golden_run_active = lambda: False
+    get_golden_session_state = lambda: {}
+
 # Predictive Forecasting Engine - Phase 2.5
 try:
     from src.predictive_forecasting import (
@@ -1043,6 +1052,16 @@ if labs_enabled:
 # === TOP LEVEL NAVIGATION ===
 # Workflow Dashboard is the new default landing page
 # Labs-only tabs are always rendered but gated internally
+# === GOLDEN RUN: Pre-populate session state if enabled ===
+# When GOLDEN_RUN_ENABLED=True in config/golden_run.py, skip discovery entirely
+# and load the hardcoded brand/seed into session state on every run.
+if GOLDEN_RUN_AVAILABLE and is_golden_run_active():
+    golden_state = get_golden_session_state()
+    for key, val in golden_state.items():
+        if key not in st.session_state or not st.session_state[key]:
+            st.session_state[key] = val
+    st.sidebar.success("🏆 Golden Run active — discovery bypassed")
+
 tab_workflow, main_tab1, main_tab2, tab_discovery, tab_projects, main_tab5 = st.tabs([
     "📋 Workflow",
     "🛡️ Command Center",

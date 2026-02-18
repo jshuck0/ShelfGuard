@@ -17,6 +17,8 @@ __pycache__/
 # --- Local Data & Scraper Outputs ---
 # Now that state is in Supabase, ignore all local data folders
 data/
+!data/*.py
+!data/__init__.py
 outputs/
 archive/
 *.csv

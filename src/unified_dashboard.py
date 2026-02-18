@@ -94,9 +94,14 @@ def render_unified_dashboard():
         """, unsafe_allow_html=True)
         return
 
-    # Unpack Data
-    current_revenue = res.get('total_rev', 0)
-    previous_revenue = current_revenue * 0.9 # Fallback estimate if not strictly calc
+    # Unpack Data - weekly_revenue is now the base unit
+    WEEKS_PER_MONTH = 4.33
+    current_weekly_revenue = res.get('weekly_rev', res.get('total_rev', 0))
+    current_monthly_revenue = res.get('monthly_rev', current_weekly_revenue * WEEKS_PER_MONTH)
+
+    # Legacy alias for backward compatibility
+    current_revenue = current_weekly_revenue
+    previous_revenue = current_revenue * 0.9  # Fallback estimate if not strictly calc
     
     
     # Re-calculate previous revenue more accurately from df_weekly if possible
@@ -208,11 +213,11 @@ def render_unified_dashboard():
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(
-                label="Total Revenue (Last 30 Days)",
-                value=f_money(current_revenue),
+                label="Weekly Revenue",
+                value=f"{f_money(current_weekly_revenue)}/wk",
                 delta=f"{attribution.delta_pct:.1f}% vs prior period",
                 delta_color="normal",
-                help="Sum of revenue from all monitored ASINs over the past 30 days, compared to the prior 30-day period."
+                help=f"Average weekly revenue from all monitored ASINs. Monthly: {f_money(current_monthly_revenue)}/mo"
             )
         with col2:
             earned_pct = attribution.get_earned_percentage()
@@ -364,6 +369,10 @@ def render_unified_dashboard():
                 <b>Temporary Inflation:</b> Extra revenue from temporary market conditions that will likely reverse.
                 """
 
+                # Calculate weekly equivalents for display
+                weekly_sustainable = sustainable_run_rate / WEEKS_PER_MONTH
+                weekly_temp_inflation = temporary_inflation / WEEKS_PER_MONTH
+
                 st.markdown(f"""
                 <div style="background: {banner_color}; border-left: 5px solid {'#dc3545' if abs(inflation_pct) > 20 else '#ffc107' if abs(inflation_pct) > 10 else '#28a745'};
                             padding: 20px; border-radius: 6px; margin-bottom: 20px;">
@@ -373,18 +382,19 @@ def render_unified_dashboard():
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;">
                         <div>
-                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Revenue (Last 30 Days)</div>
-                            <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_revenue:,.0f}/mo</div>
+                            <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Current Weekly Revenue</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #1a1a1a;">${current_weekly_revenue:,.0f}/wk</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 2px;">(${current_monthly_revenue:,.0f}/mo)</div>
                         </div>
                         <div>
                             <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Sustainable Run Rate</div>
-                            <div style="font-size: 24px; font-weight: 700; color: #28a745;">${sustainable_run_rate:,.0f}/mo</div>
-                            <div style="font-size: 11px; color: #666; margin-top: 2px;">= Current − Temporary</div>
+                            <div style="font-size: 24px; font-weight: 700; color: #28a745;">${weekly_sustainable:,.0f}/wk</div>
+                            <div style="font-size: 11px; color: #666; margin-top: 2px;">(${sustainable_run_rate:,.0f}/mo) = Current − Temporary</div>
                         </div>
                         <div>
                             <div style="font-size: 13px; color: #666; margin-bottom: 4px;">Temporary {'Inflation' if temporary_inflation > 0 else 'Deflation'}</div>
                             <div style="font-size: 24px; font-weight: 700; color: {'#dc3545' if temporary_inflation > 0 else '#28a745'};">
-                                {'+' if temporary_inflation > 0 else ''}${temporary_inflation:,.0f}
+                                {'+' if weekly_temp_inflation > 0 else ''}${weekly_temp_inflation:,.0f}/wk
                             </div>
                             <div style="font-size: 12px; color: #666; margin-top: 4px;">
                                 ({abs(inflation_pct):.0f}% of current) - Reverses in ~{temporary_duration} days

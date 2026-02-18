@@ -526,10 +526,11 @@ async def run_sherlock_analysis(
     competitor_brand: str = "",
     world_context_dict: Optional[Dict] = None,
     category: str = "default",
+    archetype_context: Optional[str] = None,
 ) -> DailyBrief:
     """
     Run the complete 4-step Sherlock analysis.
-    
+
     Args:
         events: Sparse event stream from transform_to_event_stream()
         project_id: For journal lookup
@@ -537,7 +538,8 @@ async def run_sherlock_analysis(
         competitor_brand: Main competitor for Red Team
         world_context_dict: Optional pre-computed world context
         category: Product category for seasonality
-        
+        archetype_context: Optional archetype guidance (from get_archetype_guidance())
+
     Returns:
         DailyBrief with 3 strategic narratives
     """
@@ -562,8 +564,15 @@ async def run_sherlock_analysis(
     
     # Run the 5-step loop (Analyst → Skeptic → Editor → Oracle → Red Team)
     print("🔍 Step 1: Analyst finding patterns (10 ideas, high creativity)...")
+
+    # Inject archetype context if available
+    analyst_world_context = world_context_str
+    if archetype_context:
+        analyst_world_context = f"{world_context_str}\n\n{archetype_context}"
+        print(f"   (With archetype context)")
+
     analyst_output = await run_analyst_step(
-        client, events, world_context_str, journal_context_str, model
+        client, events, analyst_world_context, journal_context_str, model
     )
     pattern_count = len(analyst_output.get("patterns", []))
     print(f"   Found {pattern_count} patterns")

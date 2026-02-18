@@ -279,14 +279,29 @@ def ensure_data_loaded():
     
     market_snapshot['is_your_brand'] = market_snapshot['is_your_brand'] | title_match
     
-    # Revenue Proxy
-    if 'revenue_proxy' not in market_snapshot.columns or market_snapshot['revenue_proxy'].isna().all():
-        if 'avg_weekly_revenue' in market_snapshot.columns:
-            market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0) * 4.33
+    # === STANDARDIZED REVENUE COLUMNS (2026-01-30) ===
+    # Base unit: WEEKLY (weekly_revenue is the source of truth)
+    # Monthly is always calculated as weekly * 4.33
+    WEEKS_PER_MONTH = 4.33
+
+    # Ensure weekly_revenue exists
+    if 'weekly_revenue' not in market_snapshot.columns:
+        if 'weekly_sales_filled' in market_snapshot.columns:
+            market_snapshot['weekly_revenue'] = pd.to_numeric(market_snapshot['weekly_sales_filled'], errors='coerce').fillna(0)
+        elif 'avg_weekly_revenue' in market_snapshot.columns:
+            market_snapshot['weekly_revenue'] = pd.to_numeric(market_snapshot['avg_weekly_revenue'], errors='coerce').fillna(0)
+        elif 'revenue_proxy' in market_snapshot.columns:
+            # Legacy: revenue_proxy might be weekly or monthly - assume weekly for consistency
+            market_snapshot['weekly_revenue'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
         else:
-            market_snapshot['revenue_proxy'] = 0.0
-    else:
-        market_snapshot['revenue_proxy'] = pd.to_numeric(market_snapshot['revenue_proxy'], errors='coerce').fillna(0)
+            market_snapshot['weekly_revenue'] = 0.0
+
+    # Ensure monthly_revenue exists (derived from weekly)
+    if 'monthly_revenue' not in market_snapshot.columns:
+        market_snapshot['monthly_revenue'] = market_snapshot['weekly_revenue'] * WEEKS_PER_MONTH
+
+    # Legacy alias (to be deprecated)
+    market_snapshot['revenue_proxy'] = market_snapshot['weekly_revenue'].copy()
 
     portfolio_df = market_snapshot[market_snapshot['is_your_brand']].copy()
     market_df = market_snapshot
@@ -307,29 +322,42 @@ def ensure_data_loaded():
             market_snapshot['price_gap_vs_competitor'] = (
                 (market_snapshot[price_col] - market_avg_price) / market_avg_price
             ).fillna(0)
-    
-    # Metrics
-    portfolio_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in portfolio_df.columns else 'revenue_proxy'
-    portfolio_revenue = portfolio_df[portfolio_rev_col].sum() if portfolio_rev_col in portfolio_df.columns else 0
+
+    # Metrics - Use weekly_revenue as the base unit
+    portfolio_rev_col = 'weekly_revenue_adjusted' if 'weekly_revenue_adjusted' in portfolio_df.columns else 'weekly_revenue'
+    portfolio_weekly_revenue = portfolio_df[portfolio_rev_col].sum() if portfolio_rev_col in portfolio_df.columns else 0
+    portfolio_monthly_revenue = portfolio_weekly_revenue * WEEKS_PER_MONTH
     portfolio_product_count = len(portfolio_df)
-    
-    market_rev_col = 'revenue_proxy_adjusted' if 'revenue_proxy_adjusted' in market_df.columns else 'revenue_proxy'
-    total_market_revenue = market_df[market_rev_col].sum() if market_rev_col in market_df.columns else 0
+
+    market_rev_col = 'weekly_revenue_adjusted' if 'weekly_revenue_adjusted' in market_df.columns else 'weekly_revenue'
+    total_market_weekly_revenue = market_df[market_rev_col].sum() if market_rev_col in market_df.columns else 0
+    total_market_monthly_revenue = total_market_weekly_revenue * WEEKS_PER_MONTH
     total_market_products = len(market_df)
-    
-    competitor_revenue = total_market_revenue - portfolio_revenue
+
+    competitor_weekly_revenue = total_market_weekly_revenue - portfolio_weekly_revenue
+    competitor_monthly_revenue = competitor_weekly_revenue * WEEKS_PER_MONTH
     competitor_product_count = total_market_products - portfolio_product_count
-    
-    your_market_share = (portfolio_revenue / total_market_revenue * 100) if total_market_revenue > 0 else 0
+
+    # Legacy: portfolio_revenue for backward compatibility (now weekly)
+    portfolio_revenue = portfolio_weekly_revenue
+    total_market_revenue = total_market_weekly_revenue
+    competitor_revenue = competitor_weekly_revenue
+
+    your_market_share = (portfolio_weekly_revenue / total_market_weekly_revenue * 100) if total_market_weekly_revenue > 0 else 0
 
     # Snapshot DF for Dashboard
     portfolio_snapshot_df = portfolio_df.copy()
-    if 'revenue_proxy' in portfolio_snapshot_df.columns:
-        portfolio_snapshot_df['revenue_proxy'] = pd.to_numeric(portfolio_snapshot_df['revenue_proxy'], errors='coerce').fillna(0)
+    if 'weekly_revenue' in portfolio_snapshot_df.columns:
+        portfolio_snapshot_df['weekly_revenue'] = pd.to_numeric(portfolio_snapshot_df['weekly_revenue'], errors='coerce').fillna(0)
     else:
-        portfolio_snapshot_df['revenue_proxy'] = 0.0
-    
-    portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['revenue_proxy'].copy()
+        portfolio_snapshot_df['weekly_revenue'] = 0.0
+
+    # Ensure monthly_revenue column exists
+    portfolio_snapshot_df['monthly_revenue'] = portfolio_snapshot_df['weekly_revenue'] * WEEKS_PER_MONTH
+
+    # Legacy aliases
+    portfolio_snapshot_df['revenue_proxy'] = portfolio_snapshot_df['weekly_revenue'].copy()
+    portfolio_snapshot_df['weekly_sales_filled'] = portfolio_snapshot_df['weekly_revenue'].copy()
 
     # === CALCULATE ACTUAL STATE VALUES (not hardcoded) ===
     # Use available signals to differentiate product states
@@ -382,7 +410,7 @@ def ensure_data_loaded():
     portfolio_snapshot_df['is_healthy'] = state_cols['is_healthy']
 
     # === CALCULATE ACTUAL ZONE REVENUE DISTRIBUTION ===
-    rev_col = 'revenue_proxy'
+    rev_col = 'weekly_revenue'  # Use weekly as base unit
     zone_revenue = {
         '✅ HOLD': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '✅ HOLD'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
         '🛡️ DEFEND': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '🛡️ DEFEND'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
@@ -390,30 +418,32 @@ def ensure_data_loaded():
         '🔄 REPLENISH': portfolio_snapshot_df[portfolio_snapshot_df['predictive_zone'] == '🔄 REPLENISH'][rev_col].sum() if rev_col in portfolio_snapshot_df.columns else 0,
     }
 
-    # RES Object
+    # RES Object - now uses weekly_revenue as base
     res = {
         'data': portfolio_snapshot_df,
-        'total_rev': portfolio_revenue,
+        'total_rev': portfolio_weekly_revenue,  # Weekly (base unit)
+        'weekly_rev': portfolio_weekly_revenue,  # Explicit weekly
+        'monthly_rev': portfolio_monthly_revenue,  # Explicit monthly
         'yoy_delta': 0.0,
         'share_delta': 0.0,
         'predictive_zones': zone_revenue,  # Actual distribution based on calculated states
         'demand_forecast': {},
         'hierarchy': {}
     }
-    
+
     # FIN Object
     fin = {
         'efficiency_score': int(your_market_share),
         'portfolio_status': 'Active',
     }
 
-    # Context
+    # Context - show both weekly and monthly
     portfolio_context = f"""
     BRAND PERFORMANCE SNAPSHOT:
     - Brand: {target_brand}
     - Market Share: {your_market_share:.1f}%
-    - Portfolio Revenue: ${portfolio_revenue:,.0f}/month
-    - Total Market Size: ${total_market_revenue:,.0f}/month
+    - Portfolio Revenue: ${portfolio_weekly_revenue:,.0f}/week (${portfolio_monthly_revenue:,.0f}/month)
+    - Total Market Size: ${total_market_weekly_revenue:,.0f}/week (${total_market_monthly_revenue:,.0f}/month)
     """
 
     # === INTELLIGENCE CALCULATION ===

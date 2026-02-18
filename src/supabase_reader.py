@@ -341,9 +341,14 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     # Ensure weekly_sales_filled is numeric
     df["weekly_sales_filled"] = pd.to_numeric(df["weekly_sales_filled"], errors='coerce').fillna(0)
 
-    # CRITICAL: Add revenue_proxy as alias for weekly_sales_filled
-    # The dashboard expects 'revenue_proxy' for market share calculations
-    df["revenue_proxy"] = df["weekly_sales_filled"].copy()
+    # === STANDARDIZED REVENUE COLUMNS (2026-01-30) ===
+    # Base unit: WEEKLY (weekly_revenue is the source of truth)
+    # Monthly is always calculated as weekly * 4.33
+    df["weekly_revenue"] = df["weekly_sales_filled"].copy()  # Source of truth
+    df["monthly_revenue"] = df["weekly_revenue"] * 4.33  # Derived
+
+    # Legacy alias for backward compatibility (to be deprecated)
+    df["revenue_proxy"] = df["weekly_revenue"].copy()
 
     # === DATA HEALER: Fill any remaining gaps ===
     # Ensures all metrics have values before reaching AI engine
@@ -412,24 +417,33 @@ def get_market_snapshot_from_cache(
 
     Returns:
         Tuple of (market_snapshot DataFrame, market_stats dict)
-        Note: Revenue values are converted to MONTHLY for consistency with discovery
+        Note: Revenue columns include both weekly (base) and monthly (derived).
     """
     df, stats = load_project_data(project_asins)
 
     if df.empty:
-        return df, {"total_revenue": 0, "your_revenue": 0, "competitor_revenue": 0}
+        return df, {"total_revenue": 0, "weekly_revenue": 0, "monthly_revenue": 0, "your_revenue": 0, "competitor_revenue": 0}
 
-    # Convert weekly revenue to monthly for display consistency
-    # Database stores estimated_weekly_revenue, but UI expects monthly
+    # === STANDARDIZED REVENUE COLUMNS (2026-01-30) ===
+    # Base unit: WEEKLY (weekly_revenue is the source of truth)
+    # Monthly is always calculated as weekly * 4.33
     WEEKS_PER_MONTH = 4.33
 
-    # Create revenue_proxy column (monthly) from weekly_sales_filled
-    if "weekly_sales_filled" in df.columns:
-        df["revenue_proxy"] = df["weekly_sales_filled"] * WEEKS_PER_MONTH
-    elif "estimated_weekly_revenue" in df.columns:
-        df["revenue_proxy"] = df["estimated_weekly_revenue"] * WEEKS_PER_MONTH
-    else:
-        df["revenue_proxy"] = 0.0
+    # Ensure weekly_revenue exists (should come from load_project_data)
+    if "weekly_revenue" not in df.columns:
+        if "weekly_sales_filled" in df.columns:
+            df["weekly_revenue"] = pd.to_numeric(df["weekly_sales_filled"], errors='coerce').fillna(0)
+        elif "estimated_weekly_revenue" in df.columns:
+            df["weekly_revenue"] = pd.to_numeric(df["estimated_weekly_revenue"], errors='coerce').fillna(0)
+        else:
+            df["weekly_revenue"] = 0.0
+
+    # Ensure monthly_revenue exists
+    if "monthly_revenue" not in df.columns:
+        df["monthly_revenue"] = df["weekly_revenue"] * WEEKS_PER_MONTH
+
+    # Legacy alias (to be deprecated)
+    df["revenue_proxy"] = df["weekly_revenue"].copy()
 
     # ==========================================================================
     # VARIATION DEDUPLICATION: Prevent revenue overcounting for child variations
@@ -451,29 +465,41 @@ def get_market_snapshot_from_cache(
         df["_sibling_count"] = df["parent_asin"].map(parent_counts).fillna(1).astype(int)
         df.loc[df["parent_asin"].isna() | (df["parent_asin"] == ""), "_sibling_count"] = 1
 
-        # Adjust revenue by dividing by sibling count
-        # This ensures variations share the revenue instead of multiplying it
-        df["revenue_proxy_adjusted"] = df["revenue_proxy"] / df["_sibling_count"]
-        
+        # Adjust BOTH weekly and monthly revenue by sibling count
+        df["weekly_revenue_adjusted"] = df["weekly_revenue"] / df["_sibling_count"]
+        df["monthly_revenue_adjusted"] = df["monthly_revenue"] / df["_sibling_count"]
+
+        # Legacy alias
+        df["revenue_proxy_adjusted"] = df["weekly_revenue_adjusted"].copy()
+
         # Also adjust units if present (also BSR-derived)
         if "monthly_units" in df.columns:
             df["monthly_units_adjusted"] = df["monthly_units"] / df["_sibling_count"]
+        elif "weekly_units" in df.columns:
+            df["weekly_units_adjusted"] = df["weekly_units"] / df["_sibling_count"]
+            df["monthly_units_adjusted"] = df["weekly_units_adjusted"] * WEEKS_PER_MONTH
         elif "estimated_units" in df.columns:
             df["monthly_units_adjusted"] = df["estimated_units"] / df["_sibling_count"]
         else:
             df["monthly_units_adjusted"] = 0.0
     else:
-        df["revenue_proxy_adjusted"] = df["revenue_proxy"]
+        df["weekly_revenue_adjusted"] = df["weekly_revenue"]
+        df["monthly_revenue_adjusted"] = df["monthly_revenue"]
+        df["revenue_proxy_adjusted"] = df["weekly_revenue"]
         df["monthly_units_adjusted"] = df.get("monthly_units", df.get("estimated_units", 0))
         df["_sibling_count"] = 1
 
-    # Calculate market metrics using ADJUSTED revenue (monthly values)
-    total_revenue = df["revenue_proxy_adjusted"].sum()
+    # Calculate market metrics using ADJUSTED revenue
+    # Primary: Weekly (base unit), Secondary: Monthly (derived)
+    total_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+    total_monthly_revenue = df["monthly_revenue_adjusted"].sum()
     total_units = df["monthly_units_adjusted"].sum() if "monthly_units_adjusted" in df.columns else 0
 
     market_stats = {
-        "total_revenue": total_revenue,  # Monthly, deduplicated
-        "total_units": total_units,  # Monthly, deduplicated
+        "total_revenue": total_weekly_revenue,  # Weekly, deduplicated (DEFAULT)
+        "weekly_revenue": total_weekly_revenue,  # Explicit weekly
+        "monthly_revenue": total_monthly_revenue,  # Explicit monthly
+        "total_units": total_units,  # Monthly units, deduplicated
         "total_products": len(df),
         "source": stats.get("source", "unknown")
     }
@@ -484,14 +510,18 @@ def get_market_snapshot_from_cache(
         your_df = df[df["is_yours"]]
         competitor_df = df[~df["is_yours"]]
 
-        # Use adjusted revenue for market share calculations
-        market_stats["your_revenue"] = your_df["revenue_proxy_adjusted"].sum() if not your_df.empty else 0
-        market_stats["competitor_revenue"] = competitor_df["revenue_proxy_adjusted"].sum() if not competitor_df.empty else 0
+        # Use adjusted revenue for market share calculations (weekly = base unit)
+        market_stats["your_revenue"] = your_df["weekly_revenue_adjusted"].sum() if not your_df.empty else 0
+        market_stats["your_weekly_revenue"] = market_stats["your_revenue"]
+        market_stats["your_monthly_revenue"] = your_df["monthly_revenue_adjusted"].sum() if not your_df.empty else 0
+        market_stats["competitor_revenue"] = competitor_df["weekly_revenue_adjusted"].sum() if not competitor_df.empty else 0
+        market_stats["competitor_weekly_revenue"] = market_stats["competitor_revenue"]
+        market_stats["competitor_monthly_revenue"] = competitor_df["monthly_revenue_adjusted"].sum() if not competitor_df.empty else 0
         market_stats["your_product_count"] = len(your_df)
         market_stats["competitor_product_count"] = len(competitor_df)
 
-        if total_revenue > 0:
-            market_stats["market_share"] = (market_stats["your_revenue"] / total_revenue) * 100
+        if total_weekly_revenue > 0:
+            market_stats["market_share"] = (market_stats["your_revenue"] / total_weekly_revenue) * 100
 
     return df, market_stats
 

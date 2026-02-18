@@ -271,54 +271,76 @@ def _calculate_adjusted_revenue(products: list, revenue_key: str = "revenue_prox
     return total
 
 
-def _apply_variation_adjustment_to_df(df: pd.DataFrame, revenue_col: str = "revenue_proxy") -> pd.DataFrame:
+def _apply_variation_adjustment_to_df(df: pd.DataFrame, revenue_col: str = "weekly_revenue") -> pd.DataFrame:
     """
     Apply variation deduplication to a DataFrame for all BSR-derived metrics.
-    
+
     When products share a parent_asin, they are variations of ONE listing.
     They all inherit the parent's BSR, so all BSR-derived metrics (revenue, units)
     would be counted N times if we just sum. Fix: divide by sibling count.
-    
+
     Args:
         df: DataFrame with 'parent_asin' and revenue/units columns
-        revenue_col: Name of revenue column to adjust
-    
+        revenue_col: Name of revenue column to adjust (default: weekly_revenue)
+
     Returns:
         DataFrame with adjusted columns and '_sibling_count' added
     """
+    WEEKS_PER_MONTH = 4.33
+
     if df.empty:
-        df["revenue_proxy_adjusted"] = 0.0
+        df["weekly_revenue_adjusted"] = 0.0
+        df["monthly_revenue_adjusted"] = 0.0
+        df["revenue_proxy_adjusted"] = 0.0  # Legacy
         df["monthly_units_adjusted"] = 0.0
         df["_sibling_count"] = 1
         return df
-    
+
     if "parent_asin" in df.columns:
         # Count siblings per parent ASIN (products with same parent)
         parent_counts = df[df["parent_asin"].notna() & (df["parent_asin"] != "")].groupby("parent_asin").size()
-        
+
         # Create sibling count column (default 1 for products without parent)
         df["_sibling_count"] = df["parent_asin"].map(parent_counts).fillna(1).astype(int)
         df.loc[df["parent_asin"].isna() | (df["parent_asin"] == ""), "_sibling_count"] = 1
-        
-        # Adjust revenue by dividing by sibling count
-        df["revenue_proxy_adjusted"] = df[revenue_col] / df["_sibling_count"]
-        
+
+        # === STANDARDIZED REVENUE ADJUSTMENTS (2026-01-30) ===
+        # Adjust weekly_revenue (base unit)
+        if "weekly_revenue" in df.columns:
+            df["weekly_revenue_adjusted"] = df["weekly_revenue"] / df["_sibling_count"]
+            df["monthly_revenue_adjusted"] = df["weekly_revenue_adjusted"] * WEEKS_PER_MONTH
+        elif revenue_col in df.columns:
+            # Fallback to provided column (for legacy code paths)
+            df["weekly_revenue_adjusted"] = df[revenue_col] / df["_sibling_count"]
+            df["monthly_revenue_adjusted"] = df["weekly_revenue_adjusted"] * WEEKS_PER_MONTH
+        else:
+            df["weekly_revenue_adjusted"] = 0.0
+            df["monthly_revenue_adjusted"] = 0.0
+
+        # Legacy alias
+        df["revenue_proxy_adjusted"] = df["weekly_revenue_adjusted"].copy()
+
         # Also adjust units if present (also BSR-derived)
         if "monthly_units" in df.columns:
             df["monthly_units_adjusted"] = df["monthly_units"] / df["_sibling_count"]
+        elif "weekly_units" in df.columns:
+            df["weekly_units_adjusted"] = df["weekly_units"] / df["_sibling_count"]
+            df["monthly_units_adjusted"] = df["weekly_units_adjusted"] * WEEKS_PER_MONTH
         else:
             df["monthly_units_adjusted"] = 0.0
-            
-        # Adjust weekly sales if present (for weekly data)
+
+        # Adjust weekly sales if present (for weekly data) - legacy
         if "weekly_sales_filled" in df.columns:
             df["weekly_sales_adjusted"] = df["weekly_sales_filled"] / df["_sibling_count"]
         if "estimated_units" in df.columns:
             df["estimated_units_adjusted"] = df["estimated_units"] / df["_sibling_count"]
     else:
-        df["revenue_proxy_adjusted"] = df[revenue_col]
+        df["weekly_revenue_adjusted"] = df.get("weekly_revenue", df.get(revenue_col, 0))
+        df["monthly_revenue_adjusted"] = df["weekly_revenue_adjusted"] * WEEKS_PER_MONTH
+        df["revenue_proxy_adjusted"] = df["weekly_revenue_adjusted"]  # Legacy
         df["monthly_units_adjusted"] = df.get("monthly_units", 0)
         df["_sibling_count"] = 1
-    
+
     return df
 
 
@@ -569,25 +591,33 @@ def _check_category_cache(category_id: int, max_age_hours: int = 12) -> Optional
 
             # Add data_weeks for AI confidence (cached data = assume 4 weeks)
             df['data_weeks'] = 4
-            
+
+            # Ensure weekly_revenue exists
+            if "weekly_revenue" not in df.columns:
+                if "revenue_proxy" in df.columns:
+                    df["weekly_revenue"] = df["revenue_proxy"]
+                else:
+                    df["weekly_revenue"] = 0
+            df["monthly_revenue"] = df["weekly_revenue"] * 4.33
+
             # Apply variation deduplication to prevent revenue overcounting
-            if "revenue_proxy" in df.columns:
-                df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
-                adjusted_revenue = df["revenue_proxy_adjusted"].sum()
-            else:
-                adjusted_revenue = 0
-            
+            df = _apply_variation_adjustment_to_df(df, "weekly_revenue")
+            adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+            adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
+
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": adjusted_revenue,
+                "total_category_revenue": adjusted_weekly_revenue,  # Weekly (base unit)
+                "weekly_revenue": adjusted_weekly_revenue,
+                "monthly_revenue": adjusted_monthly_revenue,
                 "category_id": category_id,
                 "validated_products": len(df),
-                "validated_revenue": adjusted_revenue,
+                "validated_revenue": adjusted_weekly_revenue,
                 "source": "cache",
                 "df_weekly": pd.DataFrame()  # No weekly data from cache
             }
 
-            st.caption(f"⚡ Found {len(df)} cached products for category {category_id}")
+            st.caption(f"⚡ Found {len(df)} cached products for category {category_id} (${adjusted_weekly_revenue:,.0f}/wk)")
             return df, market_stats
 
         return None
@@ -1937,25 +1967,32 @@ def phase2_category_market_mapping(
         if not historical_products:
             st.warning("⚠️ Could not fetch historical data - falling back to current estimates")
             # Fallback to old method if historical fetch fails
+            WEEKS_PER_MONTH = 4.33
             df = pd.DataFrame(unique_products)
             df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
-            df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df["weekly_units"] = df["monthly_units"] / WEEKS_PER_MONTH
+            df["weekly_revenue"] = df["weekly_units"] * df["price"]
+            df["monthly_revenue"] = df["weekly_revenue"] * WEEKS_PER_MONTH
+            df["revenue_proxy"] = df["weekly_revenue"]  # Legacy alias
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
             # Apply variation deduplication
-            df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
-            adjusted_revenue = df["revenue_proxy_adjusted"].sum()
-            df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            df = _apply_variation_adjustment_to_df(df, "weekly_revenue")
+            adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+            adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
+            df = df.sort_values(["bsr", "weekly_revenue"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": adjusted_revenue,
+                "total_category_revenue": adjusted_weekly_revenue,
+                "weekly_revenue": adjusted_weekly_revenue,
+                "monthly_revenue": adjusted_monthly_revenue,
                 "category_id": category_id,
                 "effective_category_id": effective_category_id,
                 "effective_category_path": effective_category_path,
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
-                "validated_revenue": adjusted_revenue,
+                "validated_revenue": adjusted_weekly_revenue,
                 "df_weekly": pd.DataFrame(),
                 "target_brand": target_brand,
                 "brand_product_count": brand_product_count,
@@ -1973,25 +2010,32 @@ def phase2_category_market_mapping(
         
         if df_weekly.empty:
             st.warning("⚠️ Could not build weekly table - falling back to current estimates")
+            WEEKS_PER_MONTH = 4.33
             df = pd.DataFrame(unique_products)
             df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
             df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
-            df["revenue_proxy"] = df["monthly_units"] * df["price"]
+            df["weekly_units"] = df["monthly_units"] / WEEKS_PER_MONTH
+            df["weekly_revenue"] = df["weekly_units"] * df["price"]
+            df["monthly_revenue"] = df["weekly_revenue"] * WEEKS_PER_MONTH
+            df["revenue_proxy"] = df["weekly_revenue"]  # Legacy alias
             df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
             # Apply variation deduplication
-            df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
-            adjusted_revenue = df["revenue_proxy_adjusted"].sum()
-            df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
+            df = _apply_variation_adjustment_to_df(df, "weekly_revenue")
+            adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+            adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
+            df = df.sort_values(["bsr", "weekly_revenue"], ascending=[True, False]).reset_index(drop=True)
             brand_product_count = len(brand_products) if target_brand else 0
             market_stats = {
                 "total_products": len(df),
-                "total_category_revenue": adjusted_revenue,
+                "total_category_revenue": adjusted_weekly_revenue,
+                "weekly_revenue": adjusted_weekly_revenue,
+                "monthly_revenue": adjusted_monthly_revenue,
                 "category_id": category_id,
                 "effective_category_id": effective_category_id,
                 "effective_category_path": effective_category_path,
                 "use_categories_include": use_categories_include,
                 "validated_products": len(df),
-                "validated_revenue": adjusted_revenue,
+                "validated_revenue": adjusted_weekly_revenue,
                 "df_weekly": pd.DataFrame(),
                 "target_brand": target_brand,
                 "brand_product_count": brand_product_count,
@@ -2105,19 +2149,29 @@ def phase2_category_market_mapping(
             "estimated_units": "total_90d_units"
         })
         
-        # Calculate monthly averages using actual weeks of data
-        # Average weekly revenue * 4.33 weeks per month = monthly revenue
-        # This accounts for varying amounts of historical data (not always exactly 90 days)
-        asin_summary["avg_weekly_revenue"] = asin_summary["total_90d_revenue"] / asin_summary["weeks_count"].clip(lower=1)
-        asin_summary["avg_weekly_units"] = asin_summary["total_90d_units"] / asin_summary["weeks_count"].clip(lower=1)
-        asin_summary["monthly_units"] = asin_summary["avg_weekly_units"] * 4.33  # Average weeks per month
-        asin_summary["revenue_proxy"] = asin_summary["avg_weekly_revenue"] * 4.33  # Average weeks per month
-        
+        # === STANDARDIZED REVENUE CALCULATION (2026-01-30) ===
+        # Base unit: WEEKLY (weekly_revenue is the source of truth)
+        # Monthly is always calculated as weekly * 4.33
+        WEEKS_PER_MONTH = 4.33
+
+        # Calculate averages using actual weeks of data
+        asin_summary["weekly_revenue"] = asin_summary["total_90d_revenue"] / asin_summary["weeks_count"].clip(lower=1)
+        asin_summary["weekly_units"] = asin_summary["total_90d_units"] / asin_summary["weeks_count"].clip(lower=1)
+
+        # Derived monthly values
+        asin_summary["monthly_revenue"] = asin_summary["weekly_revenue"] * WEEKS_PER_MONTH
+        asin_summary["monthly_units"] = asin_summary["weekly_units"] * WEEKS_PER_MONTH
+
+        # Legacy aliases (to be deprecated)
+        asin_summary["avg_weekly_revenue"] = asin_summary["weekly_revenue"]
+        asin_summary["revenue_proxy"] = asin_summary["weekly_revenue"]  # Now weekly, not monthly!
+
         # Debug: Show revenue calculation stats
         avg_weeks = asin_summary["weeks_count"].mean()
-        total_monthly_rev = asin_summary["revenue_proxy"].sum()
-        avg_product_rev = asin_summary["revenue_proxy"].mean()
-        st.caption(f"📊 Revenue calc: {len(asin_summary)} products, avg {avg_weeks:.1f} weeks data, total ${total_monthly_rev:,.0f}/mo, avg ${avg_product_rev:,.0f}/mo per product")
+        total_weekly_rev = asin_summary["weekly_revenue"].sum()
+        total_monthly_rev = asin_summary["monthly_revenue"].sum()
+        avg_product_weekly = asin_summary["weekly_revenue"].mean()
+        st.caption(f"📊 Revenue calc: {len(asin_summary)} products, avg {avg_weeks:.1f} weeks data, ${total_weekly_rev:,.0f}/wk (${total_monthly_rev:,.0f}/mo), avg ${avg_product_weekly:,.0f}/wk per product")
         
         # FIX: Convert any list values to scalars before comparison
         # Some metrics (like sellerIds) might be aggregated as lists
@@ -2158,33 +2212,46 @@ def phase2_category_market_mapping(
         
         # Recalculate revenue for products that were missing data
         # Use BSR formula for products without weekly sales data
-        missing_revenue_mask = asin_summary["revenue_proxy"].isna() | (asin_summary["revenue_proxy"] == 0)
+        missing_revenue_mask = asin_summary["weekly_revenue"].isna() | (asin_summary["weekly_revenue"] == 0)
         if missing_revenue_mask.any():
+            # BSR formula gives monthly units
             asin_summary.loc[missing_revenue_mask, "monthly_units"] = (
                 145000.0 * (asin_summary.loc[missing_revenue_mask, "bsr"].clip(lower=1) ** -0.9)
             )
-            asin_summary.loc[missing_revenue_mask, "revenue_proxy"] = (
-                asin_summary.loc[missing_revenue_mask, "monthly_units"] * 
+            asin_summary.loc[missing_revenue_mask, "weekly_units"] = (
+                asin_summary.loc[missing_revenue_mask, "monthly_units"] / WEEKS_PER_MONTH
+            )
+            # Weekly revenue = weekly units * price
+            asin_summary.loc[missing_revenue_mask, "weekly_revenue"] = (
+                asin_summary.loc[missing_revenue_mask, "weekly_units"] *
                 asin_summary.loc[missing_revenue_mask, "price"]
             )
-        
+            asin_summary.loc[missing_revenue_mask, "monthly_revenue"] = (
+                asin_summary.loc[missing_revenue_mask, "weekly_revenue"] * WEEKS_PER_MONTH
+            )
+            # Update legacy alias
+            asin_summary.loc[missing_revenue_mask, "revenue_proxy"] = (
+                asin_summary.loc[missing_revenue_mask, "weekly_revenue"]
+            )
+
         if missing_price_count > 0 or missing_bsr_count > 0:
             st.caption(
                 f"📊 Filled {int(missing_price_count)} missing prices (→ ${median_price:.2f}) "
                 f"and {int(missing_bsr_count)} missing BSRs (→ {int(median_bsr):,})"
             )
-        
-        # Sort by BSR (best sellers first)
-        df = asin_summary.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
-        
+
+        # Sort by BSR (best sellers first), then by weekly revenue
+        df = asin_summary.sort_values(["bsr", "weekly_revenue"], ascending=[True, False]).reset_index(drop=True)
+
         # CRITICAL: Rename weeks_count to data_weeks for AI confidence calculation
         # Without this, all products get 40% confidence (assumes 0 weeks of data)
         if 'weeks_count' in df.columns:
             df['data_weeks'] = df['weeks_count']
-        
+
         # Apply variation deduplication to prevent revenue overcounting
-        df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
-        adjusted_revenue = df["revenue_proxy_adjusted"].sum()
+        df = _apply_variation_adjustment_to_df(df, "weekly_revenue")
+        adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+        adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
 
         # Debug: Check if seed ASIN survived variation adjustment
         if seed_asin:
@@ -2200,35 +2267,37 @@ def phase2_category_market_mapping(
         # Calculate market stats
         brand_product_count = len(brand_products) if target_brand else 0
         competitor_count = len(df) - brand_product_count
-        
+
         market_stats = {
             "total_products": len(df),
-            "total_category_revenue": adjusted_revenue,
+            "total_category_revenue": adjusted_weekly_revenue,  # Weekly (base unit)
+            "weekly_revenue": adjusted_weekly_revenue,  # Explicit weekly
+            "monthly_revenue": adjusted_monthly_revenue,  # Explicit monthly
             "category_id": category_id,
             "effective_category_id": effective_category_id,
             "effective_category_path": effective_category_path,
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
-            "validated_revenue": adjusted_revenue,
+            "validated_revenue": adjusted_weekly_revenue,  # Weekly (base unit)
             "df_weekly": df_weekly,
             "time_period": "90 days (weekly aggregated)",
             "target_brand": target_brand,
             "brand_product_count": brand_product_count,
             "competitor_count": competitor_count
         }
-        
+
         if target_brand:
             st.success(
                 f"✅ **Market Snapshot Complete**\n\n"
                 f"**{target_brand}**: {brand_product_count} products | "
                 f"**Competitors**: {competitor_count} products\n\n"
-                f"**Est. Monthly Revenue: ${adjusted_revenue:,.0f}**\n"
+                f"**Est. Weekly Revenue: ${adjusted_weekly_revenue:,.0f}/wk** (${adjusted_monthly_revenue:,.0f}/mo)\n"
                 f"_(Projected from avg weekly sales over last 90 days)_"
             )
         else:
             st.success(
                 f"✅ **Market Snapshot Complete**\n\n"
-                f"Products: **{len(df)}** | Est. Monthly Revenue: **${adjusted_revenue:,.0f}**\n"
+                f"Products: **{len(df)}** | Est. Weekly Revenue: **${adjusted_weekly_revenue:,.0f}/wk** (${adjusted_monthly_revenue:,.0f}/mo)\n"
                 f"_(Projected from avg weekly sales over last 90 days)_"
             )
 
@@ -2245,27 +2314,34 @@ def phase2_category_market_mapping(
         df = pd.DataFrame(unique_products)
         if df.empty:
             return df, {}
+        WEEKS_PER_MONTH = 4.33
         df = _scalarize_df_columns(df)  # Fix: Scalarize before numeric operations
         df["monthly_units"] = 145000.0 * (df["bsr"].clip(lower=1) ** -0.9)
-        df["revenue_proxy"] = df["monthly_units"] * df["price"]
+        df["weekly_units"] = df["monthly_units"] / WEEKS_PER_MONTH
+        df["weekly_revenue"] = df["weekly_units"] * df["price"]
+        df["monthly_revenue"] = df["weekly_revenue"] * WEEKS_PER_MONTH
+        df["revenue_proxy"] = df["weekly_revenue"]  # Legacy alias
         df["data_weeks"] = 4  # Fallback: assume 4 weeks for AI confidence
         # Apply variation deduplication
-        df = _apply_variation_adjustment_to_df(df, "revenue_proxy")
-        adjusted_revenue = df["revenue_proxy_adjusted"].sum()
-        df = df.sort_values(["bsr", "revenue_proxy"], ascending=[True, False]).reset_index(drop=True)
-        
+        df = _apply_variation_adjustment_to_df(df, "weekly_revenue")
+        adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
+        adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
+        df = df.sort_values(["bsr", "weekly_revenue"], ascending=[True, False]).reset_index(drop=True)
+
         brand_product_count = len(brand_products) if target_brand else 0
         competitor_count = len(df) - brand_product_count
-        
+
         market_stats = {
             "total_products": len(df),
-            "total_category_revenue": adjusted_revenue,
+            "total_category_revenue": adjusted_weekly_revenue,
+            "weekly_revenue": adjusted_weekly_revenue,
+            "monthly_revenue": adjusted_monthly_revenue,
             "category_id": category_id,
             "effective_category_id": effective_category_id,
             "effective_category_path": effective_category_path,
             "use_categories_include": use_categories_include,
             "validated_products": len(df),
-            "validated_revenue": adjusted_revenue,
+            "validated_revenue": adjusted_weekly_revenue,
             "df_weekly": pd.DataFrame(),
             "target_brand": target_brand,
             "brand_product_count": brand_product_count,

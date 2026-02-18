@@ -403,10 +403,23 @@ def build_keepa_weekly_table(products, window_start=None):
         df["monthly_units"] = bsr_monthly_units
         df["units_source"] = "bsr_formula"
 
-    # SCALE TO WEEKLY BUCKET
-    df["estimated_units"] = df["monthly_units"] * (7 / 30)
-    df["weekly_sales_filled"] = df["estimated_units"] * df["filled_price"].fillna(0)
-    
+    # === REVENUE CALCULATION (Standardized 2026-01-30) ===
+    # Base unit: WEEKLY (weekly_revenue is the source of truth)
+    # Monthly is always calculated as weekly * 4.33
+
+    # Weekly units from monthly
+    df["weekly_units"] = df["monthly_units"] * (7 / 30)
+
+    # WEEKLY REVENUE (base unit - source of truth)
+    df["weekly_revenue"] = df["weekly_units"] * df["filled_price"].fillna(0)
+
+    # MONTHLY REVENUE (derived from weekly * 4.33 weeks/month)
+    df["monthly_revenue"] = df["weekly_revenue"] * 4.33
+
+    # Backward compatibility aliases (to be deprecated)
+    df["estimated_units"] = df["weekly_units"]  # Legacy alias
+    df["weekly_sales_filled"] = df["weekly_revenue"]  # Legacy alias
+
     # Per-unit price (for fair comparison across pack sizes)
     if "number_of_items" in df.columns:
         df["price_per_unit"] = df["filled_price"] / df["number_of_items"].clip(lower=1)

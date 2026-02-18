@@ -123,6 +123,9 @@ class ProfilerVitals:
     # Overall Assessment
     overall_health: str = "UNKNOWN"  # HEALTHY, AT_RISK, CRITICAL, INSUFFICIENT_DATA
     confidence_score: float = 0.0  # 0-1 (how much can we trust the analysis)
+
+    # Archetype Context (optional, set by caller)
+    archetype: Optional[Any] = None  # ProductArchetype from src.models.product_archetype
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -142,6 +145,7 @@ class ProfilerVitals:
             "critical_alerts": self.critical_alerts,
             "overall_health": self.overall_health,
             "confidence": self.confidence_score,
+            "archetype": self.archetype.to_dict() if self.archetype and hasattr(self.archetype, 'to_dict') else None,
         }
     
     def _vital_to_dict(self, v: MetricVital) -> Dict:
@@ -183,29 +187,40 @@ class ProfilerVitals:
             # Defensive: ensure all flags are strings
             flag_strs = [str(f) if not isinstance(f, str) else f for f in self.active_flags]
             lines.append("FLAGS: " + ", ".join(flag_strs))
-        
+
+        # Include archetype context if available
+        if self.archetype and hasattr(self.archetype, 'to_prompt_context'):
+            lines.append("")
+            lines.append(self.archetype.to_prompt_context())
+
         return "\n".join(lines)
 
 
-def run_profiler(df_weekly: pd.DataFrame, asin: str = "UNKNOWN") -> ProfilerVitals:
+def run_profiler(
+    df_weekly: pd.DataFrame,
+    asin: str = "UNKNOWN",
+    archetype: Optional[Any] = None,
+) -> ProfilerVitals:
     """
     Main entry point: Profile the data and produce Vitals.
-    
+
     This runs through the checks defined in KEEPA_CONFIG["PROFILER_CHECKS"]
     and produces a comprehensive health assessment.
-    
+
     Args:
         df_weekly: Weekly time series data for the product
         asin: ASIN identifier
-        
+        archetype: Optional ProductArchetype for context-aware interpretation
+
     Returns:
         ProfilerVitals with complete health assessment
     """
     from datetime import datetime
-    
+
     vitals = ProfilerVitals(
         asin=asin,
-        profile_timestamp=datetime.now().isoformat()
+        profile_timestamp=datetime.now().isoformat(),
+        archetype=archetype,
     )
     
     # Step 1: Data Health Check

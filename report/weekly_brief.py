@@ -195,7 +195,12 @@ def build_brief(
             tier_median = _latest_snap[price_col].median()
     else:
         tier_median = _latest_snap[price_col].median()
-    your_price = your_latest[price_col].mean() if not your_latest.empty and price_col in your_latest.columns else None
+    # Use Core-role ASINs only for brand price position (avoids Long-tail outliers skewing tier call)
+    _core_asins = {a for a, m in asin_metrics.items()
+                   if m.role == "Core" and m.brand.lower() == your_brand.lower()}
+    _price_df = (your_latest[your_latest["asin"].isin(_core_asins)]
+                 if _core_asins and "asin" in your_latest.columns else your_latest)
+    your_price = _price_df[price_col].mean() if not _price_df.empty and price_col in _price_df.columns else None
     price_vs_tier = (your_price - tier_median) / tier_median if your_price and tier_median and tier_median > 0 else None
 
     # Biggest mover (ASIN with largest BSR change WoW)
@@ -219,7 +224,8 @@ def build_brief(
 
     # ── Section 5: Implications ───────────────────────────────────────────────
     implications, plan_stance, measurement_focus = _build_implications(
-        firing, asin_metrics, your_brand, runs_ads, risk_cfg, conf_score
+        firing, asin_metrics, your_brand, runs_ads, risk_cfg, conf_score,
+        your_bsr_wow=your_bsr_wow, arena_bsr_wow=arena_bsr_wow,
     )
 
     # ── Section 6: Requests ───────────────────────────────────────────────────
@@ -324,10 +330,10 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
 
     # Biggest mover bullet
     if biggest_mover and abs(biggest_mover.bsr_wow) > 0.05:
-        direction = "gained" if biggest_mover.bsr_wow < 0 else "lost"
+        bsr_move = band_fn(biggest_mover.bsr_wow, "rank_change")
         bullets.append(
             f"**Biggest mover:** {biggest_mover.brand} ({biggest_mover.asin[-6:]}) "
-            f"{direction} {abs(biggest_mover.bsr_wow)*100:.0f}% in BSR this week"
+            f"— BSR {bsr_move} this week"
         )
 
     return bullets[:3]
@@ -396,7 +402,11 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
     return verdict, verdict_conf, receipts[:2]
 
 
-def _build_implications(firing, asin_metrics, your_brand, runs_ads, risk_cfg, conf_score) -> tuple:
+def _build_implications(
+    firing, asin_metrics, your_brand, runs_ads, risk_cfg, conf_score,
+    your_bsr_wow: Optional[float] = None,
+    arena_bsr_wow: Optional[float] = None,
+) -> tuple:
     bullets = []
     plan_stance = "Hold"
 
@@ -409,11 +419,30 @@ def _build_implications(firing, asin_metrics, your_brand, runs_ads, risk_cfg, co
         )
         plan_stance = "Hold"
     else:
-        bullets.append(
-            "**Exec narrative:** No dominant market-level regime detected. "
-            "Internal factors (listing health, stock, pricing) may be the primary driver."
+        # Gate Pause+Diagnose on divergence from arena, not just "no regime"
+        # If brand is tracking the arena → Hold (market conditions are likely driver)
+        # If brand is underperforming the arena → Pause+Diagnose (internal factors likely)
+        _is_divergent = (
+            your_bsr_wow is not None
+            and arena_bsr_wow is not None
+            and (your_bsr_wow - arena_bsr_wow) > 0.07   # brand ≥7pp worse than arena
+        ) or (
+            your_bsr_wow is not None
+            and arena_bsr_wow is None
+            and your_bsr_wow > 0.10                      # brand clearly deteriorating, no context
         )
-        plan_stance = "Pause+Diagnose"
+        if _is_divergent:
+            bullets.append(
+                "**Exec narrative:** Brand is underperforming the arena — internal factors "
+                "(listing health, stock, pricing) merit investigation."
+            )
+            plan_stance = "Pause+Diagnose"
+        else:
+            bullets.append(
+                "**Exec narrative:** Brand performance tracks the arena — market conditions "
+                "are the likely driver. No dominant regime detected."
+            )
+            plan_stance = "Hold"
 
     # Budget action (only if runs_ads is not None)
     if runs_ads is not None:
@@ -589,7 +618,7 @@ def generate_brief_markdown(
     lines += [
         f"# {brief.arena_name} — Weekly Brief",
         f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
-        f"Confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
+        f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         "",
         "---",
         "",
@@ -624,7 +653,7 @@ def generate_brief_markdown(
         "## 4. Misattribution Verdict",
         "",
         f"**Verdict:** {brief.misattribution_verdict} "
-        f"[{brief.misattribution_confidence} confidence]",
+        f"[{brief.misattribution_confidence} driver confidence]",
         "",
     ]
     for r in brief.misattribution_receipts:

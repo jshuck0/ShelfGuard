@@ -305,10 +305,37 @@ def to_compact_table(
             words = title.split()[:3]
             title_map[row["asin"]] = " ".join(words) if words else row["asin"]
 
+    # Collapse variants: for each parent_asin, keep only the top-role / most-improving child
+    _keeper_asins: set = set(asin_metrics.keys())
+    if "parent_asin" in df_weekly.columns and "asin" in df_weekly.columns:
+        _parent_map: dict = {}
+        for _a in asin_metrics:
+            _parent_rows = df_weekly[df_weekly["asin"] == _a]["parent_asin"]
+            _parent = (
+                str(_parent_rows.iloc[0])
+                if not _parent_rows.empty and pd.notna(_parent_rows.iloc[0])
+                else _a
+            )
+            _parent_map.setdefault(_parent, []).append(_a)
+        _role_pri = {"Core": 0, "Challenger": 1, "Long-tail": 2}
+        _keeper_asins = set()
+        for _children in _parent_map.values():
+            _best = min(
+                _children,
+                key=lambda a: (
+                    _role_pri.get(asin_metrics[a].role, 3),
+                    asin_metrics[a].bsr_wow,
+                ),
+            )
+            _keeper_asins.add(_best)
+
     role_order = {"Core": 0, "Challenger": 1, "Long-tail": 2}
     rows = []
     for asin, m in asin_metrics.items():
-        short_name = title_map.get(asin, asin[-8:])
+        if asin not in _keeper_asins:
+            continue
+        _title_part = title_map.get(asin, asin[-8:])
+        short_name = f"{_title_part} ({asin[-6:]})"
 
         # Band display — use pre-computed band (normalized, pack-size aware)
         if band_fn:
@@ -323,7 +350,7 @@ def to_compact_table(
             "Brand": m.brand,
             "Role": m.role,
             "Price vs Tier": price_band,
-            "Disc Persist (d/7)": f"{m.discount_persistence:.1f}",
+            "Disc Persist (d/7)": f"{round(m.discount_persistence * 7)}/7",
             "BSR WoW": bsr_band,
             "Momentum": "Y" if m.has_momentum else "N",
             "Tag": m.tag,

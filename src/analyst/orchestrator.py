@@ -26,10 +26,10 @@ from openai import OpenAI
 
 from .config import KEEPA_CONFIG
 from .profiler import run_profiler, ProfilerVitals
-from .brief import (
-    DiagnosticBrief, 
-    build_diagnostic_brief, 
-    MarketContext, 
+from .diagnostic_brief import (
+    DiagnosticBrief,
+    build_diagnostic_brief,
+    MarketContext,
     ProductIdentity
 )
 from .tools.calibrator import calibrate_physics, CalibratedPhysics

@@ -23,7 +23,7 @@ from src.workflow.episode_builder import build_episodes
 from src.workflow.action_templates import get_action_template, ActionTemplate, Urgency
 from src.workflow.memo_renderer import render_weekly_memo, WeeklyMemo, MemoItem
 from src.workflow.alerts import generate_alerts, Alert, get_alert_counts
-from src.workflow.scoreboard import calculate_scoreboard, Scoreboard, render_scoreboard_summary
+from src.workflow.episode_scoreboard import calculate_scoreboard, Scoreboard, render_scoreboard_summary
 from src.workflow.config import get_category_config, get_reason_code_weight
 
 # Import trigger detection (existing)

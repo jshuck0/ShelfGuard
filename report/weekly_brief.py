@@ -86,6 +86,7 @@ class WeeklyBrief:
     runs_ads: Optional[bool] = None   # None = omit budget language
     active_regime_names: List[str] = field(default_factory=list)
     data_quality: str = "Partial"
+    data_fidelity: str = "weekly"     # "daily" | "weekly proxy"
 
 
 # ─── BRIEF ASSEMBLY ──────────────────────────────────────────────────────────
@@ -234,6 +235,7 @@ def build_brief(
         runs_ads=runs_ads,
         active_regime_names=active_names,
         data_quality=conf_score.data_quality,
+        data_fidelity="daily" if (df_daily is not None and not df_daily.empty) else "weekly proxy",
     )
 
 
@@ -570,7 +572,7 @@ def generate_brief_markdown(
     lines += [
         f"# {brief.arena_name} — Weekly Brief",
         f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
-        f"Confidence: **{conf_label}** | Data quality: {data_q}",
+        f"Confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         "",
         "---",
         "",
@@ -793,3 +795,55 @@ def generate_golden_brief(runs_ads: Optional[bool] = None) -> Optional[str]:
     except Exception as e:
         print(f"Error generating golden brief: {e}")
         return None
+
+
+# ─── MVP: NON-STREAMLIT ORCHESTRATION ────────────────────────────────────────
+
+def generate_weekly_brief_markdown(
+    df_weekly: pd.DataFrame,
+    brand: str,
+    arena_name: str = "",
+    runs_ads: Optional[bool] = None,
+    project_id: Optional[str] = None,
+) -> tuple:
+    """
+    One-call MVP function. Orchestrates daily panel, regime detection, ASIN metrics,
+    confidence scoring, brief assembly, and markdown rendering.
+
+    Returns (markdown_string, WeeklyBrief) — no Streamlit required.
+    Usable from CLI, tests, or non-UI contexts.
+
+    Fidelity note: if daily panel unavailable, brief.data_fidelity == "weekly proxy"
+    and the header is labelled accordingly.
+
+    Example (CLI):
+        python -c "
+        import pandas as pd
+        from report.weekly_brief import generate_weekly_brief_markdown
+        df = pd.read_csv('data/sample.csv')
+        md, brief = generate_weekly_brief_markdown(df, 'MyBrand')
+        print(md)
+        "
+    """
+    df_daily = None
+    if project_id:
+        try:
+            from data.daily_panel import get_daily_panel
+            asins = list(df_weekly["asin"].unique()) if "asin" in df_weekly.columns else None
+            df_daily, _ = get_daily_panel(project_id=project_id, asins=asins)
+        except Exception:
+            pass
+
+    brief = build_brief(df_weekly, brand, arena_name, runs_ads, df_daily=df_daily)
+
+    asin_metrics = compute_asin_metrics(df_weekly, {}, {}, brand, df_daily)
+    try:
+        from config.market_misattribution_module import ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS
+        asin_metrics = compute_asin_metrics(
+            df_weekly, ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS, brand, df_daily
+        )
+    except ImportError:
+        pass
+
+    md = generate_brief_markdown(brief, df_weekly, asin_metrics, brand)
+    return md, brief

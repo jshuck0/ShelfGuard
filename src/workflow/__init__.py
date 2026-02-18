@@ -51,7 +51,7 @@ from src.workflow.alerts import (
     filter_high_severity,
 )
 
-from src.workflow.scoreboard import (
+from src.workflow.episode_scoreboard import (
     Scoreboard,
     calculate_scoreboard,
 )

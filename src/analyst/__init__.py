@@ -42,7 +42,7 @@ from .profiler import (
 )
 
 # Brief - The Handoff Protocol
-from .brief import (
+from .diagnostic_brief import (
     DiagnosticBrief,
     build_diagnostic_brief,
     MarketContext,

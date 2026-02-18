@@ -1347,3 +1347,63 @@ def render_user_dashboard() -> None:
                 st.info("No data available to display.")
         else:
             st.info("No ASINs in this mapping.")
+
+
+# ─── MVP: BAREBONES SEED SEARCH ──────────────────────────────────────────────
+
+def render_seed_search_and_map_mvp():
+    """
+    Barebones seed search for apps/mvp_app.py.
+    No wizard polish, no project dashboards, no Supabase writes.
+    Sets session state keys consumed by render_brief_tab().
+    """
+    from src.two_phase_discovery import phase1_seed_discovery, phase2_category_market_mapping
+
+    keyword = st.text_input("Search keyword or brand name", key="_mvp_keyword")
+    if keyword and st.button("Find Seed Products", key="_mvp_find_seeds"):
+        with st.spinner("Searching Keepa…"):
+            try:
+                df_seeds = phase1_seed_discovery(keyword, limit=50)
+                st.session_state["_mvp_seed_candidates"] = df_seeds
+            except Exception as e:
+                st.error(f"Search failed: {e}")
+                return
+
+    if "_mvp_seed_candidates" in st.session_state:
+        df_seeds = st.session_state["_mvp_seed_candidates"]
+        if df_seeds.empty:
+            st.warning("No results found. Try a different keyword.")
+            return
+
+        options = [
+            f"{str(r.get('title', ''))[:60]} ({r.get('asin', '?')})"
+            for _, r in df_seeds.iterrows()
+        ]
+        choice = st.selectbox("Select seed product", options, key="_mvp_seed_choice")
+        idx = options.index(choice)
+        seed_row = df_seeds.iloc[idx]
+
+        brand = st.text_input(
+            "Your brand name",
+            value=str(seed_row.get("brand", "")),
+            key="_mvp_brand_input",
+        )
+
+        if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
+            with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
+                try:
+                    df_weekly, _ = phase2_category_market_mapping(
+                        category_id=int(seed_row.get("category_id", 0)),
+                        seed_product_title=str(seed_row.get("title", "")),
+                        seed_asin=str(seed_row.get("asin", "")),
+                        target_brand=brand,
+                        max_products=100,
+                    )
+                    st.session_state["active_project_data"] = df_weekly
+                    st.session_state["active_project_seed_brand"] = brand
+                    st.session_state["active_project_name"] = f"{brand} Arena"
+                    st.session_state["active_project_all_asins"] = list(df_weekly["asin"].unique())
+                    st.success(f"Loaded {df_weekly['asin'].nunique()} ASINs.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Market mapping failed: {e}")

@@ -654,7 +654,10 @@ def detect_new_entrant(
     if "sales_rank_filled" not in df_weekly.columns:
         return _empty_signal(regime, "No rank data")
 
-    df = df_weekly[["asin", "brand", "week_start", "sales_rank_filled", "review_count"]].copy()
+    _cols = ["asin", "brand", "week_start", "sales_rank_filled"]
+    if "review_count" in df_weekly.columns:
+        _cols.append("review_count")
+    df = df_weekly[_cols].copy()
     df = df.dropna(subset=["sales_rank_filled"])
 
     cutoff = df["week_start"].max() - pd.Timedelta(days=new_days)

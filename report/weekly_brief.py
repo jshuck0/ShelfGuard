@@ -320,13 +320,10 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
         direction = band_fn(your_bsr, "rank_change")
         bullets.append(f"**Demand:** Your portfolio BSR {direction} WoW")
 
-    # Price/promo regime bullet
+    # Price/promo regime bullet — only when a regime actually fired (no orphan fallback)
     promo_regime = next((s for s in firing if s.regime in ("promo_war", "tier_compression")), None)
     if promo_regime:
         bullets.append(f"**Price/Promo regime:** {promo_regime.verdict}")
-    elif price_vs_tier is not None:
-        tier_label = band_fn(price_vs_tier, "price_vs_tier")
-        bullets.append(f"**Price regime:** Your brand priced {tier_label} vs arena")
 
     # Biggest mover bullet
     if biggest_mover and abs(biggest_mover.bsr_wow) > 0.05:
@@ -393,12 +390,26 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
         if arena_bsr is not None:
             receipts.append(f"Arena BSR {band_fn(arena_bsr, 'rank_change')} WoW (market context)")
     else:
-        verdict = "Unknown"
-        verdict_conf = "Low"
-        receipts = [
-            "No market-level regime detected with sufficient confidence",
-            "Cannot rule out brand-level factors (listing, stock, content) without internal data",
-        ]
+        # Distinguish "we understand it's steady-state" from "we can't tell"
+        _tracking = (
+            your_bsr is not None
+            and arena_bsr is not None
+            and (your_bsr - arena_bsr) <= 0.07
+        )
+        if _tracking:
+            verdict = "Market baseline"
+            verdict_conf = "Low"
+            receipts = [
+                "Arena-wide BSR stable WoW — no active regime detected",
+                "Brand tracking arena: performance consistent with steady-state",
+            ]
+        else:
+            verdict = "Unknown"
+            verdict_conf = "Low"
+            receipts = [
+                "No market-level regime detected with sufficient confidence",
+                "Cannot rule out brand-level factors (listing, stock, content) without internal data",
+            ]
 
     while len(receipts) < 2:
         receipts.append("(additional signal needed)")
@@ -443,8 +454,8 @@ def _build_implications(
             plan_stance = "Pause+Diagnose"
         else:
             bullets.append(
-                "**Exec narrative:** Brand performance tracks the arena — market conditions "
-                "are the likely driver. No dominant regime detected."
+                "**Exec narrative:** No active market regime detected — arena stable, "
+                "brand in steady state. Escalate only if brand diverges from arena movement."
             )
             plan_stance = "Hold"
 
@@ -705,8 +716,8 @@ def generate_brief_markdown(
     if include_per_asin and asin_metrics:
         lines += ["---", "", "## Per-ASIN Detail", ""]
 
-        # Layer A: Receipts list
-        lines += ["### Layer A: ASIN Receipts", ""]
+        # Layer A: Top movers
+        lines += ["### Layer A: Top movers this week", ""]
         receipt_lines = receipts_list(asin_metrics, your_brand, max_items=8, band_fn=band_value)
         for line in receipt_lines:
             lines.append(f"- {line}")

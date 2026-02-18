@@ -383,10 +383,7 @@ def receipts_list(
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
     lines = []
-    sorted_asins = sorted(
-        asin_metrics.values(),
-        key=lambda m: (0 if m.brand.lower() == your_brand.lower() else 1, m.bsr_wow)
-    )
+    sorted_asins = sorted(asin_metrics.values(), key=lambda m: -abs(m.bsr_wow))
 
     for m in sorted_asins[:max_items]:
         conf = "High" if m.ad_waste_risk == "Low" and m.has_momentum else (

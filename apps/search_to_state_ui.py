@@ -412,7 +412,8 @@ def render_discovery_ui() -> None:
                                 leaf_category_id=int(leaf_category_id) if leaf_category_id else None,
                                 category_path=category_path,
                                 category_tree_ids=category_tree_ids,
-                                target_brand=target_brand  # Fetch ALL brand products first
+                                target_brand=target_brand,  # Fetch ALL brand products first
+                                mvp_mode=True,
                             )
 
                             if market_snapshot.empty:
@@ -479,7 +480,8 @@ def render_discovery_ui() -> None:
                                     leaf_category_id=params["leaf_category_id"],
                                     category_path=params["category_path"],
                                     category_tree_ids=params["category_tree_ids"],
-                                    target_brand=params.get("target_brand")  # Restore brand for cache
+                                    target_brand=params.get("target_brand"),  # Restore brand for cache
+                                    mvp_mode=True,
                                 )
                                 if not market_snapshot.empty:
                                     # Restore data from cache

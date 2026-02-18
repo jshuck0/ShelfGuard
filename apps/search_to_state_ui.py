@@ -1392,6 +1392,14 @@ def render_seed_search_and_map_mvp():
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
             with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
                 try:
+                    # category_tree_ids must be a tuple (hashable) for @st.cache_data
+                    _raw_tree = seed_row.get("category_tree_ids")
+                    _tree_ids = (
+                        tuple(_raw_tree)
+                        if isinstance(_raw_tree, (list, tuple)) and _raw_tree
+                        and all(isinstance(x, (int, float)) for x in _raw_tree)
+                        else None
+                    )
                     df_snapshot, market_stats = phase2_category_market_mapping(
                         category_id=int(seed_row.get("category_id", 0)),
                         seed_product_title=str(seed_row.get("title", "")),
@@ -1399,7 +1407,7 @@ def render_seed_search_and_map_mvp():
                         target_brand=brand,
                         max_products=100,
                         leaf_category_id=seed_row.get("leaf_category_id"),
-                        category_tree_ids=seed_row.get("category_tree_ids"),
+                        category_tree_ids=_tree_ids,
                         mvp_mode=True,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []

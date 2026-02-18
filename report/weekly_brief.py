@@ -183,8 +183,7 @@ def build_brief(
     # (exclude extreme pack-size outliers that would skew the arena baseline)
     _latest_snap = df_weekly[df_weekly["week_start"] == latest_week]
     if "number_of_items" in _latest_snap.columns:
-        import numpy as _np
-        _items_med = _latest_snap["number_of_items"].replace(0, _np.nan).median()
+        _items_med = _latest_snap["number_of_items"].replace(0, np.nan).median()
         if _items_med and _items_med > 0:
             _cmp = _latest_snap[
                 _latest_snap["number_of_items"].notna()

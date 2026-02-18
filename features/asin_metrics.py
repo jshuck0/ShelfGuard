@@ -194,7 +194,7 @@ def compute_asin_metrics(
 
         # Comparability: ASIN must have a valid, non-extreme number_of_items
         asin_items = row.get(items_col, np.nan) if items_col in row.index else np.nan
-        tier_comparable = (
+        tier_comparable = bool(
             pd.notna(asin_items)
             and asin_items > 0
             and (items_median is None or asin_items <= items_median * 4)

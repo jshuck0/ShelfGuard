@@ -1744,12 +1744,13 @@ def generate_brief_markdown(
                 for asin in g.top_asins[:5]:
                     m = asin_metrics.get(asin)
                     if m:
-                        price_str = band_value(m.price_vs_tier, "price_vs_tier")
-                        bsr_str = band_value(m.bsr_wow, "rank_change")
+                        _bsr_dir = "BSR improving" if m.bsr_wow < -0.01 else ("BSR worsening" if m.bsr_wow > 0.01 else "BSR flat")
+                        _promo_lvl = _discount_label(m.discount_persistence).lower()
                         _extra = _phase_a_receipt_extras(m)
                         lines.append(
-                            f"  - {m.brand} ({asin[-6:]}): {price_str}, "
-                            f"visibility {bsr_str} — {m.tag}{_extra} | If on ads: {m.ads_stance}"
+                            f"  - {m.brand} ({asin[-6:]}): priced {m.price_vs_tier_band}; "
+                            f"{_bsr_dir} WoW; promo activity {_promo_lvl} — "
+                            f"{m.tag}{_extra} | If on ads: {m.ads_stance}"
                         )
                 lines.append("")
         else:

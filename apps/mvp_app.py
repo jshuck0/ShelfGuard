@@ -246,8 +246,7 @@ st.caption(
     "(estimated from marketplace-observable proxies). "
     "We compare the last 7 days to the prior 7 to capture weekly change. We also use 30–90 day history "
     "for multi-week context: to establish a baseline, detect sustained trends, and flag volatility "
-    "so you don't overreact to one-week noise. "
-    "All signals are Keepa-only marketplace data — no Seller Central, no ad spend, no CVR."
+    "so you don't overreact to one-week noise."
 )
 st.markdown("")
 

@@ -1567,12 +1567,12 @@ def generate_brief_markdown(
     _comp_ct = len(asin_metrics) - _brand_ct
     _ls = brief.leaf_summary
     if _ls:
-        _title = f"# {your_brand} {_ls.primary} Brief"
+        _title = f"# {your_brand} Brief — {_ls.primary}"
     else:
         _title = f"# {your_brand} Market Brief"
     lines += [
         _title,
-        "_Weekly market context and competitive signals_",
+        f"**{brief.week_label}**",
         "",
     ]
     # Secondary leaf disclosure (e.g. "Also includes: Exfoliants (14%)")
@@ -1581,7 +1581,8 @@ def generate_brief_markdown(
         lines.append(f"_Also includes: {_also}_")
         lines.append("")
     lines += [
-        f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
+        f"Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
+        f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         f"Market: **{_brand_ct}** brand + **{_comp_ct}** competitor ASINs "
         "| est. coverage within scanned universe",
@@ -1986,8 +1987,6 @@ def render_brief_tab(
     # Render
     col_brief, col_legend = st.columns([3, 1])
     with col_brief:
-        st.markdown(f"### {brief.arena_name} — {brief.week_label}")
-        st.markdown("---")
         st.markdown(md)
 
     with col_legend:

@@ -1,113 +1,67 @@
 # ShelfGuard
 
-> **The Predictive Operating System for CPG Brands**
+> Keepa-powered Amazon market intelligence that turns marketplace signals into weekly category briefs.
 
-ShelfGuard transforms how consumer brands manage Amazon portfolios. Instead of passive dashboards showing what happened, ShelfGuard tells you what to do next—autonomously detecting threats, forecasting risk, and surfacing growth opportunities across your entire catalog.
+**Seller Central shows your store. ShelfGuard shows your market.**
+
+Seller Central is siloed around your storefront and operations — it doesn't provide a clean view of category dynamics or competitor behavior. ShelfGuard builds a competitive set from a seed ASIN, computes brand-vs-market signals (pricing, promos, visibility/BSR), and delivers a weekly category readout plus the SKUs that need attention.
+
+That context is especially valuable for marketers, because attribution is hard without knowing what the market was doing around you. ShelfGuard helps teams interpret swings correctly — separating category-wide pressure from brand-specific changes and highlighting the SKUs that actually drove the week. With a shared category read, marketing and ecommerce align faster on posture (hold, defend, investigate) without debating the story.
 
 ---
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=Streamlit&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=flat&logo=supabase&logoColor=white)
-![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=flat&logo=openai&logoColor=white)
+![Keepa](https://img.shields.io/badge/Keepa-API-orange)
 
 ---
 
-## The Problem
+## What It Does
 
-CPG brands managing 50-500+ ASINs face a visibility crisis:
+Given a seed product and a brand name, ShelfGuard:
 
-- **Dashboards show data, not decisions** — You see metrics but don't know what to do
-- **Risk signals are reactive** — You find out about problems after revenue is lost
-- **Growth opportunities are buried** — Manual research can't keep pace with market changes
-- **No unified view** — Pricing, inventory, and advertising tools don't talk to each other
+1. **Maps a competitive set** — scans Keepa category leaves to find the top ASINs competing in the same space (200–500 SKUs)
+2. **Pulls 90 days of history** — price, BSR, promo activity, estimated sales for every ASIN in the set
+3. **Computes brand-vs-market signals** — weekly changes for your brand benchmarked against the full arena
+4. **Generates a weekly brief** — market environment verdict, leaf-level signals, brand SKU receipts, and a recommended posture
 
-## The Solution
+Weekly change is computed as last 7 days vs prior 7. 30–90 day history is used for multi-week context: to establish a baseline, detect sustained trends, and flag volatility so you don't overreact to one-week noise.
 
-ShelfGuard replaces analysis paralysis with **prescriptive intelligence**:
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                     SHELFGUARD OS                              │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│   📊 Market Data ──→ 🧠 Unified AI ──→ ⚡ Action Queue         │
-│   (90-day trends)      Engine           (Prioritized)          │
-│                                                                │
-│   "RXBAR Variety    "DISTRESS:        "Pause ads,              │
-│    Pack BSR +340%    margin erosion    cut price 12%,          │
-│    in 14 days"       detected"         restock by Tue"         │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
+All signals are Keepa marketplace data only — no Seller Central, no ad spend, no CVR.
 
 ---
 
-## How It Works
+## The Brief
 
-```mermaid
-graph LR
-    subgraph "1. Discovery"
-        A[Search Product] --> B[Map 200 Competitors]
-    end
+Each run produces a structured markdown brief with seven sections:
 
-    subgraph "2. Intelligence"
-        B --> C[Detect Signals]
-        C --> D[Forecast Risk]
-        D --> E[Find Growth]
-    end
+| Section | What It Answers |
+|---------|-----------------|
+| **Market Environment** | What regime is the category in this week? (Baseline / Promo Pressure / Price Pressure / Disruption / Rotation) |
+| **Leaf Signals** | Which product-type buckets are under pressure or gaining ground? |
+| **Active Signals** | Any ingredient or concern-level movements worth watching? |
+| **Key SKUs** | Which brand SKUs drove the week — and what should you do about each? |
+| **Plan** | Recommended posture: stance, budget direction, focus areas |
+| **What to Watch** | Leading indicators to track next week |
+| **Recommended Set** | Prior-week call accuracy (scoreboard) |
 
-    subgraph "3. Action"
-        E --> F[Prioritized Queue]
-        F --> G[Execute]
-    end
-
-    style A fill:#e3f2fd
-    style B fill:#e3f2fd
-    style C fill:#fff3e0
-    style D fill:#fff3e0
-    style E fill:#fff3e0
-    style F fill:#e8f5e9
-    style G fill:#e8f5e9
-```
-
-### Phase 1: Two-Phase Discovery
-Enter a product ASIN or keyword. ShelfGuard automatically maps your entire competitive landscape—up to 200 products with 90 days of price, rank, and review trends.
-
-### Phase 2: Unified Intelligence
-A single AI engine analyzes every product across three dimensions:
-
-| Layer | Question Answered | Output |
-|-------|-------------------|--------|
-| **Strategic** | "What state is this product in?" | FORTRESS, HARVEST, TRENCH_WAR, DISTRESS, TERMINAL |
-| **Predictive** | "What's at risk in 30 days?" | $ revenue at risk, burn rate, cost of inaction |
-| **Growth** | "What opportunity exists?" | Price headroom, conquest targets, expansion paths |
-
-### Phase 3: Prescriptive Action
-Every product gets a specific recommendation with causal reasoning:
-
-> "**Raise price 8%** BECAUSE competitor X is out of stock and you have 94% Buy Box ownership"
+Brief title uses the dominant leaf category from the scanned set (e.g. _Naturium Brief — Face Serum_). Secondary leaves ≥10% of the set are disclosed as a subheader.
 
 ---
 
-## The Command Center
+## Signals Computed
 
-### Strategic Governor
-Bias the AI toward your current business objective:
-
-| Mode | Behavior |
-|------|----------|
-| **Profit** | Maximize margins. Cut underperformers. Raise prices. |
-| **Balanced** | Optimize risk-adjusted returns. Defend market share. |
-| **Growth** | Forgive low margins for velocity. Scale winners. Conquest. |
-
-### Opportunity Alpha
-The unified metric that matters: **30-Day Risk + 30-Day Growth**
-
-Every product shows its total dollar opportunity—what you'll lose if you do nothing, plus what you'll gain if you act.
-
-### Action Queue
-AI-prioritized list sorted by impact. No more guessing where to focus.
+| Signal | Description |
+|--------|-------------|
+| **Visibility WoW** | BSR change week-over-week, sign-corrected (positive = gaining visibility) |
+| **Price vs median** | Brand price positioned above / in line / below category median |
+| **Promo activity** | Discount persistence: Low (0–1 days/wk) · Medium (2–4) · High (5–7) |
+| **Est. revenue share** | Marketplace-observable proxy from BSR + price, not actual sales |
+| **Sales rank drops** | 30- and 90-day drop counts from Keepa (volatility signal) |
+| **Return rate** | Keepa return rate flag — gates ad-waste risk |
+| **Demand delta** | Month-over-month units sold change (where Keepa history is available) |
+| **Competitor BB share** | Top non-Amazon Buy Box holder's 30-day share |
 
 ---
 
@@ -115,72 +69,64 @@ AI-prioritized list sorted by impact. No more guessing where to focus.
 
 ```
 ShelfGuard/
-├── apps/                    # Streamlit UI
-│   ├── shelfguard_app.py   # Command Center
-│   └── search_to_state_ui.py
+├── apps/
+│   ├── mvp_app.py              # Main Streamlit entrypoint
+│   └── search_to_state_ui.py  # Discovery UI components
 │
-├── src/                     # Intelligence Pipeline
-│   ├── two_phase_discovery.py
-│   ├── trigger_detection.py
-│   └── network_intelligence.py
+├── src/
+│   └── two_phase_discovery.py  # Competitive set mapping (Phase 1 + 2)
 │
-├── utils/                   # Core Engine
-│   ├── ai_engine.py        # Unified AI Brain
-│   └── data_healer.py
+├── scrapers/
+│   └── keepa_client.py         # Keepa API ingestion
 │
-├── scrapers/               # Data Ingestion
-│   └── keepa_client.py
+├── features/
+│   ├── asin_metrics.py         # Per-ASIN metrics + group analytics
+│   └── regimes.py              # 5 market regime detectors
 │
-└── pipelines/              # Background Jobs
-    └── harvest_tracked_asins.py
+├── report/
+│   └── weekly_brief.py         # Brief assembly + markdown renderer + Streamlit tab
+│
+├── config/
+│   ├── market_misattribution_module.py  # Thresholds, taxonomy, band logic
+│   └── golden_run.py                    # Pre-configured seed brand
+│
+├── scoring/
+│   └── confidence.py           # HIGH / MED / LOW confidence rubric
+│
+└── tests/
+    └── test_brief_logic.py     # 127 deterministic tests
 ```
 
-### Performance
-- **800x faster** than row-wise processing (12ms for 100 ASINs)
-- **Sub-second** dashboard loads with intelligent caching
-- **Vectorized** NumPy operations throughout
+The brief engine is fully rule-based — no LLM involved. All section logic is deterministic, threshold-driven, and covered by tests.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/jshuck/ShelfGuard.git
+git clone https://github.com/jshuck0/ShelfGuard.git
 cd ShelfGuard
-
-# Install
 pip install -r requirements.txt
 
-# Configure (create .streamlit/secrets.toml)
-# Add: keepa.api_key, openai.api_key, supabase.url, supabase.key
+# Add keys to .streamlit/secrets.toml:
+#   keepa.api_key = "..."
+#   supabase.url  = "..."
+#   supabase.key  = "..."
 
-# Run
 streamlit run apps/mvp_app.py
 ```
 
----
+### Two modes
 
-## Roadmap
+**Manual** — enter a keyword, pick a seed product, name your brand, click Map Market.
 
-| Phase | Status | Focus |
-|-------|--------|-------|
-| v1.0 | ✅ | Strategic classification, Data healing |
-| v2.0 | ✅ | Predictive risk forecasting |
-| v3.0 | ✅ | Growth intelligence, Vectorized performance |
-| v4.0 | 🔜 | SP-API integration, One-click execution |
-| v5.0 | 📋 | Multi-agent orchestration |
+**Golden run** — configure `config/golden_run.py` with a seed ASIN and brand, then click Load Market for a one-click pre-configured run.
 
 ---
 
 ## Built With
 
-- **OpenAI GPT-4o-mini** — Strategic reasoning
-- **Keepa API** — Market intelligence
-- **Streamlit** — Command Center UI
-- **Supabase** — Real-time database
-- **NumPy/Pandas** — Vectorized processing
-
----
-
-**Stop analyzing. Start executing.**
+- **Keepa API** — market data (price, BSR, promo, sales history)
+- **Streamlit** — UI
+- **Supabase** — optional caching for instant return visits
+- **Pandas / NumPy** — signal computation

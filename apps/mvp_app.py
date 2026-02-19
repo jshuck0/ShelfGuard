@@ -224,7 +224,7 @@ col_logo, col_title = st.columns([1, 8])
 with col_logo:
     st.image("https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg", width=80)
 with col_title:
-    st.markdown("# ShelfGuard Amazon Market Brief")
+    st.markdown("# ShelfGuard Market Brief")
     st.caption("Amazon marketplace signals (Keepa). Use as a directional read on consumer demand, promo intensity, and competitive launches.")
 st.markdown("---")
 

@@ -1070,3 +1070,82 @@ class TestPhaseA:
         from features.asin_metrics import phase_a_receipt_extras
         m = _make_metrics("A01", "Brand", has_buybox_stats=True, has_monthly_sold_history=True)
         assert phase_a_receipt_extras(m) == ""
+
+
+# ─── 11. Leaf set name ────────────────────────────────────────────────────────
+
+class TestLeafSetName:
+    """Tests for normalize_leaf_name() and compute_leaf_summary()."""
+
+    def test_normalize_leaf_facial_toner(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        assert normalize_leaf_name("facial-toner") == "toner"
+
+    def test_normalize_leaf_underscore_format(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        assert normalize_leaf_name("facial_toner") == "toner"
+
+    def test_normalize_leaf_exfoliant(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        assert normalize_leaf_name("exfoliant") == "exfoliant"
+
+    def test_normalize_leaf_prefix_match(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        # Long variant that starts with a known pattern
+        result = normalize_leaf_name("facial-toner-for-oily-skin")
+        assert result == "toner"
+
+    def test_normalize_leaf_unknown_returns_none(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        assert normalize_leaf_name("random-thing") is None
+
+    def test_normalize_leaf_empty_returns_none(self):
+        from config.market_misattribution_module import normalize_leaf_name
+        assert normalize_leaf_name("") is None
+
+    def test_compute_leaf_summary_primary_is_top_leaf(self):
+        from report.weekly_brief import compute_leaf_summary
+        metrics = {f"A{i}": _make_metrics(f"A{i}", "B", product_type="toner") for i in range(7)}
+        metrics.update({f"B{i}": _make_metrics(f"B{i}", "B", product_type="serum") for i in range(3)})
+        result = compute_leaf_summary(metrics)
+        assert result is not None
+        assert result.primary == "Toner"
+
+    def test_compute_leaf_summary_secondary_above_threshold(self):
+        from report.weekly_brief import compute_leaf_summary
+        metrics = {f"A{i}": _make_metrics(f"A{i}", "B", product_type="toner") for i in range(6)}
+        metrics.update({f"B{i}": _make_metrics(f"B{i}", "B", product_type="exfoliant") for i in range(2)})
+        metrics.update({f"C{i}": _make_metrics(f"C{i}", "B", product_type="cleanser") for i in range(2)})
+        result = compute_leaf_summary(metrics)
+        assert result is not None
+        secondary_names = [s[0] for s in result.secondary]
+        assert "Exfoliant" in secondary_names or "Cleanser" in secondary_names
+
+    def test_compute_leaf_summary_all_other_returns_none(self):
+        from report.weekly_brief import compute_leaf_summary
+        metrics = {"A1": _make_metrics("A1", "B", product_type="other")}
+        assert compute_leaf_summary(metrics) is None
+
+    def test_compute_leaf_summary_secondary_capped_at_2(self):
+        from report.weekly_brief import compute_leaf_summary
+        metrics = {}
+        for i, pt in enumerate(["toner"] * 5 + ["serum"] * 2 + ["cleanser"] * 2 + ["exfoliant"] * 2):
+            metrics[f"A{i}"] = _make_metrics(f"A{i}", "B", product_type=pt)
+        result = compute_leaf_summary(metrics)
+        assert result is not None
+        assert len(result.secondary) <= 2
+
+    def test_compute_leaf_summary_has_disclosure(self):
+        from report.weekly_brief import compute_leaf_summary
+        metrics = {"A1": _make_metrics("A1", "B", product_type="toner")}
+        result = compute_leaf_summary(metrics)
+        assert result is not None
+        assert "Keepa" in result.disclosure
+
+    def test_leaf_display_names_serum(self):
+        from config.market_misattribution_module import LEAF_DISPLAY_NAMES
+        assert LEAF_DISPLAY_NAMES.get("serum") == "Face Serum"
+
+    def test_leaf_display_names_acne_treatment(self):
+        from config.market_misattribution_module import LEAF_DISPLAY_NAMES
+        assert LEAF_DISPLAY_NAMES.get("acne_treatment") == "Acne Treatment"

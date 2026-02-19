@@ -59,6 +59,14 @@ class SecondarySignal:
 
 
 @dataclass
+class LeafSummary:
+    """Leaf category breakdown for the discovered ASIN set."""
+    primary: str          # e.g. "Toner" — used in brief title
+    secondary: list       # [(name, pct_str), ...] — e.g. [("Exfoliant", "14%")]
+    disclosure: str = "Market scope is inferred from Keepa category leaves across the scanned SKU set."
+
+
+@dataclass
 class WeeklyBrief:
     """Complete brief for one arena × one week."""
     brand: str
@@ -109,6 +117,7 @@ class WeeklyBrief:
     module_id: str = "generic"        # "skincare" | "generic" — controls taxonomy rendering
     group_summary: List = field(default_factory=list)   # List[ProductGroupMetrics]
     flags_line: str = ""           # "Flags: ..." header line (only if signals exist)
+    leaf_summary: Optional[LeafSummary] = None  # Primary + secondary leaf names from item_type_keyword
 
 
 # ─── BRIEF ASSEMBLY ──────────────────────────────────────────────────────────
@@ -321,6 +330,9 @@ def build_brief(
     # ── Flags line (data-backed only) ─────────────────────────────────────────
     flags_line = _build_flags_line(asin_metrics, your_brand)
 
+    # ── Leaf set name (from product_type distribution) ─────────────────────────
+    leaf_summary = compute_leaf_summary(asin_metrics)
+
     return WeeklyBrief(
         brand=your_brand,
         arena_name=arena_name or f"{your_brand} Market",
@@ -352,6 +364,7 @@ def build_brief(
         module_id=_module_id,
         group_summary=group_metrics,
         flags_line=flags_line,
+        leaf_summary=leaf_summary,
     )
 
 
@@ -471,6 +484,43 @@ def _find_biggest_mover(asin_metrics: Dict[str, ASINMetrics]) -> Optional[ASINMe
 def _has_buckets(group_metrics) -> bool:
     """True when group_metrics has at least one non-'other' product_type."""
     return bool(group_metrics and any(g.product_type != "other" for g in group_metrics))
+
+
+def compute_leaf_summary(
+    asin_metrics: Dict[str, "ASINMetrics"],
+    min_secondary_pct: float = 0.10,
+) -> Optional["LeafSummary"]:
+    """
+    Derive primary + secondary leaf names from product_type distribution.
+
+    Primary = single highest-share non-'other' leaf → used in brief title.
+    Secondary = other leaves >= 10% of total, capped at 2 → shown as disclosure.
+    Returns None when no non-'other' ASINs exist.
+    """
+    from collections import Counter
+    try:
+        from config.market_misattribution_module import LEAF_DISPLAY_NAMES as _LDN
+    except ImportError:
+        _LDN = {}
+
+    ptypes = [m.product_type for m in asin_metrics.values() if m.product_type != "other"]
+    if not ptypes:
+        return None
+    total = len(ptypes)
+    counts = Counter(ptypes)
+    ranked = counts.most_common()
+
+    primary_pt, _ = ranked[0]
+    primary_name = _LDN.get(primary_pt, primary_pt.replace("_", " ").title())
+
+    secondary = []
+    for pt, ct in ranked[1:]:
+        pct = ct / total
+        if pct >= min_secondary_pct and len(secondary) < 2:
+            name = _LDN.get(pt, pt.replace("_", " ").title())
+            secondary.append((name, f"{round(pct * 100)}%"))
+
+    return LeafSummary(primary=primary_name, secondary=secondary)
 
 
 def _ptype_arena_stats(group_metrics: list) -> dict:
@@ -606,20 +656,22 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
                     f"{_tc_bsr}; promo activity {_tc_promo}"
                 )
 
-        # Bullet 3 — Brand vs arena delta (numeric-first)
+        # Bullet 3 — Brand vs arena delta (visibility WoW — positive = gaining)
         if your_bsr is not None and arena_bsr is not None:
             _delta = your_bsr - arena_bsr
             if abs(_delta) < 0.02:
                 _rel = "Brand visibility tracking market"
-            elif _delta < 0:  # brand improving faster
+            elif _delta < 0:  # brand BSR improving faster = gaining more visibility
                 _rel = "Brand visibility outperforming market"
             else:
                 _rel = "Brand visibility lagging market"
+            _vis_brand = -your_bsr * 100    # invert: positive = gaining visibility
+            _vis_arena = -arena_bsr * 100
             bullets.append(
-                f"**{_rel}** (brand {your_bsr*100:+.1f}% vs market {arena_bsr*100:+.1f}% WoW)"
+                f"**{_rel}** (brand {_vis_brand:+.1f}% vs market {_vis_arena:+.1f}% visibility WoW)"
             )
         elif your_bsr is not None:
-            bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
+            bullets.append(f"**Brand visibility:** {-your_bsr*100:+.1f}% WoW")
 
         return bullets[:3]
 
@@ -636,7 +688,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     if promo_regime:
         bullets.append(f"**Price/Promo environment:** {promo_regime.verdict}")
 
-    # Bullet 3 — Brand vs arena delta (numeric-first)
+    # Bullet 3 — Brand vs arena delta (visibility WoW — positive = gaining)
     if your_bsr is not None and arena_bsr is not None:
         _delta = your_bsr - arena_bsr
         if abs(_delta) < 0.02:
@@ -645,11 +697,13 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
             _rel = "Brand visibility outperforming market"
         else:
             _rel = "Brand visibility lagging market"
+        _vis_brand = -your_bsr * 100
+        _vis_arena = -arena_bsr * 100
         bullets.append(
-            f"**{_rel}** (brand {your_bsr*100:+.1f}% vs market {arena_bsr*100:+.1f}% WoW)"
+            f"**{_rel}** (brand {_vis_brand:+.1f}% vs market {_vis_arena:+.1f}% visibility WoW)"
         )
     elif your_bsr is not None:
-        bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
+        bullets.append(f"**Brand visibility:** {-your_bsr*100:+.1f}% WoW")
 
     return bullets[:3]
 
@@ -1508,24 +1562,33 @@ def generate_brief_markdown(
     conf_label = brief.confidence_score.label if brief.confidence_score else "Med"
     data_q = brief.data_quality
 
-    # Derive category label from module_id (e.g. "skincare" → "Skincare")
-    _category_label = brief.module_id.replace("_", " ").title() if brief.module_id != "generic" else ""
-
     # ── Header ────────────────────────────────────────────────────────────────
     _brand_ct = sum(1 for m in asin_metrics.values() if m.brand.lower() == your_brand.lower())
     _comp_ct = len(asin_metrics) - _brand_ct
-    if _category_label:
-        _title = f"# {your_brand} — {_category_label} Market Brief"
+    _ls = brief.leaf_summary
+    if _ls:
+        _title = f"# {your_brand} {_ls.primary} Brief"
     else:
-        _title = f"# {your_brand} — Market Brief"
+        _title = f"# {your_brand} Market Brief"
     lines += [
         _title,
         "_Weekly market context and competitive signals_",
         "",
+    ]
+    # Secondary leaf disclosure (e.g. "Also includes: Exfoliants (14%)")
+    if _ls and _ls.secondary:
+        _also = ", ".join(f"{name} ({pct})" for name, pct in _ls.secondary)
+        lines.append(f"_Also includes: {_also}_")
+        lines.append("")
+    lines += [
         f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
         f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         f"Market: **{_brand_ct}** brand + **{_comp_ct}** competitor ASINs "
         "| est. coverage within scanned universe",
+    ]
+    if _ls:
+        lines.append(f"_{_ls.disclosure}_")
+    lines += [
         "",
         "---",
         "",
@@ -1581,9 +1644,9 @@ def generate_brief_markdown(
         lines.append("**Secondary signals:** No sustained discount divergence or structural driver detected.")
         lines.append("")
 
-    # ── Section 2: Sub-category Signals ──────────────────────────────────────
+    # ── Section 2: Leaf Signals ──────────────────────────────────────────────
     if brief.pressure_buckets:
-        lines += ["## Sub-category Signals", ""]
+        lines += ["## Leaf Signals", ""]
         for driver in brief.pressure_buckets:
             lines.append(f"- {driver.claim}")
             for r in driver.receipts[:2]:
@@ -1592,7 +1655,7 @@ def generate_brief_markdown(
                 lines.append(f"  - **So what?** {driver.so_what}")
         lines.append("")
     else:
-        lines += ["## Sub-category Signals", ""]
+        lines += ["## Leaf Signals", ""]
         for b in brief.what_changed:
             lines.append(f"- {b}")
         lines.append("")
@@ -1631,13 +1694,21 @@ def generate_brief_markdown(
     lines.append("")
 
     # Line 3: Focus areas — from pressure buckets + opportunity/defend concerns
+    # Use brand membership to distinguish "(pressure)" vs "(context only)"
+    _brand_ptypes = {
+        g.product_type for g in (brief.group_summary or [])
+        if g.brand.lower() == your_brand.lower()
+    }
     _focus_parts = []
     if brief.pressure_buckets:
-        _pnames = [d.regime.replace("_", " ").title() for d in brief.pressure_buckets]
-        _focus_parts.append(", ".join(_pnames) + " (pressure)")
+        for d in brief.pressure_buckets:
+            _pname = d.regime.replace("_", " ").title()
+            _plabel = "(pressure)" if d.regime in _brand_ptypes else "(context only)"
+            _focus_parts.append(f"{_pname} {_plabel}")
     if brief.opportunity_bucket:
         _oname = brief.opportunity_bucket.regime.replace("_", " ").title()
-        _focus_parts.append(f"{_oname} (defend)")
+        _olabel = "(defend)" if brief.opportunity_bucket.regime in _brand_ptypes else "(context only)"
+        _focus_parts.append(f"{_oname} {_olabel}")
     if _focus_parts:
         lines.append(f"**Focus areas:** {'; '.join(_focus_parts)}")
     else:
@@ -1666,6 +1737,14 @@ def generate_brief_markdown(
     # ── Section 4: Key SKUs ──────────────────────────────────────────────────
     if include_per_asin and asin_metrics:
         lines += ["---", "", "## Key SKUs", ""]
+
+        # 1-liner intent header
+        _brand_sku_ct = sum(1 for m in asin_metrics.values() if m.brand.lower() == your_brand.lower())
+        if _brand_sku_ct == 1:
+            lines.append("_Top SKU driving brand signal this week._")
+        else:
+            lines.append(f"_Top {min(_brand_sku_ct, 6)} brand SKUs grouped by market signal._")
+        lines.append("")
 
         # Key SKUs: brand-only, grouped by Pressure / Opportunity / Stable
         _pressure_ptypes = [d.regime for d in brief.pressure_buckets] if brief.pressure_buckets else None
@@ -1919,15 +1998,15 @@ def render_brief_tab(
             mime="text/markdown",
         )
         st.markdown("---")
-        st.markdown("#### Market Environments")
-        for env_name, env_def in _MARKET_ENV_LEGEND:
-            st.markdown(f"**{env_name}**")
-            st.caption(env_def)
+        with st.expander("Market Environments", expanded=False):
+            for env_name, env_def in _MARKET_ENV_LEGEND:
+                st.markdown(f"**{env_name}**")
+                st.caption(env_def)
         st.markdown("---")
-        st.markdown("#### Key Terms")
-        for term_name, term_def in _KEY_TERMS:
-            st.markdown(f"**{term_name}**")
-            st.caption(term_def)
+        with st.expander("Key Terms", expanded=False):
+            for term_name, term_def in _KEY_TERMS:
+                st.markdown(f"**{term_name}**")
+                st.caption(term_def)
         st.markdown("---")
 
     # ── Bucket drilldown (interactive) ───────────────────────────────────────
@@ -1959,11 +2038,18 @@ def render_brief_tab(
         for ptype, groups in list(by_ptype.items())[:10]:
             ptype_name = ptype.replace("_", " ").title()
             total_skus = sum(g.asin_count for g in groups)
-            stances = [g.dominant_ads_stance for g in groups]
-            dom_stance = max(set(stances), key=stances.count)
-            posture_label = _PD.get(dom_stance, dom_stance)
             momenta = [g.momentum_label for g in groups]
             arena_momentum = max(set(momenta), key=momenta.count)
+
+            # Brand-presence check: does YOUR brand have any SKUs in this bucket?
+            brand_groups = [g for g in groups if g.brand.lower() == your_brand.lower()]
+            has_brand = bool(brand_groups)
+            if has_brand:
+                dom_stance = brand_groups[0].dominant_ads_stance
+                posture_label = _PD.get(dom_stance, dom_stance)
+            else:
+                dom_stance = None
+                posture_label = "Context only"
 
             with st.expander(
                 f"**{ptype_name}** — {total_skus} SKUs | {arena_momentum} trend | {posture_label}"

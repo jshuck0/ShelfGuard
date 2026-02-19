@@ -364,6 +364,27 @@ ITEM_TYPE_KEYWORD_MAP = {
     "micellar_water": "micellar water",
 }
 
+# product_type → user-facing display name
+# Used everywhere the brief shows a leaf/bucket name to the user.
+LEAF_DISPLAY_NAMES = {
+    "serum": "Face Serum",
+    "toner": "Toner",
+    "moisturizer": "Moisturizer",
+    "cleanser": "Cleanser",
+    "eye cream": "Eye Cream",
+    "exfoliant": "Exfoliant",
+    "mask": "Mask",
+    "oil": "Face Oil",
+    "lotion": "Body Lotion",
+    "body wash": "Body Wash",
+    "sunscreen": "Sunscreen",
+    "acne_treatment": "Acne Treatment",
+    "scrub": "Exfoliant",
+    "balm": "Lip Balm",
+    "retinol": "Retinol",
+    "micellar water": "Micellar Water",
+}
+
 
 def classify_title(title: str, item_type_keyword: str = "") -> str:
     """
@@ -387,12 +408,39 @@ def classify_title(title: str, item_type_keyword: str = "") -> str:
 
     # Fallback: use item_type_keyword from Amazon catalogue
     if item_type_keyword:
-        _itk = item_type_keyword.strip().lower().replace(" ", "_")
+        # Normalize: hyphens and spaces both → underscores
+        _itk = item_type_keyword.strip().lower().replace("-", "_").replace(" ", "_")
         mapped = ITEM_TYPE_KEYWORD_MAP.get(_itk)
         if mapped:
             return mapped
 
     return "other"
+
+
+def normalize_leaf_name(itk: str):
+    """
+    Map a Keepa itemTypeKeyword (hyphen or underscore format) → canonical product_type.
+    Returns None if the keyword is unknown.
+
+    Examples:
+        "facial-toner"           → "toner"
+        "facial_toner"           → "toner"
+        "exfoliant"              → "exfoliant"
+        "facial-toner-oily-skin" → "toner"  (prefix match)
+        "random-thing"           → None
+    """
+    if not itk:
+        return None
+    # Normalize to underscore format
+    key = itk.strip().lower().replace("-", "_").replace(" ", "_")
+    # Exact match
+    if key in ITEM_TYPE_KEYWORD_MAP:
+        return ITEM_TYPE_KEYWORD_MAP[key]
+    # Prefix match — handles long variants like "facial_toner_for_oily_skin"
+    for pattern in ITEM_TYPE_KEYWORD_MAP:
+        if key.startswith(pattern + "_") or key == pattern:
+            return ITEM_TYPE_KEYWORD_MAP[pattern]
+    return None
 
 
 # Keyword → concern/active mapping (all matches collected, most specific first)

@@ -144,15 +144,16 @@ if "active_project_data" not in st.session_state:
 # ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 🛡️ ShelfGuard MVP")
+    st.markdown("## 🛡️ ShelfGuard")
+    st.markdown("_Market context & competitive signals_")
     st.markdown("---")
 
     # Golden run toggle (only show if golden run is configured)
     if GOLDEN_RUN_ENABLED and not GOLDEN_SEED_ASIN.startswith("B07XYZ"):
         use_golden = st.toggle(
-            "Use Golden Run",
+            "Use saved brand",
             value=True,
-            help=f"Pre-configured: {GOLDEN_BRAND} / {GOLDEN_PROJECT_NAME}",
+            help=f"Load pre-configured brand: {GOLDEN_BRAND} ({GOLDEN_PROJECT_NAME})",
         )
         st.session_state["_mvp_use_golden"] = use_golden
     else:
@@ -162,16 +163,18 @@ with st.sidebar:
 
     # Arena preset selector
     _preset = st.selectbox(
-        "Arena size",
-        ["Fast (200 ASINs)", "Standard (300 ASINs)", "Deep (500 ASINs)"],
+        "Competitive set size",
+        ["Quick scan (200 SKUs)", "Standard (300 SKUs)", "Deep dive (500 SKUs)"],
         index=1,
         key="_mvp_arena_preset",
-        help="Larger arenas give more competitor context but use more Keepa tokens. Deep mode may exceed your token budget.",
+        help="How many SKUs to include in your competitive arena. "
+             "Standard covers most sub-categories well. "
+             "Deep dive gives fuller coverage but takes longer and uses more API tokens.",
     )
     _preset_map = {
-        "Fast (200 ASINs)": (200, 100, 100),
-        "Standard (300 ASINs)": (300, 150, 150),
-        "Deep (500 ASINs)": (500, 250, 250),
+        "Quick scan (200 SKUs)": (200, 100, 100),
+        "Standard (300 SKUs)": (300, 150, 150),
+        "Deep dive (500 SKUs)": (500, 250, 250),
     }
     _arena_size, _min_comps, _brand_cap_mv = _preset_map[_preset]
     st.session_state["_mvp_arena_size"] = _arena_size
@@ -182,10 +185,11 @@ with st.sidebar:
 
     # Ads toggle
     runs_ads_option = st.selectbox(
-        "Runs Sponsored Ads?",
+        "Does this brand run Sponsored Ads?",
         options=["Unknown", "Yes", "No"],
         index=0,
-        help="Controls budget-action language in the brief.",
+        help="If Yes, the brief includes ad-specific actions and posture recommendations. "
+             "If Unknown, ad language is included but hedged.",
     )
     runs_ads: Optional[bool] = None
     if runs_ads_option == "Yes":

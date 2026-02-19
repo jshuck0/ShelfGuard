@@ -964,7 +964,7 @@ class TestRound8:
         assert len(result) <= 2
         assert all(hasattr(d, "claim") and hasattr(d, "receipts") for d in result)
 
-    def test_grouped_receipts_list_shows_bucket_heading(self):
+    def test_grouped_receipts_list_shows_pressure_heading(self):
         from report.weekly_brief import grouped_receipts_list
         metrics = {
             "A01": _make_metrics("A01", "MyBrand", product_type="cleanser",
@@ -974,7 +974,8 @@ class TestRound8:
             metrics, "MyBrand", pressure_ptypes=["cleanser"],
         )
         combined = "\n".join(result)
-        assert "Cleanser" in combined
+        assert "Pressure" in combined
+        assert "Validate" in combined  # single gate line at end
 
 
 class TestPhaseA:

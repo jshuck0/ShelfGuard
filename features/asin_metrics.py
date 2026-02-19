@@ -611,16 +611,28 @@ def to_group_table(
     group_metrics: List["ProductGroupMetrics"],
     band_fn=None,
     max_groups: int = 15,
+    brand_filter: Optional[str] = None,
+    is_competitor: bool = False,
 ) -> pd.DataFrame:
     """
     Build a product_type × brand summary DataFrame for Layer B group view.
 
     One row per group. Used in skincare module mode instead of flat per-ASIN table.
+
+    Args:
+        brand_filter: If set, only include rows matching (or not matching) this brand.
+        is_competitor: If True, filter to brands != brand_filter and blank "If on ads".
     """
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
     rows = []
     for g in group_metrics[:max_groups]:
+        # Apply brand filtering
+        if brand_filter:
+            if is_competitor and g.brand.lower() == brand_filter.lower():
+                continue
+            if not is_competitor and g.brand.lower() != brand_filter.lower():
+                continue
         rows.append({
             "Product Type": g.product_type.replace("_", " ").title(),
             "Brand": g.brand,
@@ -630,7 +642,7 @@ def to_group_table(
             "Discounting": _discount_label(g.pct_discounted),
             "Momentum": g.momentum_label.title(),
             "Signal": _derive_group_signal(g),
-            "If on ads": g.dominant_ads_stance,
+            "If on ads": "\u2014" if is_competitor else g.dominant_ads_stance,
             "_share_sort": g.rev_share_pct,
         })
     df = pd.DataFrame(rows)

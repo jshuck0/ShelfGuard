@@ -1392,74 +1392,99 @@ def grouped_receipts_list(
     max_comp_per_bucket: int = 3,
 ) -> List[str]:
     """
-    Layer A: ASIN receipts grouped under bucket headings.
-    Caps: max 5 brand + 3 competitor per highlighted bucket.
-    Falls back to flat receipts_list() when no pressure_ptypes or opportunity_concern.
+    Key SKUs section: brand-only receipts grouped by Pressure / Opportunity / Stable.
+    Max 5–8 SKUs total. Buy Box unavailable note once at top, single gate line at end.
     """
-    from features.asin_metrics import _POSTURE_DISPLAY, _VALIDATE_BY_STANCE
+    from features.asin_metrics import _POSTURE_DISPLAY
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
 
-    if not pressure_ptypes and not opportunity_concern:
-        return receipts_list(asin_metrics, your_brand, max_items=8,
-                             band_fn=band_fn, runs_ads=runs_ads)
+    yours = {a: m for a, m in asin_metrics.items()
+             if m.brand.lower() == your_brand.lower()}
+    if not yours:
+        return ["_No brand SKUs in this market scan._"]
 
     def _fmt(m) -> str:
-        vis_str = band_fn(m.bsr_wow, "rank_change")
-        ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"
-        val_hint = (
-            f" | Validate: {_VALIDATE_BY_STANCE.get(m.ads_stance, '')}"
-            if runs_ads is not False else ""
-        )
+        _vis = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
+        _promo = _discount_label(m.discount_persistence).lower()
         _extra = _phase_a_receipt_extras(m)
+        ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"
         return (
-            f"{m.brand} ({m.asin[-6:]}): price {m.price_vs_tier_band}, "
-            f"visibility {vis_str} WoW \u2014 {m.tag}{_extra}{ads_hint}{val_hint}"
+            f"{m.brand} ({m.asin[-6:]}): {_vis} WoW; promo activity {_promo}; "
+            f"priced {m.price_vs_tier_band} \u2014 {m.tag}{_extra}{ads_hint}"
         )
 
-    lines = []
-
-    for pt in (pressure_ptypes or []):
-        pt_name = pt.replace("_", " ").title()
-        brand_pressure = sorted(
-            [m for m in asin_metrics.values()
-             if m.brand.lower() == your_brand.lower()
-             and m.product_type == pt
-             and m.ads_stance in ("Pause+Diagnose", "Hold")],
-            key=lambda m: -m.bsr_wow,
-        )[:max_brand_per_bucket]
-        if brand_pressure:
-            lines.append(f"**Your brand \u2014 {pt_name} (pressure):**")
-            lines.extend(f"  - {_fmt(m)}" for m in brand_pressure)
-
-        comp_pressure = sorted(
-            [m for m in asin_metrics.values()
-             if m.brand.lower() != your_brand.lower()
-             and m.product_type == pt
-             and m.discount_persistence >= 4 / 7
-             and m.bsr_wow < -0.03],
-            key=lambda m: m.bsr_wow,
-        )[:max_comp_per_bucket]
-        if comp_pressure:
-            lines.append(f"**Competitors \u2014 {pt_name} (pressure):**")
-            lines.extend(f"  - {_fmt(m)}" for m in comp_pressure)
-
+    # Categorize brand SKUs into pressure / opportunity / stable
+    pressure_set = set(pressure_ptypes or [])
+    opp_concerns = set()
     if opportunity_concern:
-        opp_name = opportunity_concern.replace("_", " ").title()
-        opp_asins = sorted(
-            [m for m in asin_metrics.values()
-             if m.brand.lower() == your_brand.lower()
-             and opportunity_concern in m.concerns],
-            key=lambda m: m.bsr_wow,
-        )[:max_brand_per_bucket]
-        if opp_asins:
-            lines.append(f"**Your brand \u2014 {opp_name} (opportunity):**")
-            lines.extend(f"  - {_fmt(m)}" for m in opp_asins)
+        opp_concerns.add(opportunity_concern)
 
-    # Safety fallback
+    pressure_skus = []
+    opportunity_skus = []
+    stable_skus = []
+    for m in yours.values():
+        is_pressure = (
+            m.product_type in pressure_set
+            or m.ads_stance in ("Pause+Diagnose",)
+            or m.ad_waste_risk == "High"
+            or m.bsr_wow > 0.05  # losing visibility
+        )
+        is_opp = (
+            any(c in opp_concerns for c in m.concerns)
+            or (m.has_momentum and m.ads_stance == "Scale")
+        )
+        if is_pressure:
+            pressure_skus.append(m)
+        elif is_opp:
+            opportunity_skus.append(m)
+        else:
+            stable_skus.append(m)
+
+    # Sort each bucket: pressure by worst visibility first, opp by best, stable by share
+    pressure_skus.sort(key=lambda m: -m.bsr_wow)   # most declining first
+    opportunity_skus.sort(key=lambda m: m.bsr_wow)  # most improving first
+    stable_skus.sort(key=lambda m: -abs(m.bsr_wow))
+
+    lines: List[str] = []
+
+    # Buy Box unavailable note once at top
+    _any_bb_missing = any(
+        getattr(m, "has_buybox_stats", None) is False or getattr(m, "has_buybox_stats", None) is None
+        for m in yours.values()
+    )
+    if _any_bb_missing:
+        lines.append("_Buy Box signal unavailable for this market._")
+        lines.append("")
+
+    total = 0
+    MAX_TOTAL = 8
+
+    if pressure_skus and total < MAX_TOTAL:
+        lines.append("**Pressure** (losing visibility / promo-heavy / high ad waste)")
+        for m in pressure_skus[:min(3, MAX_TOTAL - total)]:
+            lines.append(f"  - {_fmt(m)}")
+            total += 1
+
+    if opportunity_skus and total < MAX_TOTAL:
+        lines.append("**Opportunity** (gaining + favorable context)")
+        for m in opportunity_skus[:min(3, MAX_TOTAL - total)]:
+            lines.append(f"  - {_fmt(m)}")
+            total += 1
+
+    if stable_skus and total < MAX_TOTAL:
+        lines.append("**Stable**")
+        for m in stable_skus[:min(2, MAX_TOTAL - total)]:
+            lines.append(f"  - {_fmt(m)}")
+            total += 1
+
+    # Single gate line at end
+    if runs_ads is not False:
+        lines.append("")
+        lines.append("_Validate: In ads console, confirm no Buy Box loss and no OOS on core SKUs._")
+
     if not lines:
-        return receipts_list(asin_metrics, your_brand, max_items=8,
-                             band_fn=band_fn, runs_ads=runs_ads)
+        return ["_No brand SKUs to highlight._"]
     return lines
 
 
@@ -1674,8 +1699,7 @@ def generate_brief_markdown(
     if include_per_asin and asin_metrics:
         lines += ["---", "", "## Key SKUs", ""]
 
-        # Layer A: Ads-relevant receipts (grouped by pressure/opportunity bucket when available)
-        lines += ["### Ads-relevant receipts this week", ""]
+        # Key SKUs: brand-only, grouped by Pressure / Opportunity / Stable
         _pressure_ptypes = [d.regime for d in brief.pressure_buckets] if brief.pressure_buckets else None
         _opp_concern = brief.opportunity_bucket.regime if brief.opportunity_bucket else None
         receipt_lines = grouped_receipts_list(
@@ -1685,7 +1709,7 @@ def generate_brief_markdown(
             band_fn=band_value, runs_ads=brief.runs_ads,
         )
         for line in receipt_lines:
-            lines.append(f"- {line}")
+            lines.append(line)
         lines.append("")
 
         def _render_md_table(tdf, top_n: int = 6):
@@ -1724,15 +1748,34 @@ def generate_brief_markdown(
                 "_\"Est. Share\" is a marketplace-observable proxy based on estimated revenue within the scanned market — not actual sales data._",
                 "",
             ]
-            group_df = to_group_table(brief.group_summary, band_fn=band_value)
-            _render_md_table(group_df)
+            # Table A: Your brand only
+            brand_group_df = to_group_table(
+                brief.group_summary, band_fn=band_value,
+                brand_filter=your_brand, is_competitor=False,
+            )
+            _render_md_table(brand_group_df, top_n=20)
             lines.append("")
 
-            # Per-group ASIN receipts (up to 5 ASINs per group)
-            lines += ["#### ASIN Detail by Group", ""]
-            for g in brief.group_summary[:12]:
-                if not g.top_asins:
-                    continue
+            # Table B: Competitors only (context)
+            lines += ["### Competitors (context)", ""]
+            comp_group_df = to_group_table(
+                brief.group_summary, band_fn=band_value,
+                brand_filter=your_brand, is_competitor=True,
+            )
+            _render_md_table(comp_group_df, top_n=12)
+            lines.append("")
+
+            # ASIN Detail by Group — behind <details> appendix
+            lines.append("<details><summary>ASIN Detail by Group</summary>")
+            lines.append("")
+
+            # Your brand groups first
+            brand_groups = [g for g in brief.group_summary
+                            if g.brand.lower() == your_brand.lower() and g.top_asins]
+            comp_groups = [g for g in brief.group_summary
+                           if g.brand.lower() != your_brand.lower() and g.top_asins]
+
+            for g in brand_groups[:8]:
                 lines.append(
                     f"**{g.brand} — {g.product_type.replace('_', ' ').title()}** "
                     f"({g.asin_count} SKUs, {g.rev_share_pct:.0%} est. share)"
@@ -1740,15 +1783,37 @@ def generate_brief_markdown(
                 for asin in g.top_asins[:5]:
                     m = asin_metrics.get(asin)
                     if m:
-                        _bsr_dir = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
+                        _vis = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
                         _promo_lvl = _discount_label(m.discount_persistence).lower()
                         _extra = _phase_a_receipt_extras(m)
                         lines.append(
                             f"  - {m.brand} ({asin[-6:]}): priced {m.price_vs_tier_band}; "
-                            f"{_bsr_dir} WoW; promo activity {_promo_lvl} — "
+                            f"{_vis} WoW; promo activity {_promo_lvl} — "
                             f"{m.tag}{_extra} | If on ads: {m.ads_stance}"
                         )
                 lines.append("")
+
+            # Competitors after — no "If on ads"
+            for g in comp_groups[:12]:
+                lines.append(
+                    f"**{g.brand} — {g.product_type.replace('_', ' ').title()}** "
+                    f"({g.asin_count} SKUs, {g.rev_share_pct:.0%} est. share)"
+                )
+                for asin in g.top_asins[:5]:
+                    m = asin_metrics.get(asin)
+                    if m:
+                        _vis = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
+                        _promo_lvl = _discount_label(m.discount_persistence).lower()
+                        _extra = _phase_a_receipt_extras(m)
+                        lines.append(
+                            f"  - {m.brand} ({asin[-6:]}): priced {m.price_vs_tier_band}; "
+                            f"{_vis} WoW; promo activity {_promo_lvl} — "
+                            f"{m.tag}{_extra}"
+                        )
+                lines.append("")
+
+            lines.append("</details>")
+            lines.append("")
         else:
             # Flat view — unchanged for generic mode
             brand_metrics = {a: m for a, m in asin_metrics.items()
@@ -1764,7 +1829,7 @@ def generate_brief_markdown(
             # Competitor block: top 5 by |bsr_wow|
             comp_top5 = dict(sorted(comp_metrics.items(), key=lambda kv: -abs(kv[1].bsr_wow))[:5])
             if comp_top5:
-                lines += ["### Layer B: Competitor Pressure (top movers)", ""]
+                lines += ["### Competitors (context)", ""]
                 comp_table = to_compact_table(comp_top5, df_weekly, max_asins=5, band_fn=band_value)
                 _render_md_table(comp_table)
                 lines.append("")
@@ -1938,19 +2003,22 @@ def render_brief_tab(
                 for g in sorted(groups, key=lambda g: (
                     0 if g.brand.lower() == your_brand.lower() else 1, -g.rev_share_pct
                 ))[:6]:
-                    g_posture = _PD.get(g.dominant_ads_stance, g.dominant_ads_stance)
+                    _is_brand = g.brand.lower() == your_brand.lower()
+                    g_posture = _PD.get(g.dominant_ads_stance, g.dominant_ads_stance) if _is_brand else ""
+                    _posture_str = f", {g_posture} posture" if g_posture else ""
                     st.markdown(
                         f"**{g.brand}** — {g.asin_count} SKU{'s' if g.asin_count != 1 else ''}, "
-                        f"{g.rev_share_pct:.0%} est. share, {g_posture} posture, "
+                        f"{g.rev_share_pct:.0%} est. share{_posture_str}, "
                         f"{g.momentum_label} trend"
                     )
                     for asin in g.top_asins[:3]:
                         m = asin_metrics_map.get(asin)
                         if m:
-                            _bsr_dir = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
+                            _vis = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
+                            _ads_str = f" | If on ads: {m.ads_stance}" if _is_brand else ""
                             st.caption(
-                                f"  \u2022 {asin[-6:]}: {_bsr_dir} WoW; "
-                                f"priced {m.price_vs_tier_band} \u2014 {m.tag}"
+                                f"  \u2022 {asin[-6:]}: {_vis} WoW; "
+                                f"priced {m.price_vs_tier_band} \u2014 {m.tag}{_ads_str}"
                             )
 
     # ── Concern / active drilldown ────────────────────────────────────────────

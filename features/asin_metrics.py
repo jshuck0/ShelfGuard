@@ -47,6 +47,7 @@ _VALIDATE_BY_STANCE = {
 ALLOWED_TAGS = {
     "Undercut victim",
     "Discount-driven gain",
+    "Gaining in promo environment",
     "Stable leader",
     "Losing visibility",
     "Likely stock/BB issue",  # Only if proxy available
@@ -99,6 +100,8 @@ class ASINMetrics:
     monthly_sold_delta: Optional[int] = None   # monthlySold change since previous Keepa reading
     top_comp_bb_share_30: Optional[float] = None  # Highest non-Amazon BB share (0–1), None = no data
     ad_waste_reason: Optional[str] = None     # Explains why ad_waste_risk was set (for brief explainability)
+    has_buybox_stats: bool = False             # Data presence flag — suppress BB language when False
+    has_monthly_sold_history: bool = False     # Data presence flag — suppress demand delta when False
 
 
 @dataclass
@@ -341,9 +344,13 @@ def compute_asin_metrics(
         )
 
         # Priority order for tag selection
+        # "Discount-driven gain" only when the SKU *itself* is discounted
+        # (discount_pers ≥ threshold).  If the SKU isn't discounted but is
+        # competitive & gaining, use "Gaining in promo environment".
+        _sku_is_discounted = discount_pers >= 0.30  # SKU actively on promo
         if is_expensive and is_deteriorating and discount_pers < 0.20:
             tag = "Undercut victim"
-        elif discount_pers >= 0.50 and has_momentum:
+        elif _sku_is_discounted and has_momentum:
             tag = "Discount-driven gain"
         elif bsr_wow >= 0.10:
             tag = "Losing visibility"
@@ -352,7 +359,7 @@ def compute_asin_metrics(
         elif role == "Core" and abs(bsr_wow) <= 0.03 and not is_expensive:
             tag = "Stable leader"
         elif is_competitive and has_momentum:
-            tag = "Discount-driven gain"
+            tag = "Gaining in promo environment"
         elif is_deteriorating:
             tag = "Losing visibility"
         else:
@@ -395,6 +402,8 @@ def compute_asin_metrics(
             monthly_sold_delta=_safe_int(row.get("monthly_sold_delta")),
             top_comp_bb_share_30=row.get("top_comp_bb_share_30"),
             ad_waste_reason=ad_waste_reason,
+            has_buybox_stats=bool(row.get("has_buybox_stats", False)),
+            has_monthly_sold_history=bool(row.get("has_monthly_sold_history", False)),
         )
 
     return results
@@ -562,9 +571,9 @@ def to_group_table(
             "Product Type": g.product_type.replace("_", " ").title(),
             "Brand": g.brand,
             "SKUs": g.asin_count,
-            "Rev Share": f"{g.rev_share_pct:.0%}",
-            "Price vs Tier": band_fn(g.median_price_vs_tier, "price_vs_tier"),
-            "% Disc (d/7)": f"{round(g.pct_discounted * 7)}/7",
+            "Est. Share (proxy)": f"{g.rev_share_pct:.0%}",
+            "vs Tier": band_fn(g.median_price_vs_tier, "price_vs_tier"),
+            "Discounted d/7": f"{round(g.pct_discounted * 7)}/7",
             "Momentum": g.momentum_label.title(),
             "If on ads": g.dominant_ads_stance,
         })
@@ -651,9 +660,9 @@ def to_compact_table(
             "ASIN": short_name,
             "Brand": m.brand,
             "Role": m.role,
-            "Price vs Tier": price_band,
-            "Disc Persist (d/7)": f"{round(m.discount_persistence * 7)}/7",
-            "BSR WoW": bsr_band,
+            "vs Tier": price_band,
+            "Discounted d/7": f"{round(m.discount_persistence * 7)}/7",
+            "Visibility WoW": bsr_band,
             "Momentum": "Y" if m.has_momentum else "N",
             "Tag": m.tag,
             "Posture": _POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance),
@@ -672,27 +681,43 @@ def to_compact_table(
 
 
 def phase_a_receipt_extras(m: "ASINMetrics") -> str:
-    """Build compact suffix with Phase A signals for per-ASIN receipt lines."""
+    """Build compact suffix with Phase A signals for per-ASIN receipt lines.
+
+    Missing-data rules:
+      - If has_monthly_sold_history is False, suppress demand delta.
+      - If has_buybox_stats is False, suppress Buy Box competition line
+        and append "Buy Box signal unavailable."
+    """
     parts = []
+
+    # Demand delta — only when monthlySold history is actually present
+    _has_msh = getattr(m, "has_monthly_sold_history", False)
     _delta = getattr(m, "monthly_sold_delta", None)
-    if _delta is not None:
+    if _has_msh and _delta is not None:
         if _delta > 0:
             parts.append(f"demand +{_delta}")
         elif _delta < 0:
             parts.append(f"demand {_delta}")
+
+    # Visibility drops (terminology-locked: "visibility" not "BSR")
     _drops = getattr(m, "sales_rank_drops_30", None)
     if _drops is not None and _drops >= 5:
-        parts.append(f"{_drops} BSR drops/30d")
+        parts.append(f"{_drops} visibility drops/30d")
+
+    # Buy Box competition — only when buybox stats are available
+    _has_bb = getattr(m, "has_buybox_stats", False)
     _bb = getattr(m, "top_comp_bb_share_30", None)
-    if _bb is not None and _bb >= 0.20:
-        parts.append(f"comp BB {_bb*100:.0f}%")
-    _rr = getattr(m, "return_rate", None)
-    if _rr == 2:
-        parts.append("high returns")
-    # Surface ad_waste_reason when risk is High (Phase A CHANGE 4 explainability)
+    if _has_bb and _bb is not None and _bb > 0:
+        parts.append(f"BB competition elevated (top non-Amazon seller won {_bb*100:.0f}% in last 30d)")
+    elif not _has_bb:
+        parts.append("Buy Box signal unavailable")
+
+    # Surface ad_waste_reason when risk is not Low (explainability)
+    _ad_risk = getattr(m, "ad_waste_risk", "")
     _reason = getattr(m, "ad_waste_reason", None)
-    if _reason and getattr(m, "ad_waste_risk", "") == "High":
+    if _reason and _ad_risk and _ad_risk != "Low":
         parts.append(f"ad risk: {_reason}")
+
     if not parts:
         return ""
     return " | " + ", ".join(parts)
@@ -750,14 +775,14 @@ def receipts_list(
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
         price_str = f"price {m.price_vs_tier_band}"
-        bsr_str = band_fn(m.bsr_wow, "rank_change")
+        vis_str = band_fn(m.bsr_wow, "rank_change")
         ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"
         validate_hint = ""
         if runs_ads is not False:
             validate_hint = f" | Validate: {_VALIDATE_BY_STANCE.get(m.ads_stance, '')}"
         _extra = phase_a_receipt_extras(m)
         lines.append(
-            f"{m.brand} ({m.asin[-6:]}): {price_str}, BSR {bsr_str} WoW — "
+            f"{m.brand} ({m.asin[-6:]}): {price_str}, visibility {vis_str} WoW — "
             f"{m.tag} [{conf} conf]{_extra}{ads_hint}{validate_hint}"
         )
 

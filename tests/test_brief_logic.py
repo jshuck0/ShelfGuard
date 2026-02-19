@@ -66,6 +66,8 @@ def _make_metrics(
     sales_rank_drops_90=None,
     monthly_sold_delta=None,
     top_comp_bb_share_30=None,
+    has_buybox_stats=False,
+    has_monthly_sold_history=False,
 ):
     from features.asin_metrics import ASINMetrics
     return ASINMetrics(
@@ -82,6 +84,8 @@ def _make_metrics(
         sales_rank_drops_90=sales_rank_drops_90,
         monthly_sold_delta=monthly_sold_delta,
         top_comp_bb_share_30=top_comp_bb_share_30,
+        has_buybox_stats=has_buybox_stats,
+        has_monthly_sold_history=has_monthly_sold_history,
     )
 
 
@@ -856,7 +860,7 @@ class TestRound7:
             -0.05, -0.04, None, None, [], lambda v, t: f"{v*100:+.1f}%",
         )
         combined = " ".join(bullets)
-        assert "Demand" in combined or "BSR" in combined
+        assert "visibility" in combined or "Arena" in combined
 
     # _build_actions_block bucket reallocation ─────────────────────────────────
 
@@ -1047,14 +1051,21 @@ class TestPhaseA:
         assert classify_title("Retinol Night Serum 30ml", item_type_keyword="facial_moisturizer") == "retinol"
 
     def test_phase_a_receipt_extras_demand_signal(self):
-        """phase_a_receipt_extras should surface demand delta when present."""
+        """phase_a_receipt_extras should surface demand delta when present and has_monthly_sold_history=True."""
         from features.asin_metrics import phase_a_receipt_extras
-        m = _make_metrics("A01", "Brand", monthly_sold_delta=150)
+        m = _make_metrics("A01", "Brand", monthly_sold_delta=150, has_monthly_sold_history=True)
         result = phase_a_receipt_extras(m)
         assert "demand +150" in result
 
-    def test_phase_a_receipt_extras_empty_when_no_signals(self):
-        """phase_a_receipt_extras should return empty string when no Phase A data."""
+    def test_phase_a_receipt_extras_bb_unavailable_when_no_stats(self):
+        """phase_a_receipt_extras should show 'Buy Box signal unavailable' when has_buybox_stats=False."""
         from features.asin_metrics import phase_a_receipt_extras
         m = _make_metrics("A01", "Brand")
+        result = phase_a_receipt_extras(m)
+        assert "Buy Box signal unavailable" in result
+
+    def test_phase_a_receipt_extras_clean_when_all_flags_true_no_signals(self):
+        """phase_a_receipt_extras should return empty string when flags are true but no signal values."""
+        from features.asin_metrics import phase_a_receipt_extras
+        m = _make_metrics("A01", "Brand", has_buybox_stats=True, has_monthly_sold_history=True)
         assert phase_a_receipt_extras(m) == ""

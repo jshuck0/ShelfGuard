@@ -1456,6 +1456,25 @@ def grouped_receipts_list(
     return lines
 
 
+# ─── MARKET ENVIRONMENT LEGEND ────────────────────────────────────────────────
+_MARKET_ENV_LEGEND = [
+    ("Baseline",
+     "Stable market. No concentrated promo, pricing, or visibility shifts. "
+     "Default: hold budget, act at SKU level."),
+    ("Promo Pressure",
+     "Discounting driving visibility shifts across meaningful share of SKUs. "
+     "Default: defend heroes, be cautious scaling."),
+    ("Price Pressure",
+     "Sustained undercutting vs category median price without broad discounting. "
+     "Default: pricing/listing review before spend."),
+    ("Disruption",
+     "Sudden visibility reallocation (launch, viral SKU, platform shift). "
+     "Default: investigate quickly, short decision cycles."),
+    ("Rotation",
+     "Movement concentrated in specific sub-categories or actives, not category-wide. "
+     "Default: rotate within budget."),
+]
+
 # ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
 
 def generate_brief_markdown(
@@ -1482,25 +1501,6 @@ def generate_brief_markdown(
         from config.market_misattribution_module import band_value
     except ImportError:
         band_value = lambda v, t: f"{v*100:+.1f}%"
-
-    # ── Market Environment legend (reference definitions) ──────────────────────
-    _MARKET_ENV_LEGEND = [
-        ("Baseline",
-         "Stable market. No concentrated promo, pricing, or visibility shifts.\n"
-         "  Default: hold budget, act at SKU level."),
-        ("Promo Pressure",
-         "Discounting driving visibility shifts across meaningful share of SKUs.\n"
-         "  Default: defend heroes, be cautious scaling."),
-        ("Price Pressure",
-         "Sustained undercutting vs category median price without broad discounting.\n"
-         "  Default: pricing/listing review before spend."),
-        ("Disruption",
-         "Sudden visibility reallocation (launch, viral SKU, platform shift).\n"
-         "  Default: investigate quickly, short decision cycles."),
-        ("Rotation",
-         "Movement concentrated in specific sub-categories or actives, not category-wide.\n"
-         "  Default: rotate within budget."),
-    ]
 
     lines = []
     conf_label = brief.confidence_score.label if brief.confidence_score else "Med"
@@ -1567,13 +1567,6 @@ def generate_brief_markdown(
             for r in sig.receipts[:2]:
                 lines.append(f"  - {r}")
         lines.append("")
-
-    # Legend
-    lines.append("<details><summary>Market Environment definitions</summary>")
-    lines.append("")
-    for env_name, env_def in _MARKET_ENV_LEGEND:
-        lines.append(f"- **{env_name}:** {env_def}")
-    lines += ["", "</details>", ""]
 
     # ── Section 2: Sub-category Signals ──────────────────────────────────────
     if brief.pressure_buckets:
@@ -1850,19 +1843,25 @@ def render_brief_tab(
     st.session_state["last_brief_markdown"] = md
 
     # Render
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    col_brief, col_legend = st.columns([3, 1])
+    with col_brief:
         st.markdown(f"### {brief.arena_name} — {brief.week_label}")
-    with col2:
+        st.markdown("---")
+        st.markdown(md)
+
+    with col_legend:
         st.download_button(
             "⬇ Download brief (.md)",
             data=md,
             file_name=f"brief_{datetime.now().strftime('%Y%m%d')}.md",
             mime="text/markdown",
         )
-
-    st.markdown("---")
-    st.markdown(md)
+        st.markdown("---")
+        st.markdown("#### Market Environments")
+        for env_name, env_def in _MARKET_ENV_LEGEND:
+            st.markdown(f"**{env_name}**")
+            st.caption(env_def)
+        st.markdown("---")
 
     # ── Bucket drilldown (interactive) ───────────────────────────────────────
     if brief.group_summary and _has_buckets(brief.group_summary):

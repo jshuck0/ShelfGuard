@@ -585,7 +585,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
             _n_losing = round(ts.get("pct_losing", 0) * _n_total)
             _promo = _discount_label(ts.get("pct_discounted", 0)).lower()
             bullets.append(
-                f"**{pt_name}:** {_n_losing}/{_n_total} SKUs had worse BSR WoW; "
+                f"**{pt_name}:** {_n_losing}/{_n_total} SKUs lost visibility WoW; "
                 f"promo activity {_promo}"
             )
 
@@ -599,7 +599,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
                            key=lambda g: g.pct_discounted + (0.5 if g.momentum_label == "gaining" else 0))
             if top_comp.pct_discounted >= 0.30 or top_comp.momentum_label == "gaining":
                 ptype_name = top_comp.product_type.replace("_", " ").title()
-                _tc_bsr = "BSR improving WoW" if top_comp.momentum_label in ("gaining", "mixed") else "BSR worsening WoW"
+                _tc_bsr = "visibility improving WoW" if top_comp.momentum_label in ("gaining", "mixed") else "visibility declining WoW"
                 _tc_promo = _discount_label(top_comp.pct_discounted).lower()
                 bullets.append(
                     f"**{top_comp.brand} [{ptype_name}]:** "
@@ -707,7 +707,7 @@ def _build_pressure_buckets(
         _label = "under pressure" if _is_pressured else "monitor"
         claim = (
             f"**{ptype_name}** — {_label}: "
-            f"{_n_losing}/{_n_total} SKUs had worse BSR WoW; "
+            f"{_n_losing}/{_n_total} SKUs lost visibility WoW; "
             f"promo activity {_promo}; "
             f"priced {price_pos}."
         )
@@ -716,7 +716,7 @@ def _build_pressure_buckets(
                            if g.product_type == pt and g.brand.lower() == your_brand.lower()]
         if brand_groups_pt:
             bg = brand_groups_pt[0]
-            _bg_bsr = "BSR improving WoW" if bg.momentum_label in ("gaining", "mixed") else "BSR worsening WoW"
+            _bg_bsr = "visibility improving WoW" if bg.momentum_label in ("gaining", "mixed") else "visibility declining WoW"
             _bg_promo = _discount_label(bg.pct_discounted).lower()
             _bg_price = band_fn(bg.median_price_vs_tier, "price_vs_tier")
             r1 = f"Your brand ({ptype_name}): {_bg_bsr}; promo activity {_bg_promo}; priced {_bg_price}."
@@ -731,7 +731,7 @@ def _build_pressure_buckets(
         )
         if comp_groups_pt:
             cg = comp_groups_pt[0]
-            _cg_bsr = "BSR improving WoW" if cg.momentum_label in ("gaining", "mixed") else "BSR worsening WoW"
+            _cg_bsr = "visibility improving WoW" if cg.momentum_label in ("gaining", "mixed") else "visibility declining WoW"
             _cg_promo = _discount_label(cg.pct_discounted).lower()
             _cg_price = band_fn(cg.median_price_vs_tier, "price_vs_tier")
             r2 = f"{cg.brand} ({ptype_name}): {_cg_bsr}; promo activity {_cg_promo}; priced {_cg_price}."
@@ -843,7 +843,7 @@ def _build_opportunity_bucket(
             "investigate SKU-level issues before attributing to market."
         )
 
-    _bg_bsr = "BSR improving WoW" if brand_g.momentum_label in ("gaining", "mixed") else "BSR worsening WoW"
+    _bg_bsr = "visibility improving WoW" if brand_g.momentum_label in ("gaining", "mixed") else "visibility declining WoW"
     _bg_promo = _discount_label(brand_g.pct_discounted).lower()
     r1 = (
         f"Your brand ({concern_name}): {_bg_bsr}; "
@@ -852,7 +852,7 @@ def _build_opportunity_bucket(
     )
     top_comp = sorted(comp_groups, key=lambda g: -g.pct_discounted)[0] if comp_groups else None
     if top_comp:
-        _cg_bsr = "BSR improving WoW" if top_comp.momentum_label in ("gaining", "mixed") else "BSR worsening WoW"
+        _cg_bsr = "visibility improving WoW" if top_comp.momentum_label in ("gaining", "mixed") else "visibility declining WoW"
         _cg_promo = _discount_label(top_comp.pct_discounted).lower()
         r2 = f"{top_comp.brand} ({concern_name}): {_cg_bsr}; promo activity {_cg_promo}."
     else:
@@ -1296,12 +1296,12 @@ def _build_watch_triggers(
                 if ptypes:
                     bucket_note = f" [{', '.join(p.replace('_', ' ').title() for p in ptypes[:2])}]"
             triggers.append(
-                f"{len(pause_skus)} Core SKU(s) priced above category median + BSR worsening{bucket_note} ({skus}) — "
+                f"{len(pause_skus)} Core SKU(s) priced above category median + visibility declining{bucket_note} ({skus}) — "
                 "confirm in-stock and listing health before next week."
             )
         else:
             triggers.append(
-                "If any Core SKU flips to 'above category median + BSR worsening' next week, "
+                "If any Core SKU flips to 'above category median + visibility declining' next week, "
                 "treat as SKU-level issue: check Buy Box, OOS, and listing status."
             )
     elif your_bsr is not None and your_bsr > 0.10:
@@ -1744,7 +1744,7 @@ def generate_brief_markdown(
                 for asin in g.top_asins[:5]:
                     m = asin_metrics.get(asin)
                     if m:
-                        _bsr_dir = "BSR improving" if m.bsr_wow < -0.01 else ("BSR worsening" if m.bsr_wow > 0.01 else "BSR flat")
+                        _bsr_dir = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
                         _promo_lvl = _discount_label(m.discount_persistence).lower()
                         _extra = _phase_a_receipt_extras(m)
                         lines.append(
@@ -1951,7 +1951,7 @@ def render_brief_tab(
                     for asin in g.top_asins[:3]:
                         m = asin_metrics_map.get(asin)
                         if m:
-                            _bsr_dir = "BSR improving" if m.bsr_wow < -0.01 else ("BSR worsening" if m.bsr_wow > 0.01 else "BSR flat")
+                            _bsr_dir = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
                             st.caption(
                                 f"  \u2022 {asin[-6:]}: {_bsr_dir} WoW; "
                                 f"priced {m.price_vs_tier_band} \u2014 {m.tag}"
@@ -1975,7 +1975,7 @@ def render_brief_tab(
                     for g in sorted(groups, key=lambda g: (
                         0 if g.brand.lower() == your_brand.lower() else 1, -g.rev_share_pct
                     ))[:5]:
-                        _g_bsr = "BSR improving" if g.momentum_label in ("gaining", "mixed") else "BSR worsening"
+                        _g_bsr = "visibility improving" if g.momentum_label in ("gaining", "mixed") else "visibility declining"
                         _g_promo = _discount_label(g.pct_discounted).lower()
                         st.markdown(
                             f"**{g.brand}** — {g.asin_count} SKU{'s' if g.asin_count != 1 else ''}; "

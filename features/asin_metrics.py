@@ -381,7 +381,7 @@ def compute_asin_metrics(
             ad_waste_reason = "High return rate (Keepa returnRate=2)"
         elif is_expensive and is_deteriorating:
             ad_waste_risk = "High"
-            ad_waste_reason = "Price above category median + BSR deteriorating"
+            ad_waste_reason = "Price above category median + visibility declining"
         elif is_competitive and is_improving:
             ad_waste_risk = "Low"
             ad_waste_reason = "Competitive pricing + rank improving"
@@ -833,7 +833,7 @@ def receipts_list(
         conf = "High" if m.ad_waste_risk == "Low" and m.has_momentum else (
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
-        _bsr_dir = "BSR improving" if m.bsr_wow < -0.01 else ("BSR worsening" if m.bsr_wow > 0.01 else "BSR flat")
+        _bsr_dir = "visibility improving" if m.bsr_wow < -0.01 else ("visibility declining" if m.bsr_wow > 0.01 else "visibility flat")
         _promo_lvl = _discount_label(m.discount_persistence).lower()
         price_str = f"priced {m.price_vs_tier_band}"
         ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"

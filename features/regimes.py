@@ -485,7 +485,7 @@ def detect_competitor_compounding(
     receipts = []
     for c in compounders[:2]:
         receipts.append(Receipt(
-            label=f"{c['brand']}: BSR {c['rank_gain_pct']*100:+.1f}% over {c['streak_weeks']}wk streak",
+            label=f"{c['brand']}: visibility {c['rank_gain_pct']*100:+.1f}% over {c['streak_weeks']}wk streak",
             metric="sales_rank_filled",
             value=c["latest_rank"],
             baseline=0,
@@ -496,7 +496,7 @@ def detect_competitor_compounding(
 
     verdict = (
         f"{len(compounders)} competitor(s) compounding: "
-        f"{compounders[0]['brand']} gained {compounders[0]['rank_gain_pct']*100:+.1f}% BSR "
+        f"{compounders[0]['brand']} gained {compounders[0]['rank_gain_pct']*100:+.1f}% visibility "
         f"over {compounders[0]['streak_weeks']} weeks"
         if active and compounders else
         "No sustained competitor compounding detected"
@@ -659,7 +659,7 @@ def detect_demand_tailwind(
             top2 = brand_delta.dropna().nsmallest(2) if direction == "tailwind" else brand_delta.dropna().nlargest(2)
             for brand, delta in top2.items():
                 receipts.append(Receipt(
-                    label=f"{brand}: BSR {delta*100:+.1f}% ({direction})",
+                    label=f"{brand}: visibility {delta*100:+.1f}% ({direction})",
                     metric="sales_rank_filled",
                     value=0,
                     baseline=0,
@@ -677,7 +677,7 @@ def detect_demand_tailwind(
     verdict = (
         f"Demand {direction}: {fraction_moving:.0%} of market moved "
         f"{'up' if direction == 'tailwind' else 'down'} "
-        f"(median BSR {median_change*100:+.1f}% vs {lookback_weeks}wk ago){_corr_note}"
+        f"(median visibility {median_change*100:+.1f}% vs {lookback_weeks}wk ago){_corr_note}"
         if active else
         f"No broad demand shift: {fraction_moving:.0%} of market moved, "
         f"{'concentrated in one brand' if concentrated else 'below threshold'}"
@@ -686,7 +686,7 @@ def detect_demand_tailwind(
     # Evidence
     evidence = [
         f"Market fraction moving: {fraction_moving:.0%}",
-        f"Median BSR change: {median_change*100:+.1f}%",
+        f"Median visibility change: {median_change*100:+.1f}%",
         f"Top brand concentration: {top_brand_share:.0%}",
     ]
     if monthly_sold_corroboration:
@@ -813,8 +813,8 @@ def detect_new_entrant(
     for t in threats[:2]:
         receipts.append(Receipt(
             label=(
-                f"{t['brand']} ({t['asin']}): BSR {t['latest_bsr']:,.0f}, "
-                f"rank {t['rank_velocity']*100:+.1f}%/wk"
+                f"{t['brand']} ({t['asin']}): visibility rank {t['latest_bsr']:,.0f}, "
+                f"gaining {t['rank_velocity']*100:+.1f}%/wk"
             ),
             metric="sales_rank_filled",
             value=t["latest_bsr"],
@@ -826,7 +826,7 @@ def detect_new_entrant(
 
     verdict = (
         f"{len(threats)} new entrant(s) detected: "
-        f"{threats[0]['brand']} at BSR {threats[0]['latest_bsr']:,.0f}, "
+        f"{threats[0]['brand']} at visibility rank {threats[0]['latest_bsr']:,.0f}, "
         f"gaining {threats[0]['rank_velocity']*100:+.1f}%/wk"
         if active else
         "No threatening new entrants detected"
@@ -839,7 +839,7 @@ def detect_new_entrant(
         verdict=verdict,
         driver_type="Market-driven" if active else "Unknown",
         receipts=receipts[:2],
-        evidence=[f"{t['brand']} ({t['asin']}): BSR {t['latest_bsr']:,.0f}" for t in threats],
+        evidence=[f"{t['brand']} ({t['asin']}): visibility rank {t['latest_bsr']:,.0f}" for t in threats],
         metadata={"threats": threats},
     )
 
@@ -946,7 +946,7 @@ def build_baseline_signal(
             r1_suffix = "no structural shift"
 
         receipts.append(Receipt(
-            label=f"Market median BSR {arena_band} WoW — {r1_suffix}",
+            label=f"Market median visibility {arena_band} WoW — {r1_suffix}",
             metric="arena_bsr_wow",
             value=arena_bsr_wow,
             baseline=0.0,

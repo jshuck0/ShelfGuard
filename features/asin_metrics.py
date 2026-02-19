@@ -63,17 +63,17 @@ def _safe_int(v) -> Optional[int]:
 
 
 def _discount_label(persistence: float) -> str:
-    """Convert discount_persistence (0.0–1.0) to a categorical label.
+    """Convert discount_persistence (0.0–1.0) to a promo activity level.
 
-    Rare (0–1 days), Periodic (2–4 days), Sustained (5–7 days).
+    Low (0–1 days discounted last 7), Medium (2–4 days), High (5–7 days).
     """
     days = round(persistence * 7)
     if days <= 1:
-        return "Rare"
+        return "Low"
     elif days <= 4:
-        return "Periodic"
+        return "Medium"
     else:
-        return "Sustained"
+        return "High"
 
 
 def _derive_signal(m: "ASINMetrics") -> str:
@@ -90,7 +90,7 @@ def _derive_signal(m: "ASINMetrics") -> str:
     gaining = m.has_momentum
     losing = m.bsr_wow > 0.05  # BSR worsening > 5%
 
-    if disc_label == "Sustained" and gaining:
+    if disc_label == "High" and gaining:
         return "Promo-heavy"
     if is_below and gaining:
         return "Undercut risk"
@@ -101,14 +101,13 @@ def _derive_signal(m: "ASINMetrics") -> str:
 
 def _derive_group_signal(g: "ProductGroupMetrics") -> str:
     """Derive a one-word Signal label for a group row."""
-    days = round(g.pct_discounted * 7)
-    disc_label = "Sustained" if days >= 5 else ("Periodic" if days >= 2 else "Rare")
+    disc_label = _discount_label(g.pct_discounted)
     is_above = g.median_price_vs_tier > 0.05
     is_below = g.median_price_vs_tier < -0.05
     gaining = g.momentum_label in ("gaining", "mixed")
     losing = g.momentum_label == "losing"
 
-    if disc_label == "Sustained" and gaining:
+    if disc_label == "High" and gaining:
         return "Promo-heavy"
     if is_below and gaining:
         return "Undercut risk"
@@ -834,15 +833,16 @@ def receipts_list(
         conf = "High" if m.ad_waste_risk == "Low" and m.has_momentum else (
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
-        price_str = f"price {m.price_vs_tier_band}"
-        vis_str = band_fn(m.bsr_wow, "rank_change")
+        _bsr_dir = "BSR improving" if m.bsr_wow < -0.01 else ("BSR worsening" if m.bsr_wow > 0.01 else "BSR flat")
+        _promo_lvl = _discount_label(m.discount_persistence).lower()
+        price_str = f"priced {m.price_vs_tier_band}"
         ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"
         validate_hint = ""
         if runs_ads is not False:
             validate_hint = f" | Validate: {_VALIDATE_BY_STANCE.get(m.ads_stance, '')}"
         _extra = phase_a_receipt_extras(m)
         lines.append(
-            f"{m.brand} ({m.asin[-6:]}): {price_str}, visibility {vis_str} WoW — "
+            f"{m.brand} ({m.asin[-6:]}): {_bsr_dir} WoW; promo activity {_promo_lvl}; {price_str} — "
             f"{m.tag} [{conf} conf]{_extra}{ads_hint}{validate_hint}"
         )
 

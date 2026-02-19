@@ -250,7 +250,7 @@ class TestSecondarySignals:
         }
         # 4 out of 5 = 80% ≥ 40%
         signals = self._run(None, asin_metrics, "X")
-        assert any("Discount concentration" in s.claim for s in signals)
+        assert any("Promo concentration" in s.claim for s in signals)
 
     def test_discount_concentration_has_two_receipts(self):
         asin_metrics = {
@@ -258,7 +258,7 @@ class TestSecondarySignals:
             "A2": _make_metrics(role="Core", discount_persistence=4/7 + 0.01),
         }
         signals = self._run(None, asin_metrics, "X")
-        disc_signals = [s for s in signals if "Discount concentration" in s.claim]
+        disc_signals = [s for s in signals if "Promo concentration" in s.claim]
         assert disc_signals
         assert len(disc_signals[0].receipts) == 2
 
@@ -271,7 +271,7 @@ class TestSecondarySignals:
         }
         # 1 out of 4 = 25% < 40%
         signals = self._run(None, asin_metrics, "X")
-        assert not any("Discount concentration" in s.claim for s in signals)
+        assert not any("Promo concentration" in s.claim for s in signals)
 
     def test_discount_concentration_suppressed_when_promo_war_active(self):
         asin_metrics = {
@@ -279,7 +279,7 @@ class TestSecondarySignals:
             "A2": _make_metrics(role="Core", discount_persistence=4/7 + 0.01),
         }
         signals = self._run(None, asin_metrics, "X", regime_names=["promo_war"])
-        assert not any("Discount concentration" in s.claim for s in signals)
+        assert not any("Promo concentration" in s.claim for s in signals)
 
     def test_max_two_signals(self):
         asin_metrics = {

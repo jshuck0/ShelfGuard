@@ -713,7 +713,7 @@ def to_compact_table(
             price_band = band_fn(m.price_vs_tier, "price_vs_tier")
             bsr_band = band_fn(m.bsr_wow, "rank_change")
         else:
-            price_band = m.price_vs_tier_band  # "well below tier" … "not comparable"
+            price_band = m.price_vs_tier_band  # "well below category median" … "not comparable"
             bsr_band = f"{m.bsr_wow*100:+.1f}%"
 
         rows.append({

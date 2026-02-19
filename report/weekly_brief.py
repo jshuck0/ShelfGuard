@@ -34,6 +34,7 @@ from features.asin_metrics import (
     ProductGroupMetrics, compute_group_metrics, to_group_table,
     ConcernGroupMetrics, compute_concern_metrics,
     phase_a_receipt_extras as _phase_a_receipt_extras,
+    _discount_label,
 )
 from scoring.confidence import ConfidenceScore, score_confidence, score_driver_confidence
 
@@ -582,9 +583,10 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
             pt_name = top_pt.replace("_", " ").title()
             pct_losing = round(ts.get("pct_losing", 0) * 100)
             pct_disc = round(ts.get("pct_discounted", 0) * 100)
+            _disc_desc = "rare discounting" if pct_disc < 15 else "periodic discounting" if pct_disc < 58 else "sustained discounting"
             bullets.append(
                 f"**{pt_name}:** {pct_losing}% losing visibility, "
-                f"{pct_disc}% discounted d/7"
+                f"{_disc_desc}"
             )
 
         # Bullet 2 — Top competitor event: competitor bucket with biggest discount/gain
@@ -600,7 +602,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
                 bullets.append(
                     f"**{top_comp.brand} [{ptype_name}]:** "
                     f"{top_comp.momentum_label} visibility, "
-                    f"{round(top_comp.pct_discounted * 7)}/7 discounted d/7"
+                    f"{_discount_label(top_comp.pct_discounted).lower()} discounting"
                 )
 
         # Bullet 3 — Brand vs arena delta (numeric-first)
@@ -698,15 +700,16 @@ def _build_pressure_buckets(
         _meaningful_disc = pct_disc_pct >= 25
         _is_pressured = _meaningful_losing or _meaningful_disc
 
+        _disc_cat = _discount_label(s.get("pct_discounted", 0)).lower()
         if _is_pressured:
             claim = (
                 f"**{ptype_name}** under pressure: {pct_losing_pct}% losing visibility, "
-                f"{pct_disc_pct}% discounted d/7, vs category median {price_pos}"
+                f"{_disc_cat} discounting, {price_pos}"
             )
         else:
             claim = (
                 f"**{ptype_name}** — monitor: {pct_losing_pct}% losing visibility, "
-                f"{pct_disc_pct}% discounted d/7, vs category median {price_pos}"
+                f"{_disc_cat} discounting, {price_pos}"
             )
 
         brand_groups_pt = [g for g in (group_metrics or [])
@@ -715,8 +718,8 @@ def _build_pressure_buckets(
             bg = brand_groups_pt[0]
             r1 = (
                 f"Your brand in {ptype_name}: {bg.momentum_label} trend, "
-                f"{round(bg.pct_discounted * 7)}/7 discounted d/7, "
-                f"vs category median {band_fn(bg.median_price_vs_tier, 'price_vs_tier')}"
+                f"{_discount_label(bg.pct_discounted).lower()} discounting, "
+                f"{band_fn(bg.median_price_vs_tier, 'price_vs_tier')}"
             )
         else:
             r1 = f"Your brand has no ASINs in {ptype_name} — no brand-side context available"
@@ -731,8 +734,8 @@ def _build_pressure_buckets(
             cg = comp_groups_pt[0]
             r2 = (
                 f"{cg.brand} ({ptype_name}): {cg.momentum_label}, "
-                f"{round(cg.pct_discounted * 7)}/7 discounted d/7, "
-                f"vs category median {band_fn(cg.median_price_vs_tier, 'price_vs_tier')}"
+                f"{_discount_label(cg.pct_discounted).lower()} discounting, "
+                f"{band_fn(cg.median_price_vs_tier, 'price_vs_tier')}"
             )
         else:
             r2 = f"{ptype_name}: No single competitor dominating — distributed pressure"
@@ -841,13 +844,13 @@ def _build_opportunity_bucket(
 
     r1 = (
         f"Your brand {concern_name}: {brand_g.momentum_label} trend, "
-        f"{round(brand_g.pct_discounted * 7)}/7 discounted d/7, "
+        f"{_discount_label(brand_g.pct_discounted).lower()} discounting, "
         f"{brand_g.asin_count} ASINs in concern"
     )
     top_comp = sorted(comp_groups, key=lambda g: -g.pct_discounted)[0] if comp_groups else None
     r2 = (
         f"{top_comp.brand} ({concern_name}): {top_comp.momentum_label}, "
-        f"{round(top_comp.pct_discounted * 7)}/7 discounted d/7"
+        f"{_discount_label(top_comp.pct_discounted).lower()} discounting"
         if top_comp else "Competitor concern data sparse"
     )
 
@@ -1320,16 +1323,16 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
     if (price_vs_tier is not None and price_vs_tier > 0.05
             and "tier_compression" not in regime_names
             and "promo_war" not in regime_names):
-        tier_label = band_fn(price_vs_tier, "price_vs_tier")
+        price_label = band_fn(price_vs_tier, "price_vs_tier")
         # Build 2 auditable receipts
         core_brand = [m for m in asin_metrics.values()
                       if m.role == "Core" and m.brand.lower() == your_brand.lower()]
         n_above = sum(1 for m in core_brand if m.price_vs_tier > 0.05) if core_brand else 0
         r1 = (f"{n_above}/{len(core_brand)} brand Core SKUs priced above category median"
               if core_brand else "Brand Core SKUs priced above category median")
-        r2 = f"Brand vs category median gap: {tier_label} — exceeds 5% monitoring threshold"
+        r2 = f"Brand vs category median gap: {price_label} — exceeds 5% monitoring threshold"
         signals.append(SecondarySignal(
-            claim=f"Price pressure: brand Core SKUs priced {tier_label} vs category median (Med confidence)",
+            claim=f"Price pressure: brand Core SKUs priced {price_label} (Med confidence)",
             receipts=[r1, r2],
         ))
 
@@ -1458,6 +1461,9 @@ def grouped_receipts_list(
 
 # ─── MARKET ENVIRONMENT LEGEND ────────────────────────────────────────────────
 _MARKET_ENV_LEGEND = [
+    ("Visibility",
+     "Marketplace proxy derived from Best Seller Rank (BSR) movement. "
+     "Lower BSR = higher visibility."),
     ("Baseline",
      "Stable market. No concentrated promo, pricing, or visibility shifts. "
      "Default: hold budget, act at SKU level."),
@@ -1950,7 +1956,7 @@ def render_brief_tab(
                     ))[:5]:
                         st.markdown(
                             f"**{g.brand}** — {g.asin_count} SKU{'s' if g.asin_count != 1 else ''}, "
-                            f"{g.momentum_label} trend, {round(g.pct_discounted * 7)}/7 discounted d/7"
+                            f"{g.momentum_label} trend, {_discount_label(g.pct_discounted).lower()} discounting"
                         )
 
     # Diagnostics expander

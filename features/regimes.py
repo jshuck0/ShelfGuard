@@ -223,11 +223,11 @@ def detect_tier_compression(
         latest_med = weekly_medians.iloc[-1] if not weekly_medians.empty else base_median
         delta = _safe_pct_change(latest_med, base_median) or 0
         verdict = (
-            f"Tier compression active for {n} week(s): "
+            f"Category median compression active for {n} week(s): "
             f"market median price {delta*100:+.1f}% vs 28d base"
         )
     else:
-        verdict = "No sustained tier compression detected"
+        verdict = "No sustained category median compression detected"
 
     return RegimeSignal(
         regime=regime,

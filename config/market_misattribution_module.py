@@ -219,13 +219,13 @@ BRIEF_BANDS: Dict = {
         (0.05, 0.20, "modest decline"),
         (0.20, 999999, "significant decline"),
     ],
-    # Price vs tier bands
+    # Price vs category median bands
     "price_vs_tier": [
-        (-999, -0.10, "well below tier"),
-        (-0.10, -0.03, "below tier"),
-        (-0.03, 0.03, "at tier"),
-        (0.03, 0.10, "above tier"),
-        (0.10, 999, "well above tier"),
+        (-999, -0.10, "well below category median"),
+        (-0.10, -0.03, "below category median"),
+        (-0.03, 0.03, "at category median"),
+        (0.03, 0.10, "above category median"),
+        (0.10, 999, "well above category median"),
     ],
     # Revenue change bands
     "revenue_change": [

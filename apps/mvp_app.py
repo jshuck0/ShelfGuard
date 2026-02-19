@@ -216,12 +216,13 @@ with st.sidebar:
 
 # ─── MAIN LAYOUT ─────────────────────────────────────────────────────────────
 
-st.markdown("# 🛡️ Market Misattribution Shield — Weekly Brief")
+st.markdown("# 🛡️ ShelfGuard — Market Brief")
+st.markdown("_Weekly market context and competitive signals_")
 st.markdown("---")
 
 # ── Section 1: Arena ─────────────────────────────────────────────────────────
 
-st.markdown("## 1. Arena")
+st.markdown("## 1. Arena Setup")
 
 use_golden = st.session_state.get("_mvp_use_golden", False)
 df_weekly = st.session_state.get("active_project_data", pd.DataFrame())

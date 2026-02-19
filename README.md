@@ -1,4 +1,4 @@
-# ShelfGuard
+# 🔭 ShelfGuard
 
 > Keepa-powered Amazon market intelligence that turns marketplace signals into weekly category briefs.
 

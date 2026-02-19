@@ -58,7 +58,7 @@ except ImportError:
 
 st.set_page_config(
     page_title="ShelfGuard — MVP Brief",
-    page_icon="🛡️",
+    page_icon="🔭",
     layout="wide",
 )
 
@@ -144,9 +144,7 @@ if "active_project_data" not in st.session_state:
 # ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 🛡️ ShelfGuard")
-    st.markdown("_Market context & competitive signals_")
-    st.markdown("---")
+    st.markdown("## 🔭 ShelfGuard")
 
     # Golden run toggle (only show if golden run is configured)
     if GOLDEN_RUN_ENABLED and not GOLDEN_SEED_ASIN.startswith("B07XYZ"):

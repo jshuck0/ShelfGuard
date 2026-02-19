@@ -1035,9 +1035,9 @@ def _build_implications(
     elif comp:
         measurement_focus = "Track the compounding competitor's review velocity and stock status over next 2 weeks"
     else:
-        measurement_focus = "Check in-stock rate and Buy Box ownership for your core SKUs"
+        measurement_focus = "Confirm core SKUs stayed in stock and held Buy Box this week (Y/N)."
 
-    bullets.append(f"**Measurement focus:** {measurement_focus}")
+    bullets.append(f"**Internal checks:** {measurement_focus}")
 
     return bullets[:3], plan_stance, measurement_focus
 

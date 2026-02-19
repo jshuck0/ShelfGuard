@@ -220,12 +220,9 @@ with st.sidebar:
 
 # ─── MAIN LAYOUT ─────────────────────────────────────────────────────────────
 
-col_logo, col_title = st.columns([1, 8])
-with col_logo:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg", width=80)
-with col_title:
-    st.markdown("# ShelfGuard Market Brief")
-    st.caption("A weekly Amazon category brief that turns marketplace signals into a clear stance and SKU-level actions.")
+st.image("https://upload.wikimedia.org/wikipedia/commons/a/a9/Amazon_logo.svg", width=80)
+st.markdown("# ShelfGuard Market Brief")
+st.caption("A weekly Amazon category brief that turns marketplace signals into a clear stance and SKU-level actions.")
 st.markdown(
     "**Seller Central shows your store. ShelfGuard shows your market.** "
     "Seller Central is siloed around your storefront and operations, so it doesn't provide a clean view of category dynamics "

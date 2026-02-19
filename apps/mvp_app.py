@@ -186,7 +186,7 @@ with st.sidebar:
         "Does this brand run Sponsored Ads?",
         options=["Unknown", "Yes", "No"],
         index=0,
-        help="If Yes, the brief includes ad-specific actions and posture recommendations. "
+        help="If Yes, the brief includes ad-specific actions and action recommendations. "
              "If Unknown, ad language is included but hedged.",
     )
     runs_ads: Optional[bool] = None
@@ -233,7 +233,7 @@ st.markdown(
     "That context is especially valuable for marketers, because weekly performance is hard to interpret without knowing "
     "what the market was doing around you. ShelfGuard helps teams interpret swings correctly, separating category-wide "
     "pressure from brand-specific changes and highlighting the SKUs that actually drove the week. With a shared category "
-    "read, marketing and ecommerce align faster on posture (hold, defend, investigate) without debating the story.",
+    "read, marketing and ecommerce align faster on action (hold, defend, investigate) without debating the story.",
     unsafe_allow_html=True,
 )
 st.markdown("---")

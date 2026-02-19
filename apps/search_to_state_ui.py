@@ -1424,7 +1424,7 @@ def render_seed_search_and_map_mvp():
                     df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
                     st.session_state["active_project_data"] = df_weekly
                     st.session_state["active_project_seed_brand"] = brand
-                    st.session_state["active_project_name"] = f"{brand} Arena"
+                    st.session_state["active_project_name"] = f"{brand} Market"
                     st.session_state["active_project_all_asins"] = asins
                     st.session_state["last_market_stats"] = market_stats
 
@@ -1433,7 +1433,7 @@ def render_seed_search_and_map_mvp():
                         try:
                             _leaf_id = seed_row.get("leaf_category_id")
                             _cat_path = seed_row.get("category_path", "")
-                            _cat_name = _cat_path.split(" > ")[-1] if _cat_path else f"{brand} Arena"
+                            _cat_name = _cat_path.split(" > ")[-1] if _cat_path else f"{brand} Market"
                             _cat_tree = _cat_path.split(" > ") if _cat_path else []
                             _cat_root = _cat_tree[0] if _cat_tree else _cat_name
                             _cat_ctx = {
@@ -1450,7 +1450,7 @@ def render_seed_search_and_map_mvp():
 
                     _ms = market_stats
                     st.success(
-                        f"Arena loaded — {_ms.get('brand_selected_count', '?')} brand + "
+                        f"Market loaded — {_ms.get('brand_selected_count', '?')} brand + "
                         f"{_ms.get('competitor_selected_count', '?')} competitors selected"
                     )
                     with st.expander("Market contract", expanded=True):

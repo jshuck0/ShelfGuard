@@ -100,7 +100,7 @@ def _try_load_from_supabase() -> bool:
             return False
 
         latest_row = probe.data[0]
-        category_name = latest_row.get("category_name", "Unknown Arena")
+        category_name = latest_row.get("category_name", "Unknown Market")
 
         # Get all ASINs from the same category
         cat_result = (
@@ -167,7 +167,7 @@ with st.sidebar:
         ["Quick scan (200 SKUs)", "Standard (300 SKUs)", "Deep dive (500 SKUs)"],
         index=1,
         key="_mvp_arena_preset",
-        help="How many SKUs to include in your competitive arena. "
+        help="How many SKUs to include in your competitive market. "
              "Standard covers most sub-categories well. "
              "Deep dive gives fuller coverage but takes longer and uses more API tokens.",
     )
@@ -224,9 +224,9 @@ st.markdown("# 🛡️ ShelfGuard — Market Brief")
 st.markdown("_Weekly market context and competitive signals_")
 st.markdown("---")
 
-# ── Section 1: Arena ─────────────────────────────────────────────────────────
+# ── Section 1: Market ─────────────────────────────────────────────────────────
 
-st.markdown("## 1. Arena Setup")
+st.markdown("## 1. Market Setup")
 
 use_golden = st.session_state.get("_mvp_use_golden", False)
 df_weekly = st.session_state.get("active_project_data", pd.DataFrame())
@@ -237,7 +237,7 @@ if use_golden:
     with col1:
         st.markdown(f"**Brand:** {GOLDEN_BRAND}")
     with col2:
-        st.markdown(f"**Arena:** {GOLDEN_PROJECT_NAME}")
+        st.markdown(f"**Market:** {GOLDEN_PROJECT_NAME}")
     with col3:
         st.markdown(f"**Seed ASIN:** `{GOLDEN_SEED_ASIN}`")
 
@@ -291,7 +291,7 @@ if use_golden:
                         pass  # Caching is best-effort
 
                     st.success(
-                        f"Arena loaded — {_ms.get('brand_selected_count', '?')} brand + "
+                        f"Market loaded — {_ms.get('brand_selected_count', '?')} brand + "
                         f"{_ms.get('competitor_selected_count', '?')} competitors selected"
                     )
                     with st.expander("Market contract", expanded=True):
@@ -318,7 +318,7 @@ if use_golden:
         _source_label = " (from cache)" if _from_cache else ""
         if _ms:
             st.success(
-                f"Arena loaded{_source_label} — {_ms.get('brand_selected_count', asin_count)} brand + "
+                f"Market loaded{_source_label} — {_ms.get('brand_selected_count', asin_count)} brand + "
                 f"{_ms.get('competitor_selected_count', '?')} competitors | {week_count} weeks"
             )
             with st.expander("Market contract", expanded=False):

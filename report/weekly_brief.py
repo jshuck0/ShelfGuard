@@ -322,7 +322,7 @@ def build_brief(
 
     return WeeklyBrief(
         brand=your_brand,
-        arena_name=arena_name or f"{your_brand} Arena",
+        arena_name=arena_name or f"{your_brand} Market",
         week_label=week_label,
         generated_at=datetime.now(),
         headline=headline,
@@ -553,9 +553,9 @@ def _build_headline(brand, your_bsr, arena_bsr, firing, conf,
         return f"{brand}: {regime_label} detected this week{bucket_note} [{conf.label} confidence]"
     if your_bsr is not None:
         direction = "gaining" if your_bsr < -0.03 else ("losing" if your_bsr > 0.03 else "holding")
-        arena_note = "in a broadly stable arena" if (arena_bsr is None or abs(arena_bsr) < 0.03) else "alongside broad arena movement"
+        arena_note = "in a broadly stable market" if (arena_bsr is None or abs(arena_bsr) < 0.03) else "alongside broad market movement"
         return f"{brand} {direction} visibility {arena_note} [{conf.label} confidence]"
-    return f"{brand} arena — weekly brief [{conf.label} confidence]"
+    return f"{brand} market — weekly brief [{conf.label} confidence]"
 
 
 def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firing, band_fn,
@@ -613,7 +613,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
             else:
                 _rel = "Brand lagging market"
             bullets.append(
-                f"**{_rel}** (brand {your_bsr*100:+.1f}%, arena {arena_bsr*100:+.1f}%)"
+                f"**{_rel}** (brand {your_bsr*100:+.1f}%, market {arena_bsr*100:+.1f}%)"
             )
         elif your_bsr is not None:
             bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
@@ -623,10 +623,10 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     # ── Fallback: no buckets available ────────────────────────────────────────
     bullets = []
 
-    # Bullet 1 — Arena visibility
+    # Bullet 1 — Market visibility
     if arena_bsr is not None:
         direction = band_fn(arena_bsr, "rank_change")
-        bullets.append(f"**Arena visibility:** {direction} WoW")
+        bullets.append(f"**Market visibility:** {direction} WoW")
 
     # Bullet 2 — Price/promo regime (only when a regime actually fired)
     promo_regime = next((s for s in firing if s.regime in ("promo_war", "tier_compression")), None)
@@ -643,7 +643,7 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
         else:
             _rel = "Brand lagging market"
         bullets.append(
-            f"**{_rel}** (brand {your_bsr*100:+.1f}%, arena {arena_bsr*100:+.1f}%)"
+            f"**{_rel}** (brand {your_bsr*100:+.1f}%, market {arena_bsr*100:+.1f}%)"
         )
     elif your_bsr is not None:
         bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
@@ -835,7 +835,7 @@ def _build_opportunity_bucket(
         )
     else:
         claim = (
-            f"**{concern_name} watch:** Your brand is losing ground while the arena is {arena_momentum} — "
+            f"**{concern_name} watch:** Your brand is losing ground while the market is {arena_momentum} — "
             "investigate SKU-level issues before attributing to market."
         )
 
@@ -884,8 +884,8 @@ def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr, band_fn
     if not drivers:
         if arena_bsr is not None:
             drivers.append(BriefDriver(
-                claim=f"Arena-wide visibility movement ({band_fn(arena_bsr, 'rank_change')} median WoW) — no specific market environment detected",
-                receipts=["Arena median visibility shift vs prior week", "No single brand driving movement"],
+                claim=f"Market-wide visibility movement ({band_fn(arena_bsr, 'rank_change')} median WoW) — no specific market environment detected",
+                receipts=["Market median visibility shift vs prior week", "No single brand driving movement"],
                 confidence=conf_score.label,
             ))
 
@@ -912,7 +912,7 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
         if market_regimes[0].receipts:
             receipts.append(market_regimes[0].receipts[0].label)
         if arena_bsr is not None:
-            receipts.append(f"Arena visibility {band_fn(arena_bsr, 'rank_change')} WoW (market context)")
+            receipts.append(f"Market visibility {band_fn(arena_bsr, 'rank_change')} WoW (market context)")
     else:
         # Distinguish "we understand it's steady-state" from "we can't tell"
         _tracking = (
@@ -924,8 +924,8 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
             verdict = "Baseline (No dominant market environment)"
             verdict_conf = conf_score.label if conf_score else "Med"  # data confidence, not forced "Low"
             receipts = [
-                "Arena-wide visibility stable WoW — no active market environment detected",
-                "Brand tracking arena: performance consistent with steady-state",
+                "Market-wide visibility stable WoW — no active market environment detected",
+                "Brand tracking market: performance consistent with steady-state",
             ]
         else:
             verdict = "Unknown"
@@ -972,14 +972,14 @@ def _build_implications(
         )
         if _is_divergent:
             bullets.append(
-                "**Exec narrative:** Brand is underperforming the arena — internal factors "
+                "**Exec narrative:** Brand is underperforming the market — internal factors "
                 "(listing health, stock, pricing) merit investigation."
             )
             plan_stance = "Pause+Diagnose"
         else:
             bullets.append(
-                "**Exec narrative:** No active market environment detected — arena stable, "
-                "brand in steady state. Escalate only if brand diverges from arena movement."
+                "**Exec narrative:** No active market environment detected — market stable, "
+                "brand in steady state. Escalate only if brand diverges from market movement."
             )
             plan_stance = "Hold"
 
@@ -1017,14 +1017,14 @@ def _build_implications(
             plan_stance = "Reallocate"
         elif not runs_ads:
             bullets.append(
-                "**Ad spend:** Not applicable (ads not in scope for this arena)."
+                "**Ad spend:** Not applicable (ads not in scope for this market)."
             )
 
     # Measurement focus
     promo = next((s for s in firing if s.regime == "promo_war"), None)
     comp = next((s for s in firing if s.regime == "competitor_compounding"), None)
     if promo:
-        measurement_focus = "Gate: In ads console, confirm efficiency stable despite arena price pressure."
+        measurement_focus = "Gate: In ads console, confirm efficiency stable despite market price pressure."
     elif comp:
         measurement_focus = "Track the compounding competitor's review velocity and stock status over next 2 weeks"
     else:
@@ -1262,7 +1262,7 @@ def _build_watch_triggers(
             )
         elif top.regime == "baseline":
             triggers.append(
-                "If brand vs arena visibility delta exceeds ≥7pp next week, "
+                "If brand vs market visibility delta exceeds ≥7pp next week, "
                 "investigate internal factors (listing, stock, pricing) before attributing to market."
             )
         else:
@@ -1341,10 +1341,10 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
             pct = discounted / len(core_asins)
             if pct >= 0.40:
                 signals.append(SecondarySignal(
-                    claim=(f"Discount concentration: {round(pct * 100)}% of arena Core SKUs "
+                    claim=(f"Discount concentration: {round(pct * 100)}% of market Core SKUs "
                            f"discounted ≥4/7 days (Med confidence)"),
                     receipts=[
-                        f"{discounted}/{len(core_asins)} arena Core SKUs discounted ≥4 of 7 days last week",
+                        f"{discounted}/{len(core_asins)} market Core SKUs discounted ≥4 of 7 days last week",
                         "Promo war environment not yet active — monitoring for escalation next week",
                     ],
                 ))
@@ -1522,7 +1522,7 @@ def generate_brief_markdown(
         "",
         f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
         f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
-        f"Arena: **{_brand_ct}** brand + **{_comp_ct}** competitor ASINs "
+        f"Market: **{_brand_ct}** brand + **{_comp_ct}** competitor ASINs "
         "| est. coverage within scanned universe",
         "",
         "---",
@@ -1700,7 +1700,7 @@ def generate_brief_markdown(
         if _has_buckets(brief.group_summary):
             lines += [
                 "### Layer B: Product Type Groups",
-                "_\"Est. Share\" is a marketplace-observable proxy based on estimated revenue within the scanned arena — not actual sales data._",
+                "_\"Est. Share\" is a marketplace-observable proxy based on estimated revenue within the scanned market — not actual sales data._",
                 "",
             ]
             group_df = to_group_table(brief.group_summary, band_fn=band_value)
@@ -1872,7 +1872,7 @@ def render_brief_tab(
         _ms = st.session_state.get("last_market_stats", {})
         if _ms:
             st.caption(
-                f"Arena: **{_ms.get('brand_selected_count', '?')}** brand + "
+                f"Market: **{_ms.get('brand_selected_count', '?')}** brand + "
                 f"**{_ms.get('competitor_selected_count', '?')}** competitors | "
                 "est. coverage within scanned universe"
             )
@@ -1948,7 +1948,7 @@ def render_brief_tab(
         if brief.confidence_score:
             st.write(f"**Score:** {brief.confidence_score.label} ({brief.confidence_score.score:+d})")
             st.write(f"**Data quality:** {brief.confidence_score.data_quality}")
-            st.write(f"**Arena coverage:** {brief.confidence_score.arena_coverage:.0%}")
+            st.write(f"**Market coverage:** {brief.confidence_score.arena_coverage:.0%}")
             for reason in brief.confidence_score.reasons:
                 st.caption(reason)
 

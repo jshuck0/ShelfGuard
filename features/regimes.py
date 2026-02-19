@@ -224,7 +224,7 @@ def detect_tier_compression(
         delta = _safe_pct_change(latest_med, base_median) or 0
         verdict = (
             f"Tier compression active for {n} week(s): "
-            f"arena median price {delta*100:+.1f}% vs 28d base"
+            f"market median price {delta*100:+.1f}% vs 28d base"
         )
     else:
         verdict = "No sustained tier compression detected"
@@ -675,17 +675,17 @@ def detect_demand_tailwind(
         _corr_note = " — note: Amazon monthlySold data diverges"
 
     verdict = (
-        f"Demand {direction}: {fraction_moving:.0%} of arena moved "
+        f"Demand {direction}: {fraction_moving:.0%} of market moved "
         f"{'up' if direction == 'tailwind' else 'down'} "
         f"(median BSR {median_change*100:+.1f}% vs {lookback_weeks}wk ago){_corr_note}"
         if active else
-        f"No broad demand shift: {fraction_moving:.0%} of arena moved, "
+        f"No broad demand shift: {fraction_moving:.0%} of market moved, "
         f"{'concentrated in one brand' if concentrated else 'below threshold'}"
     )
 
     # Evidence
     evidence = [
-        f"Arena fraction moving: {fraction_moving:.0%}",
+        f"Market fraction moving: {fraction_moving:.0%}",
         f"Median BSR change: {median_change*100:+.1f}%",
         f"Top brand concentration: {top_brand_share:.0%}",
     ]
@@ -753,7 +753,7 @@ def detect_new_entrant(
     new_asins = first_seen[first_seen >= cutoff].index.tolist()
 
     if not new_asins:
-        return _empty_signal(regime, "No new ASINs detected in arena")
+        return _empty_signal(regime, "No new ASINs detected in market")
 
     threats = []
     for asin in new_asins:
@@ -946,7 +946,7 @@ def build_baseline_signal(
             r1_suffix = "no structural shift"
 
         receipts.append(Receipt(
-            label=f"Arena median BSR {arena_band} WoW — {r1_suffix}",
+            label=f"Market median BSR {arena_band} WoW — {r1_suffix}",
             metric="arena_bsr_wow",
             value=arena_bsr_wow,
             baseline=0.0,
@@ -967,10 +967,10 @@ def build_baseline_signal(
                 _relative = "Brand lagging market"
             r2_label = (
                 f"{_relative} (brand {your_bsr_wow*100:+.1f}% WoW, "
-                f"arena {arena_bsr_wow*100:+.1f}% WoW, delta {delta*100:+.1f} pp)"
+                f"market {arena_bsr_wow*100:+.1f}% WoW, delta {delta*100:+.1f} pp)"
             )
         else:
-            r2_label = f"Brand visibility {your_bsr_wow*100:+.1f}% WoW — no arena context"
+            r2_label = f"Brand visibility {your_bsr_wow*100:+.1f}% WoW — no market context"
         receipts.append(Receipt(
             label=r2_label,
             metric="brand_vs_arena_delta",

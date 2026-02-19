@@ -133,13 +133,13 @@ class TestBuildBaselineSignal:
     def test_arena_receipt_when_both_provided(self):
         from features.regimes import build_baseline_signal
         sig = build_baseline_signal(your_bsr_wow=0.05, arena_bsr_wow=0.03)
-        # First receipt should be arena-level
-        assert "arena" in sig.receipts[0].label.lower() or "Arena" in sig.receipts[0].label
+        # First receipt should be market-level
+        assert "market" in sig.receipts[0].label.lower()
 
     def test_brand_vs_arena_receipt(self):
         from features.regimes import build_baseline_signal
         sig = build_baseline_signal(your_bsr_wow=0.05, arena_bsr_wow=0.03)
-        # Second receipt should be brand vs arena
+        # Second receipt should be brand vs market
         assert sig.receipts[1].metric == "brand_vs_arena_delta"
 
     def test_both_none_still_returns_two_receipts(self):
@@ -151,7 +151,7 @@ class TestBuildBaselineSignal:
         from features.regimes import build_baseline_signal
         sig = build_baseline_signal(your_bsr_wow=None, arena_bsr_wow=0.03)
         assert len(sig.receipts) == 2
-        assert "arena" in sig.receipts[0].label.lower() or "Arena" in sig.receipts[0].label
+        assert "market" in sig.receipts[0].label.lower()
 
     def test_custom_band_fn(self):
         from features.regimes import build_baseline_signal

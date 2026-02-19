@@ -284,11 +284,16 @@ PRODUCT_TYPE_KEYWORDS = [
     ("exfoliating", "exfoliant"),
     (" aha ", "exfoliant"),
     (" bha ", "exfoliant"),
+    ("glycolic", "exfoliant"),
+    ("salicylic", "exfoliant"),
     ("sunscreen", "sunscreen"),
     (" spf ", "sunscreen"),
     ("sun protect", "sunscreen"),
     ("body wash", "body wash"),
     ("shower gel", "body wash"),
+    (" benzoyl", "acne_treatment"),
+    ("spot treat", "acne_treatment"),
+    (" acne ", "acne_treatment"),
     ("face wash", "cleanser"),
     ("gel cleanser", "cleanser"),
     ("foaming wash", "cleanser"),
@@ -300,6 +305,8 @@ PRODUCT_TYPE_KEYWORDS = [
     ("sheet mask", "mask"),
     ("clay mask", "mask"),
     (" mask", "mask"),
+    ("niacinamide", "serum"),
+    ("vitamin c", "serum"),
     ("serum", "serum"),
     ("ampoule", "serum"),
     ("balm", "balm"),
@@ -320,24 +327,119 @@ PRODUCT_TYPE_KEYWORDS = [
 ]
 
 
-def classify_title(title: str) -> str:
+# item_type_keyword → product_type fallback mapping
+# Keepa provides this Amazon-catalogued keyword. Reuses existing product_type names.
+ITEM_TYPE_KEYWORD_MAP = {
+    "facial_cleansing_product": "cleanser",
+    "facial_cleanser": "cleanser",
+    "face_cleanser": "cleanser",
+    "facial_moisturizer": "moisturizer",
+    "face_moisturizer": "moisturizer",
+    "facial_cream": "moisturizer",
+    "body_moisturizer": "lotion",
+    "body_lotion": "lotion",
+    "facial_serum": "serum",
+    "face_serum": "serum",
+    "facial_toner": "toner",
+    "face_toner": "toner",
+    "sunscreen": "sunscreen",
+    "sun_protection": "sunscreen",
+    "facial_mask": "mask",
+    "face_mask": "mask",
+    "sheet_mask": "mask",
+    "eye_cream": "eye cream",
+    "eye_treatment": "eye cream",
+    "body_wash": "body wash",
+    "shower_gel": "body wash",
+    "facial_scrub": "scrub",
+    "body_scrub": "scrub",
+    "facial_oil": "oil",
+    "body_oil": "oil",
+    "acne_treatment": "acne_treatment",
+    "spot_treatment": "acne_treatment",
+    "retinol_treatment": "retinol",
+    "exfoliant": "exfoliant",
+    "lip_balm": "balm",
+    "face_balm": "balm",
+    "micellar_water": "micellar water",
+}
+
+
+def classify_title(title: str, item_type_keyword: str = "") -> str:
     """
     Map ASIN title to product_type using fixed keyword dictionary.
-    Returns "other" if no keyword matches.
+    Falls back to item_type_keyword (Amazon-catalogued) when title parsing
+    returns "other".
 
     Args:
         title: ASIN title string (from Keepa data)
+        item_type_keyword: Optional Keepa item_type_keyword for fallback
 
     Returns:
         product_type string e.g. "serum", "moisturizer", "cleanser", "other"
     """
     if not title:
-        return "other"
+        title = ""
     title_lower = " " + title.lower() + " "  # pad for whole-word boundary matching
     for keyword, ptype in PRODUCT_TYPE_KEYWORDS:
         if keyword in title_lower:
             return ptype
+
+    # Fallback: use item_type_keyword from Amazon catalogue
+    if item_type_keyword:
+        _itk = item_type_keyword.strip().lower().replace(" ", "_")
+        mapped = ITEM_TYPE_KEYWORD_MAP.get(_itk)
+        if mapped:
+            return mapped
+
     return "other"
+
+
+# Keyword → concern/active mapping (all matches collected, most specific first)
+# Used by tag_concerns() — separate from product_type classification.
+CONCERN_KEYWORDS = [
+    ("retinol",       "retinol"),
+    ("retinoic",      "retinol"),
+    ("vitamin c",     "vitamin_c"),
+    ("ascorbic",      "vitamin_c"),
+    ("l-ascorbic",    "vitamin_c"),
+    ("niacinamide",   "niacinamide"),
+    (" b3 ",          "niacinamide"),
+    ("azelaic",       "azelaic"),
+    ("glycolic",      "aha_glycolic"),
+    (" aha ",         "aha_glycolic"),
+    ("salicylic",     "bha_salicylic"),
+    (" bha ",         "bha_salicylic"),
+    ("benzoyl",       "benzoyl_peroxide"),
+    ("hyaluronic",    "hyaluronic"),
+    (" ha ",          "hyaluronic"),
+    ("ceramide",      "ceramides_barrier"),
+    ("barrier cream", "ceramides_barrier"),
+    (" spf ",         "spf"),
+    (" acne ",        "acne"),
+    ("blemish",       "acne"),
+]
+
+
+def tag_concerns(title: str, ingredients: str = "") -> list:
+    """
+    Return up to 2 concern/active labels for an ASIN.
+    Scans title AND optional structured activeIngredients string.
+    Ingredients string is appended so title-based ordering is preserved.
+    Returns list of 0-2 unique concern strings, e.g. ["niacinamide", "aha_glycolic"].
+    """
+    if not title and not ingredients:
+        return []
+    combined = " " + (title or "").lower() + " " + (ingredients or "").lower() + " "
+    found = []
+    seen: set = set()
+    for keyword, concern in CONCERN_KEYWORDS:
+        if keyword in combined and concern not in seen:
+            found.append(concern)
+            seen.add(concern)
+            if len(found) == 2:
+                break
+    return found
 
 
 def infer_module(category_path: str) -> str:

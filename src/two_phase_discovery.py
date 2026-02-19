@@ -2312,6 +2312,14 @@ def phase2_category_market_mapping(
         adjusted_weekly_revenue = df["weekly_revenue_adjusted"].sum()
         adjusted_monthly_revenue = df["monthly_revenue_adjusted"].sum()
 
+        # Propagate variation adjustment to time-series df_weekly
+        # so brief/group-metric revenue calculations use deduplicated figures
+        if "_sibling_count" in df.columns and not df_weekly.empty and "asin" in df_weekly.columns:
+            _sibling_map = df.set_index("asin")["_sibling_count"].to_dict()
+            df_weekly["_sibling_count"] = df_weekly["asin"].map(_sibling_map).fillna(1).astype(int)
+            if "weekly_revenue" in df_weekly.columns:
+                df_weekly["weekly_revenue_adjusted"] = df_weekly["weekly_revenue"] / df_weekly["_sibling_count"]
+
         # Debug: Check if seed ASIN survived variation adjustment
         if seed_asin:
             if seed_asin in df['asin'].values:

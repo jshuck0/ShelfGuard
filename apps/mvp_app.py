@@ -44,7 +44,14 @@ from config.golden_run import (
     is_golden_run_active,
 )
 from report.weekly_brief import render_brief_tab
-from eval.scoreboard import get_scoreboard_lines, save_brief_predictions_from_brief
+from eval.scoreboard import save_brief_predictions_from_brief
+
+# Supabase read path — enables return visits without re-fetching from Keepa
+try:
+    from src.supabase_reader import load_weekly_timeseries, _normalize_snapshot_to_dashboard
+    _SUPABASE_READ_ENABLED = True
+except ImportError:
+    _SUPABASE_READ_ENABLED = False
 
 
 # ─── PAGE CONFIG ─────────────────────────────────────────────────────────────
@@ -68,6 +75,70 @@ st.session_state.setdefault("show_advanced_debug", False)
 if is_golden_run_active() and "active_project_data" not in st.session_state:
     for k, v in get_golden_session_state().items():
         st.session_state.setdefault(k, v)
+
+
+# ─── RETURN-VISIT LOADER ────────────────────────────────────────────────────
+# If session_state has no data but Supabase has cached data from a previous
+# session, load it automatically.  This makes the cache actually useful.
+
+def _try_load_from_supabase() -> bool:
+    """Attempt to hydrate session_state from Supabase cache. Returns True on success."""
+    if not _SUPABASE_READ_ENABLED:
+        return False
+    try:
+        from src.supabase_reader import get_supabase_client
+        sb = get_supabase_client()
+        # Find the most recent snapshot batch (grouped by fetched_at date)
+        probe = (
+            sb.table("product_snapshots")
+            .select("asin, brand, category_name, fetched_at")
+            .order("fetched_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not probe.data:
+            return False
+
+        latest_row = probe.data[0]
+        category_name = latest_row.get("category_name", "Unknown Arena")
+
+        # Get all ASINs from the same category
+        cat_result = (
+            sb.table("product_snapshots")
+            .select("asin")
+            .eq("category_name", category_name)
+            .execute()
+        )
+        if not cat_result.data:
+            return False
+
+        asins = list({r["asin"] for r in cat_result.data if r.get("asin")})
+        if len(asins) < 5:
+            return False  # Too few ASINs — probably stale/incomplete data
+
+        df_weekly = load_weekly_timeseries(tuple(sorted(asins)), days=90)
+        if df_weekly.empty or "asin" not in df_weekly.columns:
+            return False
+
+        # Normalize column names so downstream brief code works
+        df_weekly = _normalize_snapshot_to_dashboard(df_weekly)
+
+        # Detect brand (most-common brand in category, or from first row)
+        brand_counts = df_weekly["brand"].value_counts() if "brand" in df_weekly.columns else pd.Series(dtype=int)
+        detected_brand = brand_counts.index[0] if not brand_counts.empty else "Unknown"
+
+        st.session_state["active_project_data"] = df_weekly
+        st.session_state["active_project_seed_brand"] = detected_brand
+        st.session_state["active_project_name"] = category_name
+        st.session_state["active_project_all_asins"] = asins
+        st.session_state["_mvp_loaded_from_cache"] = True
+        return True
+    except Exception:
+        return False
+
+
+if "active_project_data" not in st.session_state:
+    _try_load_from_supabase()
 
 
 # ─── SIDEBAR ─────────────────────────────────────────────────────────────────
@@ -199,6 +270,21 @@ if use_golden:
                     st.session_state["active_project_all_asins"] = asins
                     st.session_state["last_market_stats"] = market_stats
                     _ms = market_stats
+
+                    # Cache to Supabase for instant return visits
+                    try:
+                        from src.supabase_reader import cache_market_snapshot, cache_weekly_timeseries
+                        _cat_ctx = {
+                            "category_id": GOLDEN_CATEGORY_ID,
+                            "category_name": GOLDEN_PROJECT_NAME,
+                            "category_tree": [],
+                            "category_root": GOLDEN_PROJECT_NAME,
+                        }
+                        cache_market_snapshot(df_snapshot, df_new, _cat_ctx)
+                        cache_weekly_timeseries(df_new, _cat_ctx)
+                    except Exception:
+                        pass  # Caching is best-effort
+
                     st.success(
                         f"Arena loaded — {_ms.get('brand_selected_count', '?')} brand + "
                         f"{_ms.get('competitor_selected_count', '?')} competitors selected"
@@ -223,9 +309,11 @@ if use_golden:
         asin_count = df_weekly["asin"].nunique() if "asin" in df_weekly.columns else 0
         week_count = df_weekly["week_start"].nunique() if "week_start" in df_weekly.columns else 0
         _ms = st.session_state.get("last_market_stats", {})
+        _from_cache = st.session_state.get("_mvp_loaded_from_cache", False)
+        _source_label = " (from cache)" if _from_cache else ""
         if _ms:
             st.success(
-                f"Arena loaded — {_ms.get('brand_selected_count', asin_count)} brand + "
+                f"Arena loaded{_source_label} — {_ms.get('brand_selected_count', asin_count)} brand + "
                 f"{_ms.get('competitor_selected_count', '?')} competitors | {week_count} weeks"
             )
             with st.expander("Market contract", expanded=False):
@@ -240,7 +328,7 @@ if use_golden:
 | **Coverage** | {_ms.get('coverage_note', 'estimated within scanned universe')} |
 """)
         else:
-            st.success(f"Market loaded: {asin_count} ASINs × {week_count} weeks")
+            st.success(f"Market loaded{_source_label}: {asin_count} ASINs × {week_count} weeks")
 
 else:
     # Manual mode: bare seed search → map market
@@ -268,11 +356,9 @@ else:
     if not your_brand:
         st.warning("Brand name is missing. Set `active_project_seed_brand` in session state.")
     else:
-        # Fetch scoreboard lines (safe — returns placeholder if no prior predictions)
-        try:
-            scoreboard_lines = get_scoreboard_lines(your_brand, {}, "Unknown")
-        except Exception:
-            scoreboard_lines = ["*(Scoreboard unavailable)*"]
+        # Scoreboard lines — pass placeholder; render_brief_tab re-scores
+        # with real regime signals after build_brief completes.
+        scoreboard_lines = ["*(Scoring in progress…)*"]
 
         # Render brief
         render_brief_tab(

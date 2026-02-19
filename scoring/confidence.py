@@ -142,6 +142,37 @@ def score_confidence(
             else:
                 reasons.append(f"Pack sizes comparable ({within_range:.0%} within {pack_factor}x)")
 
+    # ── Criterion 7: Phase A signal richness ──────────────────────────────────
+    # Phase A presence flags distinguish "missing" from "observed zero".
+    # Richer signal input → higher-quality regime detections and brief claims.
+    _phase_a_flags = [
+        "has_buybox_stats", "has_monthly_sold_history",
+        "has_active_ingredients", "has_sales_rank_drops",
+    ]
+    _phase_a_present = [f for f in _phase_a_flags if f in df_weekly.columns]
+    if _phase_a_present:
+        # Compute coverage: fraction of latest-week ASINs with True for each flag
+        latest_snap = df_weekly[df_weekly["week_start"] == df_weekly["week_start"].max()] if "week_start" in df_weekly.columns else df_weekly
+        flag_coverages = []
+        for flag in _phase_a_present:
+            if flag in latest_snap.columns:
+                flag_true = latest_snap[flag].fillna(False).astype(bool).sum()
+                flag_coverages.append(flag_true / max(len(latest_snap), 1))
+        avg_phase_a_coverage = np.mean(flag_coverages) if flag_coverages else 0
+
+        if avg_phase_a_coverage >= 0.60:
+            tally += 1
+            reasons.append(
+                f"Rich Phase A signals ({avg_phase_a_coverage:.0%} avg coverage across "
+                f"{len(_phase_a_present)} flags) → upgrade"
+            )
+        elif avg_phase_a_coverage < 0.20:
+            reasons.append(
+                f"Sparse Phase A signals ({avg_phase_a_coverage:.0%} avg) — "
+                f"some brief claims based on limited data"
+            )
+        # Between 20-60%: neutral, no adjustment needed
+
     # ── Tally → Label ─────────────────────────────────────────────────────────
     if tally >= 2:
         label = "High"

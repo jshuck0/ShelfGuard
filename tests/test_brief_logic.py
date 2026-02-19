@@ -60,6 +60,12 @@ def _make_metrics(
     ads_stance="Hold",
     product_type="other",
     family_id="",
+    concerns=None,
+    return_rate=None,
+    sales_rank_drops_30=None,
+    sales_rank_drops_90=None,
+    monthly_sold_delta=None,
+    top_comp_bb_share_30=None,
 ):
     from features.asin_metrics import ASINMetrics
     return ASINMetrics(
@@ -70,6 +76,12 @@ def _make_metrics(
         tier_comparable=tier_comparable, bsr_wow=bsr_wow,
         has_momentum=has_momentum, fidelity=fidelity, ads_stance=ads_stance,
         product_type=product_type, family_id=family_id,
+        concerns=concerns if concerns is not None else [],
+        return_rate=return_rate,
+        sales_rank_drops_30=sales_rank_drops_30,
+        sales_rank_drops_90=sales_rank_drops_90,
+        monthly_sold_delta=monthly_sold_delta,
+        top_comp_bb_share_30=top_comp_bb_share_30,
     )
 
 
@@ -563,3 +575,486 @@ class TestTaxonomy:
         assert "Product Type" in df.columns
         assert "Brand" in df.columns
         assert df.iloc[0]["Product Type"] == "Serum"
+
+
+# ─── 8. Round 6 — Posture table, Actions block, Curated Layer A ───────────────
+
+class TestRound6:
+    """Tests for Round 6: posture display layer, compact table columns,
+    curated receipts, validate notes, actions block, baseline headline."""
+
+    # _POSTURE_DISPLAY / _POSTURE_NEXT_ACTION / _VALIDATE_BY_STANCE ──────────
+
+    def test_posture_display_hold(self):
+        from features.asin_metrics import _POSTURE_DISPLAY
+        assert _POSTURE_DISPLAY["Hold"] == "Hold budget"
+
+    def test_posture_display_pause(self):
+        from features.asin_metrics import _POSTURE_DISPLAY
+        assert _POSTURE_DISPLAY["Pause+Diagnose"] == "Pause incremental"
+
+    def test_posture_display_scale(self):
+        from features.asin_metrics import _POSTURE_DISPLAY
+        assert _POSTURE_DISPLAY["Scale"] == "Scale"
+
+    def test_posture_display_defend(self):
+        from features.asin_metrics import _POSTURE_DISPLAY
+        assert _POSTURE_DISPLAY["Defend"] == "Defend"
+
+    def test_validate_by_stance_keys(self):
+        from features.asin_metrics import _VALIDATE_BY_STANCE
+        assert "Scale" in _VALIDATE_BY_STANCE
+        assert "Pause+Diagnose" in _VALIDATE_BY_STANCE
+        assert "Hold" in _VALIDATE_BY_STANCE
+        assert "Defend" in _VALIDATE_BY_STANCE
+
+    # to_compact_table columns ────────────────────────────────────────────────
+
+    def test_compact_table_has_posture_column(self):
+        from features.asin_metrics import to_compact_table
+        metrics = {
+            "ASIN01": _make_metrics("ASIN01", "Brand", ads_stance="Scale"),
+            "ASIN02": _make_metrics("ASIN02", "Brand", ads_stance="Hold"),
+        }
+        df = _make_df_weekly([("ASIN01", "Brand", 25.0, 2000, 2100),
+                              ("ASIN02", "Brand", 25.0, 3000, 3100)])
+        result = to_compact_table(metrics, df)
+        assert "Posture" in result.columns
+        assert "Next action" in result.columns
+        assert "Ads stance" not in result.columns
+
+    def test_compact_table_posture_values(self):
+        from features.asin_metrics import to_compact_table
+        metrics = {
+            "A01": _make_metrics("A01", "Brand", ads_stance="Scale"),
+            "A02": _make_metrics("A02", "Brand", ads_stance="Hold"),
+            "A03": _make_metrics("A03", "Brand", ads_stance="Pause+Diagnose"),
+        }
+        df = _make_df_weekly([("A01", "Brand", 25.0, 2000, 2100),
+                              ("A02", "Brand", 25.0, 2500, 2600),
+                              ("A03", "Brand", 25.0, 3000, 3100)])
+        result = to_compact_table(metrics, df)
+        postures = set(result["Posture"].tolist())
+        assert "Scale" in postures
+        assert "Hold budget" in postures
+        assert "Pause incremental" in postures
+
+    # receipts_list curation order ────────────────────────────────────────────
+
+    def test_receipts_list_curates_scale_first(self):
+        """Scale SKU should appear before Pause+Diagnose in Layer A."""
+        from features.asin_metrics import receipts_list
+        metrics = {
+            "SCALE1": _make_metrics("SCALE1", "MyBrand", bsr_wow=-0.20,
+                                    ads_stance="Scale"),
+            "PAUSE1": _make_metrics("PAUSE1", "MyBrand", bsr_wow=0.25,
+                                    ads_stance="Pause+Diagnose"),
+        }
+        result = receipts_list(metrics, "MyBrand", max_items=6)
+        assert len(result) == 2
+        # Scale line should come first
+        assert "SCALE1"[-6:] in result[0]
+        assert "PAUSE1"[-6:] in result[1]
+
+    def test_receipts_list_validate_note_when_ads_true(self):
+        """runs_ads=True → each receipt line contains 'Validate:'."""
+        from features.asin_metrics import receipts_list
+        metrics = {
+            "MINE01": _make_metrics("MINE01", "MyBrand", bsr_wow=-0.15,
+                                    ads_stance="Scale"),
+        }
+        result = receipts_list(metrics, "MyBrand", max_items=6, runs_ads=True)
+        assert len(result) == 1
+        assert "Validate:" in result[0]
+
+    def test_receipts_list_validate_note_when_ads_none(self):
+        """runs_ads=None (unknown) → validate hint still included."""
+        from features.asin_metrics import receipts_list
+        metrics = {
+            "MINE01": _make_metrics("MINE01", "MyBrand", bsr_wow=-0.15,
+                                    ads_stance="Defend"),
+        }
+        result = receipts_list(metrics, "MyBrand", max_items=6, runs_ads=None)
+        assert "Validate:" in result[0]
+
+    def test_receipts_list_no_validate_when_ads_false(self):
+        """runs_ads=False → no 'Validate:' in any receipt."""
+        from features.asin_metrics import receipts_list
+        metrics = {
+            "MINE01": _make_metrics("MINE01", "MyBrand", bsr_wow=0.20,
+                                    ads_stance="Pause+Diagnose"),
+            "MINE02": _make_metrics("MINE02", "MyBrand", bsr_wow=-0.10,
+                                    ads_stance="Scale"),
+        }
+        result = receipts_list(metrics, "MyBrand", max_items=6, runs_ads=False)
+        combined = " ".join(result)
+        assert "Validate:" not in combined
+
+    # _build_actions_block ─────────────────────────────────────────────────────
+
+    def test_actions_block_baseline_posture(self):
+        """Baseline week → budget posture bullet says 'Hold total budget'."""
+        from report.weekly_brief import _build_actions_block
+        from features.regimes import RegimeSignal
+        baseline_signal = RegimeSignal(
+            regime="baseline", active=True, confidence="High",
+            verdict="No dominant regime", driver_type="Unknown",
+        )
+        metrics = {
+            "A01": _make_metrics("A01", "MyBrand", ads_stance="Hold"),
+        }
+        result = _build_actions_block(
+            [baseline_signal], metrics, "MyBrand", "Hold", None,
+        )
+        assert len(result) == 3
+        assert "Hold total budget" in result[0]
+
+    def test_actions_block_reallocation_when_pause_and_scale(self):
+        """Pause+Diagnose + Scale SKUs → reallocation bullet names both sets."""
+        from report.weekly_brief import _build_actions_block
+        from features.regimes import RegimeSignal
+        baseline = RegimeSignal(
+            regime="baseline", active=True, confidence="Med",
+            verdict="No regime", driver_type="Unknown",
+        )
+        metrics = {
+            "P001": _make_metrics("P001", "MyBrand", ads_stance="Pause+Diagnose"),
+            "S001": _make_metrics("S001", "MyBrand", ads_stance="Scale"),
+        }
+        result = _build_actions_block(
+            [baseline], metrics, "MyBrand", "Reallocate", True,
+        )
+        realloc_line = result[1]
+        assert "P001"[-6:] in realloc_line
+        assert "S001"[-6:] in realloc_line
+        assert "Reallocation" in realloc_line
+
+    def test_actions_block_no_comp_pressure(self):
+        """No discounting+gaining comps → competitor pressure bullet says 'No discounting'."""
+        from report.weekly_brief import _build_actions_block
+        from features.regimes import RegimeSignal
+        sig = RegimeSignal(
+            regime="baseline", active=True, confidence="High",
+            verdict="No regime", driver_type="Unknown",
+        )
+        metrics = {
+            "A01": _make_metrics("A01", "MyBrand", ads_stance="Hold",
+                                  discount_persistence=0.0, bsr_wow=0.05),
+        }
+        result = _build_actions_block([sig], metrics, "MyBrand", "Hold", None)
+        assert "No discounting" in result[2]
+
+    # Baseline headline ────────────────────────────────────────────────────────
+
+    def test_headline_baseline_language(self):
+        """baseline regime → headline contains 'No dominant market regime'."""
+        from report.weekly_brief import _build_headline
+        from features.regimes import RegimeSignal
+        from scoring.confidence import ConfidenceScore
+        baseline = RegimeSignal(
+            regime="baseline", active=True, confidence="High",
+            verdict="No regime", driver_type="Unknown",
+        )
+        conf = ConfidenceScore(label="High", score=2, data_quality="Good",
+                               arena_coverage=0.8, reasons=[])
+        headline = _build_headline("CeraVe", -0.01, -0.02, [baseline], conf)
+        assert "No dominant market regime" in headline
+        assert "CeraVe" in headline
+        assert "High" in headline
+
+
+# ─── 9. Round 7: universal bucket language ────────────────────────────────────
+
+class TestRound7:
+    """Round 7: universal bucket language, new classify_title terms,
+    bucket What Changed, bucket reallocation in Actions, group-first Layer B."""
+
+    # New classify_title terms ─────────────────────────────────────────────────
+
+    def test_classify_niacinamide_returns_serum(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Niacinamide 12% Solution") == "serum"
+
+    def test_classify_vitamin_c_returns_serum(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Vitamin C Brightening Serum 20%") == "serum"
+
+    def test_classify_glycolic_returns_exfoliant(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Glycolic Acid 7% Toning Solution") == "exfoliant"
+
+    def test_classify_salicylic_returns_exfoliant(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Salicylic Acid 0.5% Daily Toner") == "exfoliant"
+
+    def test_classify_acne_returns_acne_treatment(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("CeraVe Acne Foaming Cream Wash") == "acne_treatment"
+
+    def test_classify_benzoyl_returns_acne_treatment(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Benzoyl Peroxide 2.5% Face Wash") == "acne_treatment"
+
+    def test_classify_spot_treat_returns_acne_treatment(self):
+        from config.market_misattribution_module import classify_title
+        assert classify_title("Kate Somerville EradiKate Spot Treatment Acne") == "acne_treatment"
+
+    # _has_buckets ─────────────────────────────────────────────────────────────
+
+    def test_has_buckets_true_when_non_other(self):
+        from report.weekly_brief import _has_buckets
+        from features.asin_metrics import ProductGroupMetrics
+        g = ProductGroupMetrics("serum", "Brand", 2, 0.1, 0.0, 0.2, "gaining", "Scale", [])
+        assert _has_buckets([g]) is True
+
+    def test_has_buckets_false_when_all_other(self):
+        from report.weekly_brief import _has_buckets
+        from features.asin_metrics import ProductGroupMetrics
+        g = ProductGroupMetrics("other", "Brand", 2, 0.1, 0.0, 0.2, "flat", "Hold", [])
+        assert _has_buckets([g]) is False
+
+    def test_has_buckets_false_when_empty(self):
+        from report.weekly_brief import _has_buckets
+        assert _has_buckets([]) is False
+        assert _has_buckets(None) is False
+
+    # _build_headline without skincare gate ────────────────────────────────────
+
+    def test_headline_bucket_note_generic_module(self):
+        """module_id='generic' + non-other group → bucket note still appears."""
+        from report.weekly_brief import _build_headline
+        from features.regimes import RegimeSignal
+        from scoring.confidence import ConfidenceScore
+        from features.asin_metrics import ProductGroupMetrics
+        sig = RegimeSignal(regime="promo_war", active=True, confidence="High",
+                           verdict="Promo war active", driver_type="Market-driven")
+        conf = ConfidenceScore(label="High", score=2, data_quality="Good",
+                               arena_coverage=0.8, reasons=[])
+        g = ProductGroupMetrics("serum", "CeraVe", 3, 0.30, 0.0, 0.2, "gaining", "Scale", [])
+        headline = _build_headline("CeraVe", -0.05, -0.02, [sig], conf,
+                                   module_id="generic", group_metrics=[g])
+        assert "Serum" in headline
+
+    # _build_what_changed bucket-first ────────────────────────────────────────
+
+    def test_what_changed_brand_bucket_bullet(self):
+        """When group_metrics has brand serum group → first bullet names bucket."""
+        from report.weekly_brief import _build_what_changed
+        from features.asin_metrics import ProductGroupMetrics
+        g = ProductGroupMetrics("serum", "MyBrand", 3, 0.30, 0.0, 0.2, "gaining", "Scale", [])
+        bullets = _build_what_changed(
+            -0.05, -0.02, None, None, [], lambda v, t: f"{v*100:+.1f}%",
+            your_brand="MyBrand", group_metrics=[g],
+        )
+        combined = " ".join(bullets)
+        assert "Serum" in combined
+
+    def test_what_changed_fallback_when_no_buckets(self):
+        """No group_metrics → standard arena demand bullet."""
+        from report.weekly_brief import _build_what_changed
+        bullets = _build_what_changed(
+            -0.05, -0.04, None, None, [], lambda v, t: f"{v*100:+.1f}%",
+        )
+        combined = " ".join(bullets)
+        assert "Demand" in combined or "BSR" in combined
+
+    # _build_actions_block bucket reallocation ─────────────────────────────────
+
+    def test_actions_bucket_reallocation_scale_and_pause(self):
+        """Scale + Pause+Diagnose brand groups → 'Reallocation by bucket' line."""
+        from report.weekly_brief import _build_actions_block
+        from features.regimes import RegimeSignal
+        from features.asin_metrics import ProductGroupMetrics
+        sig = RegimeSignal(regime="baseline", active=True, confidence="High",
+                           verdict="No regime", driver_type="Unknown")
+        g_scale = ProductGroupMetrics("serum", "MyBrand", 2, 0.30, 0.0, 0.1,
+                                      "gaining", "Scale", [])
+        g_pause = ProductGroupMetrics("cleanser", "MyBrand", 2, 0.10, 0.1, 0.5,
+                                      "losing", "Pause+Diagnose", [])
+        metrics = {"A01": _make_metrics("A01", "MyBrand", ads_stance="Scale")}
+        result = _build_actions_block(
+            [sig], metrics, "MyBrand", "Hold", None,
+            group_metrics=[g_scale, g_pause],
+        )
+        realloc = result[1]
+        assert "Reallocation by bucket" in realloc
+        assert "Serum" in realloc or "Scale" in realloc
+        assert "Cleanser" in realloc or "Pause" in realloc
+
+
+# ─── 10. Round 8: concerns taxonomy + nested arenas ──────────────────────────
+
+class TestRound8:
+    """Round 8: concerns taxonomy, concern metrics, pressure buckets, opportunity bucket,
+    grouped receipts, cross-segment actions."""
+
+    def test_tag_concerns_niacinamide_vitamin_c(self):
+        from config.market_misattribution_module import tag_concerns
+        result = tag_concerns("Niacinamide 10% + Vitamin C 20% Serum")
+        assert "niacinamide" in result
+        assert "vitamin_c" in result
+        assert len(result) <= 2
+
+    def test_tag_concerns_retinol_only(self):
+        from config.market_misattribution_module import tag_concerns
+        assert tag_concerns("Retinol 0.3% Serum for Face") == ["retinol"]
+
+    def test_tag_concerns_no_match_returns_empty(self):
+        from config.market_misattribution_module import tag_concerns
+        assert tag_concerns("Gentle Foaming Cleanser") == []
+
+    def test_tag_concerns_max_2(self):
+        from config.market_misattribution_module import tag_concerns
+        result = tag_concerns("Retinol Niacinamide Vitamin C Glycolic Serum")
+        assert len(result) == 2
+
+    def test_asin_metrics_has_concerns_field(self):
+        m = _make_metrics("A01", "Brand")
+        assert hasattr(m, "concerns")
+        assert isinstance(m.concerns, list)
+
+    def test_product_group_has_pct_losing(self):
+        from features.asin_metrics import ProductGroupMetrics
+        g = ProductGroupMetrics("serum", "Brand", 2, 0.1, 0.0, 0.2, "losing", "Pause+Diagnose", [], 0.6)
+        assert g.pct_losing == 0.6
+
+    def test_product_group_pct_losing_defaults_to_zero(self):
+        from features.asin_metrics import ProductGroupMetrics
+        g = ProductGroupMetrics("serum", "Brand", 2, 0.1, 0.0, 0.2, "gaining", "Scale", [])
+        assert g.pct_losing == 0.0
+
+    def test_compute_concern_metrics_groups_by_concern(self):
+        from features.asin_metrics import compute_concern_metrics
+        metrics = {
+            "A01": _make_metrics("A01", "B1", concerns=["retinol", "niacinamide"]),
+            "A02": _make_metrics("A02", "B2", concerns=["retinol"]),
+        }
+        df = _make_df_weekly([("A01", "B1", 25.0, 2000, 2100),
+                              ("A02", "B2", 25.0, 3000, 3100)])
+        result = compute_concern_metrics(metrics, df, "B1")
+        concerns = {g.concern for g in result}
+        assert "retinol" in concerns
+        assert "niacinamide" in concerns
+
+    def test_pressure_score_high_when_losing_and_discounted(self):
+        from features.asin_metrics import _pressure_score
+        score = _pressure_score(pct_losing=0.8, pct_discounted=0.7, median_price_vs_tier=0.15)
+        assert score > 0.6
+
+    def test_pressure_score_low_when_gaining(self):
+        from features.asin_metrics import _pressure_score
+        score = _pressure_score(pct_losing=0.0, pct_discounted=0.1, median_price_vs_tier=-0.05)
+        assert score < 0.1
+
+    def test_build_pressure_buckets_returns_top_2(self):
+        from report.weekly_brief import _build_pressure_buckets
+        from features.asin_metrics import ProductGroupMetrics
+        groups = [
+            ProductGroupMetrics("cleanser", "B1", 3, 0.2, 0.10, 0.6, "losing", "Pause+Diagnose", [], 0.7),
+            ProductGroupMetrics("cleanser", "B2", 2, 0.15, 0.05, 0.5, "losing", "Pause+Diagnose", [], 0.6),
+            ProductGroupMetrics("serum", "B1", 2, 0.3, -0.05, 0.2, "gaining", "Scale", [], 0.1),
+            ProductGroupMetrics("serum", "B2", 3, 0.25, -0.10, 0.3, "mixed", "Hold", [], 0.2),
+            ProductGroupMetrics("moisturizer", "B1", 2, 0.1, 0.15, 0.5, "losing", "Pause+Diagnose", [], 0.5),
+        ]
+        result = _build_pressure_buckets(groups, {}, "B1")
+        assert len(result) <= 2
+        assert all(hasattr(d, "claim") and hasattr(d, "receipts") for d in result)
+
+    def test_grouped_receipts_list_shows_bucket_heading(self):
+        from report.weekly_brief import grouped_receipts_list
+        metrics = {
+            "A01": _make_metrics("A01", "MyBrand", product_type="cleanser",
+                                 ads_stance="Pause+Diagnose", bsr_wow=0.15),
+        }
+        result = grouped_receipts_list(
+            metrics, "MyBrand", pressure_ptypes=["cleanser"],
+        )
+        combined = "\n".join(result)
+        assert "Cleanser" in combined
+
+
+class TestPhaseA:
+    """Phase A: salesRankDrops, returnRate, activeIngredients, monthlySoldDelta, topCompBBShare."""
+
+    def test_tag_concerns_ingredients_supplements_title(self):
+        from config.market_misattribution_module import tag_concerns
+        # Title doesn't mention niacinamide, ingredients string does
+        result = tag_concerns("Daily Face Moisturizer 50ml", ingredients="Niacinamide 5%")
+        assert "niacinamide" in result
+
+    def test_tag_concerns_title_still_primary(self):
+        from config.market_misattribution_module import tag_concerns
+        result = tag_concerns("Retinol 0.3% Night Cream", ingredients="Shea Butter")
+        assert result[0] == "retinol"
+
+    def test_tag_concerns_empty_ingredients_unchanged(self):
+        from config.market_misattribution_module import tag_concerns
+        assert tag_concerns("Gentle Cleanser") == tag_concerns("Gentle Cleanser", ingredients="")
+
+    def test_asin_metrics_has_return_rate_field(self):
+        m = _make_metrics("A01", "Brand", return_rate=2)
+        assert m.return_rate == 2
+
+    def test_asin_metrics_has_sales_rank_drops(self):
+        m = _make_metrics("A01", "Brand", sales_rank_drops_30=45)
+        assert m.sales_rank_drops_30 == 45
+
+    def test_return_rate_2_forces_high_ad_waste_risk(self):
+        """High-return ASIN should get High ad_waste_risk even if price is competitive."""
+        from features.asin_metrics import compute_asin_metrics
+        df = _make_df_weekly([("A01", "MyBrand", 20.0, 2000, 2100),
+                              ("A02", "Comp", 20.0, 3000, 3100)])
+        df.loc[df["asin"] == "A01", "return_rate"] = 2
+        metrics = compute_asin_metrics(df, {}, {}, "MyBrand")
+        assert metrics["A01"].ad_waste_risk == "High"
+
+    def test_return_rate_none_does_not_change_risk(self):
+        from features.asin_metrics import compute_asin_metrics
+        df = _make_df_weekly([("A01", "MyBrand", 18.0, 500, 480),
+                              ("A02", "Comp", 20.0, 3000, 3100)])
+        metrics = compute_asin_metrics(df, {}, {}, "MyBrand")
+        # Good standing ASIN with no return_rate should not be forced to High
+        assert metrics["A01"].ad_waste_risk in ("Low", "Med")
+
+    def test_top_comp_bb_share_30_field_exists(self):
+        m = _make_metrics("A01", "Brand", top_comp_bb_share_30=0.35)
+        assert m.top_comp_bb_share_30 == 0.35
+
+    def test_top_comp_bb_share_none_when_missing(self):
+        """Locks semantic: None means no data, not zero."""
+        m = _make_metrics("A01", "Brand", top_comp_bb_share_30=None)
+        assert m.top_comp_bb_share_30 is None
+
+    def test_ad_waste_reason_populated_for_high_return_rate(self):
+        """ad_waste_reason should explain why ad_waste_risk is High."""
+        from features.asin_metrics import compute_asin_metrics
+        df = _make_df_weekly([("A01", "MyBrand", 20.0, 2000, 2100),
+                              ("A02", "Comp", 20.0, 3000, 3100)])
+        df.loc[df["asin"] == "A01", "return_rate"] = 2
+        metrics = compute_asin_metrics(df, {}, {}, "MyBrand")
+        assert metrics["A01"].ad_waste_reason is not None
+        assert "return" in metrics["A01"].ad_waste_reason.lower()
+
+    def test_item_type_keyword_fallback_for_product_type(self):
+        """item_type_keyword should resolve 'other' when title parsing fails."""
+        from config.market_misattribution_module import classify_title
+        # Title alone → "other"
+        assert classify_title("Amazing Product 50ml") == "other"
+        # With item_type_keyword → correct type
+        assert classify_title("Amazing Product 50ml", item_type_keyword="facial_serum") == "serum"
+        assert classify_title("Amazing Product 50ml", item_type_keyword="facial_moisturizer") == "moisturizer"
+        # Title match still takes priority
+        assert classify_title("Retinol Night Serum 30ml", item_type_keyword="facial_moisturizer") == "retinol"
+
+    def test_phase_a_receipt_extras_demand_signal(self):
+        """phase_a_receipt_extras should surface demand delta when present."""
+        from features.asin_metrics import phase_a_receipt_extras
+        m = _make_metrics("A01", "Brand", monthly_sold_delta=150)
+        result = phase_a_receipt_extras(m)
+        assert "demand +150" in result
+
+    def test_phase_a_receipt_extras_empty_when_no_signals(self):
+        """phase_a_receipt_extras should return empty string when no Phase A data."""
+        from features.asin_metrics import phase_a_receipt_extras
+        m = _make_metrics("A01", "Brand")
+        assert phase_a_receipt_extras(m) == ""

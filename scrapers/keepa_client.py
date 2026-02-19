@@ -210,6 +210,65 @@ def extract_weekly_facts(product, window_start=None):
     # Subscribe & Save eligibility
     is_sns = product.get("isSNS", False) or False
 
+    # ── Phase A: New structured fields (zero extra API cost) ──────────────────
+    # Sales rank drops — count of BSR improvements in each period (from stats)
+    sales_rank_drops_30 = stats.get("salesRankDrops30") if stats else None
+    sales_rank_drops_90 = stats.get("salesRankDrops90") if stats else None
+
+    # Return rate: 1 = low, 2 = high, None = average/unknown (Keepa returnRate)
+    return_rate = product.get("returnRate")
+
+    # Active ingredients + item type keyword — structured catalog fields
+    active_ingredients_raw = (product.get("activeIngredients") or "").strip()
+    item_type_keyword = (product.get("itemTypeKeyword") or "").strip()
+
+    # Monthly sold delta — raw direction of demand (band later, not here).
+    # monthlySoldHistory is a flat-pair array: [keepaTime, value, keepaTime, value, …]
+    # So index -1 is the most recent VALUE, index -2 is its timestamp,
+    # index -3 is the previous VALUE, index -4 is that timestamp.
+    # We only compute the raw delta; trend banding happens downstream.
+    _msh = product.get("monthlySoldHistory")
+    monthly_sold_delta = None
+    if _msh and len(_msh) >= 4:
+        _prev_val = _msh[-3]   # previous value  (flat pair: second-to-last value slot)
+        _curr_val = _msh[-1]   # current value    (flat pair: last value slot)
+
+        # Guard: both values must be non-None and non-negative to avoid
+        # Keepa placeholder values (-1 = no data) producing false deltas.
+        if (
+            _prev_val is not None
+            and _curr_val is not None
+            and _prev_val >= 0
+            and _curr_val >= 0
+        ):
+            monthly_sold_delta = int(_curr_val) - int(_prev_val)
+
+    # ── Data Presence Flags (Phase A guardrails) ────────────────────────────────
+    # Explicit booleans so downstream logic / brief can distinguish:
+    #   missing  vs  observed-zero  vs  observed-signal
+    has_buybox_stats = isinstance(stats.get("buyBoxStats") if stats else None, dict) and len(stats.get("buyBoxStats", {})) > 0
+    has_monthly_sold_history = bool(_msh and len(_msh) >= 4)
+    has_active_ingredients = bool(active_ingredients_raw)
+    has_sales_rank_drops = sales_rank_drops_30 is not None or sales_rank_drops_90 is not None
+
+    # Top non-Amazon competitor Buy Box share (from full buyBoxStats dict)
+    top_comp_bb_share_30 = None
+    _bbs = stats.get("buyBoxStats") if stats else None
+    if isinstance(_bbs, dict):
+        # Iterate non-Amazon sellers; track highest observed percentageWon.
+        # None = no usable competitor BB signal; 0–1 = observed signal.
+        max_pct = None
+        for seller_id, s_data in _bbs.items():
+            if seller_id == AMAZON_RETAIL_ID:
+                continue
+            pct = s_data.get("percentageWon")
+            if pct is None:
+                continue
+            pct = float(pct)
+            if max_pct is None or pct > max_pct:
+                max_pct = pct
+        top_comp_bb_share_30 = round(max_pct / 100, 4) if max_pct is not None else None
+
     csv_data = product.get("csv", {})
     limit_ts = to_week_start(pd.Timestamp(window_start or "2023-01-01"))
     frames = []
@@ -296,7 +355,20 @@ def extract_weekly_facts(product, window_start=None):
     out["velocity_30d"] = velocity_30d
     out["velocity_90d"] = velocity_90d
     out["is_sns"] = is_sns
-    
+    out["sales_rank_drops_30"] = sales_rank_drops_30
+    out["sales_rank_drops_90"] = sales_rank_drops_90
+    out["return_rate"] = return_rate
+    out["active_ingredients_raw"] = active_ingredients_raw
+    out["item_type_keyword"] = item_type_keyword
+    out["monthly_sold_delta"] = monthly_sold_delta
+    out["top_comp_bb_share_30"] = top_comp_bb_share_30
+
+    # ── Data Presence Flags (observability, no downstream logic yet) ──────────
+    out["has_buybox_stats"] = has_buybox_stats
+    out["has_monthly_sold_history"] = has_monthly_sold_history
+    out["has_active_ingredients"] = has_active_ingredients
+    out["has_sales_rank_drops"] = has_sales_rank_drops
+
     return out
 
 def build_keepa_weekly_table(products, window_start=None):

@@ -131,6 +131,29 @@ class NetworkIntelligenceAccumulator:
                 'source': 'keepa',
                 'fetched_at': datetime.now().isoformat()
             }
+            # Phase A fields — include when available in the DataFrame
+            _phase_a_cols = [
+                ("return_rate", int), ("sales_rank_drops_30", int),
+                ("sales_rank_drops_90", int), ("monthly_sold_delta", int),
+                ("top_comp_bb_share_30", float), ("active_ingredients_raw", str),
+                ("item_type_keyword", str),
+                ("has_buybox_stats", bool), ("has_monthly_sold_history", bool),
+                ("has_active_ingredients", bool), ("has_sales_rank_drops", bool),
+                # Extended signals
+                ("monthly_sold", int), ("number_of_items", int),
+                ("price_per_unit", float), ("buybox_is_amazon", bool),
+                ("buybox_is_fba", bool), ("has_amazon_seller", bool),
+                ("oos_pct_30", float), ("oos_pct_90", float),
+                ("velocity_30d", float), ("velocity_90d", float),
+                ("is_sns", bool),
+            ]
+            for col, typ in _phase_a_cols:
+                val = row.get(col)
+                if pd.notna(val) if val is not None else False:
+                    try:
+                        record[col] = typ(val)
+                    except (ValueError, TypeError):
+                        pass
             records.append(record)
 
         # Batch upsert (insert or update if exists)

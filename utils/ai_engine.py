@@ -1325,6 +1325,62 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
         clean["sns_eligible"] = "YES (Subscribe & Save)"
     
     # =============================================
+    # PHASE A SIGNALS (2026-02-18)
+    # =============================================
+    
+    # Return rate (product quality / listing health)
+    if "return_rate" in row_data and row_data["return_rate"] is not None:
+        rr = int(row_data["return_rate"])
+        if rr == 2:
+            clean["return_rate"] = "HIGH (Keepa flag=2 — listing or quality issue)"
+        elif rr == 1:
+            clean["return_rate"] = "LOW (normal)"
+        # 0 or None = unknown, don't include
+    
+    # Sales rank drops = demand impulse events (BSR improvements in last 30/90d)
+    if "sales_rank_drops_30" in row_data:
+        drops_30 = _safe_float(row_data["sales_rank_drops_30"])
+        if drops_30 is not None and drops_30 > 0:
+            clean["bsr_improvement_events_30d"] = int(drops_30)
+            if drops_30 >= 10:
+                clean["demand_impulse_30d"] = "STRONG (frequent BSR jumps)"
+            elif drops_30 >= 5:
+                clean["demand_impulse_30d"] = "MODERATE"
+    
+    if "sales_rank_drops_90" in row_data:
+        drops_90 = _safe_float(row_data["sales_rank_drops_90"])
+        if drops_90 is not None and drops_90 > 0:
+            clean["bsr_improvement_events_90d"] = int(drops_90)
+    
+    # Monthly sold delta (demand direction from Amazon's own monthlySold)
+    if "monthly_sold_delta" in row_data:
+        delta = _safe_float(row_data["monthly_sold_delta"])
+        if delta is not None:
+            clean["monthly_sold_change"] = f"{int(delta):+,} units"
+            if delta > 100:
+                clean["demand_direction"] = "SURGING"
+            elif delta > 0:
+                clean["demand_direction"] = "GROWING"
+            elif delta == 0:
+                clean["demand_direction"] = "FLAT"
+            elif delta > -100:
+                clean["demand_direction"] = "DECLINING"
+            else:
+                clean["demand_direction"] = "COLLAPSING"
+    
+    # Top competitor Buy Box share (competitive pressure gauge)
+    if "top_comp_bb_share_30" in row_data:
+        bb_share = _safe_float(row_data["top_comp_bb_share_30"])
+        if bb_share is not None:
+            clean["top_competitor_bb_share"] = f"{bb_share*100:.1f}%"
+            if bb_share >= 0.40:
+                clean["bb_competitive_pressure"] = "HIGH (dominant competitor)"
+            elif bb_share >= 0.20:
+                clean["bb_competitive_pressure"] = "MODERATE"
+            elif bb_share > 0:
+                clean["bb_competitive_pressure"] = "LOW (fragmented)"
+    
+    # =============================================
     # DATA QUALITY INDICATOR
     # =============================================
     # Count how many key metrics we have
@@ -1339,12 +1395,18 @@ def _prepare_row_for_llm(row_data: Dict[str, Any]) -> Dict[str, Any]:
     new_critical_metrics = ["amazon_owns_buybox", "true_seller_count", "bsr_velocity_30d", "amazon_monthly_units", "amazon_oos_events_30d"]
     new_metrics_present = sum(1 for m in new_critical_metrics if m in clean)
     
+    # Count Phase A metrics (2026-02-18)
+    phase_a_metrics = ["return_rate", "bsr_improvement_events_30d", "monthly_sold_change", "top_competitor_bb_share", "demand_direction"]
+    phase_a_present = sum(1 for m in phase_a_metrics if m in clean)
+    
     if metrics_present >= 5:
         clean["data_quality"] = "HIGH"
         if competitive_present >= 2:
             clean["competitive_context"] = "ENRICHED"
         if new_metrics_present >= 3:
             clean["data_richness"] = "PREMIUM (Amazon direct data available)"
+        if phase_a_present >= 3:
+            clean["phase_a_signals"] = "AVAILABLE (return rate, demand impulse, BB competition)"
     elif metrics_present >= 3:
         clean["data_quality"] = "MEDIUM"
     else:

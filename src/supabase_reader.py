@@ -29,6 +29,7 @@ from supabase import Client
 # ============================================
 
 _supabase_client: Optional[Client] = None
+_known_snapshot_columns: Optional[set] = None  # Cached column names for product_snapshots
 
 
 def get_supabase_client() -> Client:
@@ -56,6 +57,53 @@ def create_supabase_client() -> Client:
     Kept for backward compatibility - now just calls get_supabase_client().
     """
     return get_supabase_client()
+
+
+def _get_known_snapshot_columns() -> set:
+    """
+    Discover which columns exist in product_snapshots.
+    Cached so we only query once per process lifetime.
+    Prevents upsert failures when schema hasn't been migrated yet.
+    """
+    global _known_snapshot_columns
+    if _known_snapshot_columns is not None:
+        return _known_snapshot_columns
+    try:
+        sb = get_supabase_client()
+        probe = sb.table("product_snapshots").select("*").limit(1).execute()
+        if probe.data:
+            _known_snapshot_columns = set(probe.data[0].keys())
+        else:
+            # Table is empty — fall back to a conservative set.
+            # All columns that existed before Phase A migration.
+            _known_snapshot_columns = {
+                "id", "asin", "snapshot_date", "title", "brand", "parent_asin",
+                "main_image", "sales_rank", "buy_box_price", "amazon_price",
+                "new_fba_price", "filled_price", "new_offer_count", "review_count",
+                "rating", "amazon_bb_share", "buy_box_switches", "estimated_units",
+                "estimated_weekly_revenue", "competitor_oos_pct",
+                "category_id", "category_name", "category_tree", "category_root",
+                "fetched_at", "source",
+                # Extended signals (added previously)
+                "monthly_sold", "number_of_items", "price_per_unit",
+                "buybox_is_amazon", "buybox_is_fba", "buybox_is_backorder",
+                "has_amazon_seller", "seller_count",
+                "oos_count_amazon_30", "oos_count_amazon_90", "oos_pct_30", "oos_pct_90",
+                "velocity_30d", "velocity_90d",
+                "bb_seller_count_30", "bb_top_seller_30",
+                "units_source", "is_sns",
+            }
+    except Exception:
+        _known_snapshot_columns = set()  # Will not filter anything
+    return _known_snapshot_columns
+
+
+def _strip_unknown_columns(record: dict) -> dict:
+    """Remove keys that don't exist as columns in product_snapshots."""
+    known = _get_known_snapshot_columns()
+    if not known:
+        return record  # Can't filter — pass through
+    return {k: v for k, v in record.items() if k in known}
 
 
 @st.cache_data(ttl=300)  # 5 minute cache
@@ -277,6 +325,7 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     import numpy as np
     
     # Column mapping: snapshot_column -> dashboard_column
+    # Most columns pass through with the same name; only a few need renaming.
     column_map = {
         "buy_box_price": "buy_box_price",
         "amazon_price": "amazon_price",
@@ -294,7 +343,38 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
         "brand": "brand",
         "parent_asin": "parent_asin",
         "main_image": "main_image",
-        "asin": "asin"
+        "asin": "asin",
+        # Extended product signals (passthrough — same names)
+        "monthly_sold": "monthly_sold",
+        "number_of_items": "number_of_items",
+        "price_per_unit": "price_per_unit",
+        "buybox_is_amazon": "buybox_is_amazon",
+        "buybox_is_fba": "buybox_is_fba",
+        "buybox_is_backorder": "buybox_is_backorder",
+        "has_amazon_seller": "has_amazon_seller",
+        "seller_count": "seller_count",
+        "oos_count_amazon_30": "oos_count_amazon_30",
+        "oos_count_amazon_90": "oos_count_amazon_90",
+        "oos_pct_30": "oos_pct_30",
+        "oos_pct_90": "oos_pct_90",
+        "velocity_30d": "velocity_30d",
+        "velocity_90d": "velocity_90d",
+        "bb_seller_count_30": "bb_seller_count_30",
+        "bb_top_seller_30": "bb_top_seller_30",
+        "units_source": "units_source",
+        "is_sns": "is_sns",
+        # Phase A signals (passthrough — same names)
+        "return_rate": "return_rate",
+        "sales_rank_drops_30": "sales_rank_drops_30",
+        "sales_rank_drops_90": "sales_rank_drops_90",
+        "monthly_sold_delta": "monthly_sold_delta",
+        "top_comp_bb_share_30": "top_comp_bb_share_30",
+        "active_ingredients_raw": "active_ingredients_raw",
+        "item_type_keyword": "item_type_keyword",
+        "has_buybox_stats": "has_buybox_stats",
+        "has_monthly_sold_history": "has_monthly_sold_history",
+        "has_active_ingredients": "has_active_ingredients",
+        "has_sales_rank_drops": "has_sales_rank_drops",
     }
     
     # Rename columns that exist
@@ -303,21 +383,40 @@ def _normalize_snapshot_to_dashboard(df: pd.DataFrame) -> pd.DataFrame:
     
     # CRITICAL: Convert numeric columns to proper dtypes
     # This prevents 'cannot use method nlargest with dtype object' errors
-    numeric_columns = [
+    numeric_columns_fill_zero = [
         "weekly_sales_filled", "revenue_proxy", "filled_price", "buy_box_price",
         "amazon_price", "new_fba_price", "sales_rank_filled", "amazon_bb_share",
-        "estimated_units", "rating", "review_count", "new_offer_count"
+        "estimated_units", "rating", "review_count", "new_offer_count",
+        # Extended signals
+        "monthly_sold", "number_of_items", "price_per_unit", "seller_count",
+        "oos_count_amazon_30", "oos_count_amazon_90", "oos_pct_30", "oos_pct_90",
+        "velocity_30d", "velocity_90d", "bb_seller_count_30", "bb_top_seller_30",
     ]
     
-    for col in numeric_columns:
+    for col in numeric_columns_fill_zero:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Phase A numeric columns: coerce to numeric but PRESERVE NaN.
+    # None/NaN means "no data" which is semantically different from 0.
+    # (e.g. top_comp_bb_share_30=None means "no BB signal" vs 0="zero share")
+    phase_a_numeric_preserve_nan = [
+        "return_rate", "sales_rank_drops_30", "sales_rank_drops_90",
+        "monthly_sold_delta", "top_comp_bb_share_30",
+    ]
+
+    for col in phase_a_numeric_preserve_nan:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')  # NaN preserved
 
     # CRITICAL: Convert boolean columns to proper dtypes
     # This prevents type errors when using .any(), .sum(), etc.
     boolean_columns = [
         "buybox_is_amazon", "buybox_is_fba", "buybox_is_backorder",
-        "has_amazon_seller", "is_sns", "amazon_unstable"
+        "has_amazon_seller", "is_sns", "amazon_unstable",
+        # Phase A data presence flags
+        "has_buybox_stats", "has_monthly_sold_history",
+        "has_active_ingredients", "has_sales_rank_drops",
     ]
 
     for col in boolean_columns:
@@ -706,6 +805,18 @@ def cache_market_snapshot(
                 "bb_top_seller_30": _safe_float(row_dict.get("bb_top_seller_30")),
                 "units_source": str(row_dict.get("units_source", "bsr_formula")),
                 "is_sns": _safe_bool(row_dict.get("is_sns")) or False,
+                # === PHASE A SIGNALS (2026-02-18) ===
+                "return_rate": _safe_int(row_dict.get("return_rate")),
+                "sales_rank_drops_30": _safe_int(row_dict.get("sales_rank_drops_30")),
+                "sales_rank_drops_90": _safe_int(row_dict.get("sales_rank_drops_90")),
+                "monthly_sold_delta": _safe_int(row_dict.get("monthly_sold_delta")),
+                "top_comp_bb_share_30": _safe_float(row_dict.get("top_comp_bb_share_30")),
+                "active_ingredients_raw": str(row_dict.get("active_ingredients_raw", ""))[:500] if row_dict.get("active_ingredients_raw") else None,
+                "item_type_keyword": str(row_dict.get("item_type_keyword", ""))[:200] if row_dict.get("item_type_keyword") else None,
+                "has_buybox_stats": _safe_bool(row_dict.get("has_buybox_stats")),
+                "has_monthly_sold_history": _safe_bool(row_dict.get("has_monthly_sold_history")),
+                "has_active_ingredients": _safe_bool(row_dict.get("has_active_ingredients")),
+                "has_sales_rank_drops": _safe_bool(row_dict.get("has_sales_rank_drops")),
             }
 
             # ENHANCEMENT 2.3: Add category metadata if provided (consolidates with accumulator)
@@ -749,7 +860,8 @@ def cache_market_snapshot(
                         sanitized_record[key] = None
                     else:
                         sanitized_record[key] = val
-                sanitized_chunk.append(sanitized_record)
+                # Strip columns that don't exist in schema (pre-migration safety)
+                sanitized_chunk.append(_strip_unknown_columns(sanitized_record))
 
             try:
                 supabase.table("product_snapshots").upsert(
@@ -883,11 +995,37 @@ def cache_weekly_timeseries(
                 "main_image": str(row_dict.get("main_image", "")) if row_dict.get("main_image") else None,
                 "source": "keepa_weekly",
                 "fetched_at": datetime.now().isoformat(),
-                # Additional metrics
+                # Extended product signals
                 "monthly_sold": _safe_int(row_dict.get("monthly_sold")),
-                "seller_count": _safe_int(row_dict.get("seller_count")),
+                "number_of_items": _safe_int(row_dict.get("number_of_items")) or 1,
+                "price_per_unit": _safe_float(row_dict.get("price_per_unit")),
+                "buybox_is_amazon": _safe_bool(row_dict.get("buybox_is_amazon")),
+                "buybox_is_fba": _safe_bool(row_dict.get("buybox_is_fba")),
+                "buybox_is_backorder": _safe_bool(row_dict.get("buybox_is_backorder")) or False,
+                "has_amazon_seller": _safe_bool(row_dict.get("has_amazon_seller")),
+                "seller_count": _safe_int(row_dict.get("seller_count")) or 1,
+                "oos_count_amazon_30": _safe_int(row_dict.get("oos_count_amazon_30")),
+                "oos_count_amazon_90": _safe_int(row_dict.get("oos_count_amazon_90")),
                 "oos_pct_30": _safe_float(row_dict.get("oos_pct_30")),
+                "oos_pct_90": _safe_float(row_dict.get("oos_pct_90")),
                 "velocity_30d": _safe_float(row_dict.get("velocity_30d")),
+                "velocity_90d": _safe_float(row_dict.get("velocity_90d")),
+                "bb_seller_count_30": _safe_int(row_dict.get("bb_seller_count_30")),
+                "bb_top_seller_30": _safe_float(row_dict.get("bb_top_seller_30")),
+                "units_source": str(row_dict.get("units_source", "bsr_formula")),
+                "is_sns": _safe_bool(row_dict.get("is_sns")) or False,
+                # Phase A signals
+                "return_rate": _safe_int(row_dict.get("return_rate")),
+                "sales_rank_drops_30": _safe_int(row_dict.get("sales_rank_drops_30")),
+                "sales_rank_drops_90": _safe_int(row_dict.get("sales_rank_drops_90")),
+                "monthly_sold_delta": _safe_int(row_dict.get("monthly_sold_delta")),
+                "top_comp_bb_share_30": _safe_float(row_dict.get("top_comp_bb_share_30")),
+                "active_ingredients_raw": str(row_dict.get("active_ingredients_raw", ""))[:500] if row_dict.get("active_ingredients_raw") else None,
+                "item_type_keyword": str(row_dict.get("item_type_keyword", ""))[:200] if row_dict.get("item_type_keyword") else None,
+                "has_buybox_stats": _safe_bool(row_dict.get("has_buybox_stats")),
+                "has_monthly_sold_history": _safe_bool(row_dict.get("has_monthly_sold_history")),
+                "has_active_ingredients": _safe_bool(row_dict.get("has_active_ingredients")),
+                "has_sales_rank_drops": _safe_bool(row_dict.get("has_sales_rank_drops")),
             }
             
             # Add category context if provided
@@ -921,7 +1059,8 @@ def cache_weekly_timeseries(
                         sanitized_record[key] = None
                     else:
                         sanitized_record[key] = val
-                sanitized_chunk.append(sanitized_record)
+                # Strip columns that don't exist in schema (pre-migration safety)
+                sanitized_chunk.append(_strip_unknown_columns(sanitized_record))
             
             try:
                 supabase.table("product_snapshots").upsert(
@@ -1006,6 +1145,22 @@ def load_weekly_timeseries(
                     df["filled_price"] = df[col]
                     break
         
+        # Ensure derived columns that the brief/regime detectors expect
+        if "sales_rank" in df.columns and "sales_rank_filled" not in df.columns:
+            df["sales_rank_filled"] = pd.to_numeric(df["sales_rank"], errors="coerce")
+
+        if "filled_price" in df.columns and "price_per_unit" not in df.columns:
+            _items = pd.to_numeric(df.get("number_of_items", 1), errors="coerce").clip(lower=1).fillna(1)
+            df["price_per_unit"] = pd.to_numeric(df["filled_price"], errors="coerce") / _items
+
+        if "weekly_revenue" not in df.columns and "filled_price" in df.columns:
+            # Derive weekly_revenue from BSR-based monthly units estimate
+            _bsr = pd.to_numeric(df.get("sales_rank_filled", df.get("sales_rank")), errors="coerce").clip(lower=1)
+            _monthly = pd.to_numeric(df.get("monthly_sold", 0), errors="coerce").fillna(0)
+            _bsr_units = 145000.0 * (_bsr ** -0.9)
+            _mu = _monthly.where(_monthly > 0, _bsr_units)
+            df["weekly_revenue"] = (_mu * (7 / 30)) * pd.to_numeric(df["filled_price"], errors="coerce").fillna(0)
+
         # Sort by ASIN and date for time series analysis
         if "week_start" in df.columns and "asin" in df.columns:
             df = df.sort_values(["asin", "week_start"])

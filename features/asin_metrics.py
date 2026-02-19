@@ -15,8 +15,32 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Dict, List
+
+
+# Posture display layer — translates internal ads_stance to marketer-friendly labels.
+# Internal ads_stance values are unchanged; these dicts are display-only.
+_POSTURE_DISPLAY = {
+    "Scale":          "Scale",
+    "Defend":         "Defend",
+    "Hold":           "Hold budget",
+    "Pause+Diagnose": "Pause incremental",
+}
+
+_POSTURE_NEXT_ACTION = {
+    "Scale":          "Increase budget cap on winner; expand high-intent keywords",
+    "Defend":         "Protect branded + hero terms; cap conquesting",
+    "Hold":           "Maintain branded coverage; reallocate away from weak SKUs",
+    "Pause+Diagnose": "Reduce bids; stop conquesting; fix retail readiness",
+}
+
+_VALIDATE_BY_STANCE = {
+    "Scale":          "Spend up + CVR stable?",
+    "Defend":         "BB stable? Impressions holding?",
+    "Hold":           "BB stable?",
+    "Pause+Diagnose": "OOS? Listing suppressed?",
+}
 
 
 # Allowed tags (exactly as spec'd)
@@ -27,6 +51,14 @@ ALLOWED_TAGS = {
     "Losing visibility",
     "Likely stock/BB issue",  # Only if proxy available
 }
+
+
+def _safe_int(v) -> Optional[int]:
+    """Convert a value to int, returning None for missing/NaN values."""
+    try:
+        return None if v is None or pd.isna(v) else int(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _band_price_vs_tier(ratio: float) -> str:
@@ -60,6 +92,13 @@ class ASINMetrics:
     ads_stance: str = "Hold"        # "Scale" | "Defend" | "Hold" | "Pause+Diagnose"
     product_type: str = "other"     # e.g. "serum", "moisturizer" — from classify_title(title)
     family_id: str = ""             # parent_asin if known, else own asin — used for group dedup
+    concerns: List[str] = field(default_factory=list)  # 0–2 concern/active labels from tag_concerns()
+    return_rate: Optional[int] = None          # 1=low, 2=high, None=unknown (Keepa returnRate)
+    sales_rank_drops_30: Optional[int] = None  # Count of BSR improvements in last 30d
+    sales_rank_drops_90: Optional[int] = None  # Count of BSR improvements in last 90d
+    monthly_sold_delta: Optional[int] = None   # monthlySold change since previous Keepa reading
+    top_comp_bb_share_30: Optional[float] = None  # Highest non-Amazon BB share (0–1), None = no data
+    ad_waste_reason: Optional[str] = None     # Explains why ad_waste_risk was set (for brief explainability)
 
 
 @dataclass
@@ -74,6 +113,20 @@ class ProductGroupMetrics:
     momentum_label: str             # "gaining" | "mixed" | "losing" | "flat"
     dominant_ads_stance: str        # most common ads_stance across group
     top_asins: List[str]            # up to 5 ASINs sorted by |bsr_wow| for receipt expansion
+    pct_losing: float = 0.0         # fraction of group ASINs with bsr_wow > 0.05
+
+
+@dataclass
+class ConcernGroupMetrics:
+    """Aggregated metrics for a concern × brand group (multi-label explode)."""
+    concern: str
+    brand: str
+    asin_count: int
+    rev_share_pct: float
+    pct_discounted: float
+    momentum_label: str             # "gaining" | "mixed" | "losing" | "flat"
+    dominant_ads_stance: str
+    top_asins: List[str]
 
 
 def compute_asin_metrics(
@@ -188,7 +241,11 @@ def compute_asin_metrics(
 
         # ── Product taxonomy ───────────────────────────────────────────────
         _title = str(row.get("title", "")) if "title" in row.index else ""
-        product_type = _classify_title(_title)
+        _itk = str(row.get("item_type_keyword", "") or "") if "item_type_keyword" in row.index else ""
+        product_type = _classify_title(_title, item_type_keyword=_itk)
+        from config.market_misattribution_module import tag_concerns as _tag_concerns
+        _ingredients = str(row.get("active_ingredients_raw", "") or "")
+        concerns = _tag_concerns(_title, ingredients=_ingredients)
 
         # family_id: parent_asin when available (for variant grouping), else own asin
         _parent_rows = (
@@ -260,13 +317,20 @@ def compute_asin_metrics(
         is_deteriorating = bsr_wow >= bsr_deterioration
         is_competitive = price_vs_tier <= -competitive_threshold
         is_improving = bsr_wow <= improving_threshold
+        _return_rate = _safe_int(row.get("return_rate"))
 
-        if is_expensive and is_deteriorating:
+        if _return_rate == 2:
             ad_waste_risk = "High"
+            ad_waste_reason = "High return rate (Keepa returnRate=2)"
+        elif is_expensive and is_deteriorating:
+            ad_waste_risk = "High"
+            ad_waste_reason = "Price above tier + BSR deteriorating"
         elif is_competitive and is_improving:
             ad_waste_risk = "Low"
+            ad_waste_reason = "Competitive pricing + rank improving"
         else:
             ad_waste_risk = "Med"
+            ad_waste_reason = None
 
         # ── Tag Assignment ────────────────────────────────────────────────
         discount_pers = discount_persistence_map.get(asin, 0.0)
@@ -324,6 +388,13 @@ def compute_asin_metrics(
             ads_stance=ads_stance,
             product_type=product_type,
             family_id=family_id,
+            concerns=concerns,
+            return_rate=_return_rate,
+            sales_rank_drops_30=_safe_int(row.get("sales_rank_drops_30")),
+            sales_rank_drops_90=_safe_int(row.get("sales_rank_drops_90")),
+            monthly_sold_delta=_safe_int(row.get("monthly_sold_delta")),
+            top_comp_bb_share_30=row.get("top_comp_bb_share_30"),
+            ad_waste_reason=ad_waste_reason,
         )
 
     return results
@@ -370,6 +441,7 @@ def compute_group_metrics(
         gaining = sum(1 for m in members if m.has_momentum)
         losing = sum(1 for m in members if m.bsr_wow > 0.05)
         n = len(members)
+        pct_losing_val = losing / n
         if gaining > losing and gaining > n // 3:
             momentum = "gaining"
         elif losing > gaining and losing > n // 3:
@@ -393,9 +465,81 @@ def compute_group_metrics(
             momentum_label=momentum,
             dominant_ads_stance=dominant_stance,
             top_asins=[m.asin for m in top_5],
+            pct_losing=round(pct_losing_val, 2),
         ))
 
     # Sort: your brand first, then by rev_share_pct desc
+    result.sort(key=lambda g: (0 if g.brand.lower() == your_brand.lower() else 1, -g.rev_share_pct))
+    return result
+
+
+def _pressure_score(pct_losing: float, pct_discounted: float, median_price_vs_tier: float) -> float:
+    """Composite pressure score for a segment. Higher = more under pressure."""
+    above_tier_norm = min(max(median_price_vs_tier, 0) / 0.15, 1.0)
+    return 0.4 * pct_losing + 0.4 * pct_discounted + 0.2 * above_tier_norm
+
+
+def compute_concern_metrics(
+    asin_metrics: Dict[str, "ASINMetrics"],
+    df_weekly: "pd.DataFrame",
+    your_brand: str,
+) -> List["ConcernGroupMetrics"]:
+    """
+    Aggregate ASINMetrics into concern × brand groups (multi-label explode).
+    ASINs with 0 concerns are excluded. ASINs with 2 concerns appear in 2 groups.
+    Returns list sorted: your brand first, then by rev_share_pct desc.
+    """
+    from collections import defaultdict
+
+    rev_col = "weekly_revenue_adjusted" if "weekly_revenue_adjusted" in df_weekly.columns else "weekly_revenue"
+    latest_week = df_weekly["week_start"].max() if "week_start" in df_weekly.columns else None
+    latest_snap = df_weekly[df_weekly["week_start"] == latest_week] if latest_week is not None else df_weekly
+    total_rev = (
+        latest_snap.groupby("asin")[rev_col].mean().sum()
+        if rev_col in latest_snap.columns else 0
+    )
+
+    groups: dict = defaultdict(list)
+    for m in asin_metrics.values():
+        for concern in m.concerns:
+            groups[(concern, m.brand)].append(m)
+
+    result = []
+    for (concern, brand), members in groups.items():
+        asin_set = {m.asin for m in members}
+        group_snap = (latest_snap[latest_snap["asin"].isin(asin_set)]
+                      if rev_col in latest_snap.columns else pd.DataFrame())
+        group_rev = group_snap.groupby("asin")[rev_col].mean().sum() if not group_snap.empty else 0
+        rev_share = group_rev / total_rev if total_rev > 0 else 0
+
+        pct_disc = sum(1 for m in members if m.discount_persistence >= 4 / 7) / len(members)
+        gaining = sum(1 for m in members if m.has_momentum)
+        losing = sum(1 for m in members if m.bsr_wow > 0.05)
+        n = len(members)
+        if gaining > losing and gaining > n // 3:
+            momentum = "gaining"
+        elif losing > gaining and losing > n // 3:
+            momentum = "losing"
+        elif gaining == 0 and losing == 0:
+            momentum = "flat"
+        else:
+            momentum = "mixed"
+
+        stances = [m.ads_stance for m in members]
+        dominant_stance = max(set(stances), key=stances.count)
+        top_5 = sorted(members, key=lambda m: -abs(m.bsr_wow))[:5]
+
+        result.append(ConcernGroupMetrics(
+            concern=concern,
+            brand=brand,
+            asin_count=len(members),
+            rev_share_pct=round(rev_share, 4),
+            pct_discounted=round(pct_disc, 2),
+            momentum_label=momentum,
+            dominant_ads_stance=dominant_stance,
+            top_asins=[m.asin for m in top_5],
+        ))
+
     result.sort(key=lambda g: (0 if g.brand.lower() == your_brand.lower() else 1, -g.rev_share_pct))
     return result
 
@@ -503,7 +647,6 @@ def to_compact_table(
             price_band = m.price_vs_tier_band  # "well below tier" … "not comparable"
             bsr_band = f"{m.bsr_wow*100:+.1f}%"
 
-        ads_cell = f"If on ads: {m.ads_stance}"
         rows.append({
             "ASIN": short_name,
             "Brand": m.brand,
@@ -513,7 +656,8 @@ def to_compact_table(
             "BSR WoW": bsr_band,
             "Momentum": "Y" if m.has_momentum else "N",
             "Tag": m.tag,
-            "Ads stance": ads_cell,
+            "Posture": _POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance),
+            "Next action": _POSTURE_NEXT_ACTION.get(m.ads_stance, ""),
             "_role_sort": role_order.get(m.role, 3),
             "_bsr_sort": m.bsr_wow,
             "_asin": asin,
@@ -527,20 +671,51 @@ def to_compact_table(
     return df.drop(columns=["_role_sort", "_bsr_sort", "_asin"], errors="ignore")
 
 
+def phase_a_receipt_extras(m: "ASINMetrics") -> str:
+    """Build compact suffix with Phase A signals for per-ASIN receipt lines."""
+    parts = []
+    _delta = getattr(m, "monthly_sold_delta", None)
+    if _delta is not None:
+        if _delta > 0:
+            parts.append(f"demand +{_delta}")
+        elif _delta < 0:
+            parts.append(f"demand {_delta}")
+    _drops = getattr(m, "sales_rank_drops_30", None)
+    if _drops is not None and _drops >= 5:
+        parts.append(f"{_drops} BSR drops/30d")
+    _bb = getattr(m, "top_comp_bb_share_30", None)
+    if _bb is not None and _bb >= 0.20:
+        parts.append(f"comp BB {_bb*100:.0f}%")
+    _rr = getattr(m, "return_rate", None)
+    if _rr == 2:
+        parts.append("high returns")
+    # Surface ad_waste_reason when risk is High (Phase A CHANGE 4 explainability)
+    _reason = getattr(m, "ad_waste_reason", None)
+    if _reason and getattr(m, "ad_waste_risk", "") == "High":
+        parts.append(f"ad risk: {_reason}")
+    if not parts:
+        return ""
+    return " | " + ", ".join(parts)
+
+
 def receipts_list(
     asin_metrics: Dict[str, ASINMetrics],
     your_brand: str,
     max_items: int = 8,
     band_fn=None,
+    runs_ads: Optional[bool] = None,
 ) -> List[str]:
     """
     Build Layer A: curated ads-relevant ASIN receipts.
 
-    Selection order:
-      1. Your brand Pause+Diagnose / Hold SKUs (up to 3) — action items
-      2. Your brand Scale / Defend SKUs (up to 2) — opportunity items
-      3. Top competitor by |bsr_wow| (up to 1) — pressure driver
+    Curation order (ads-priority):
+      1. Your brand Scale SKUs (up to 2) — spend opportunities
+      2. Your brand Pause+Diagnose SKUs (up to 2) — action items
+      3. Top discounting competitor gaining rank (up to 1) — pressure driver
+      4. Your brand Defend hero SKU (up to 1) — protect coverage
     Falls back to pure |bsr_wow| sort if no brand ASINs in dict.
+
+    Each line includes a Validate hint when runs_ads is not False.
     """
     if band_fn is None:
         band_fn = lambda v, t: f"{v*100:+.1f}%"
@@ -549,17 +724,24 @@ def receipts_list(
     yours = [m for m in asin_metrics.values() if m.brand.lower() == your_brand.lower()]
     comps = [m for m in asin_metrics.values() if m.brand.lower() != your_brand.lower()]
 
-    pause_hold = sorted(
-        [m for m in yours if m.ads_stance in ("Pause+Diagnose", "Hold")],
+    scale_skus = sorted(
+        [m for m in yours if m.ads_stance == "Scale"],
         key=lambda m: -abs(m.bsr_wow),
-    )
-    scale_defend = sorted(
-        [m for m in yours if m.ads_stance in ("Scale", "Defend")],
+    )[:2]
+    pause_skus = sorted(
+        [m for m in yours if m.ads_stance == "Pause+Diagnose"],
         key=lambda m: -abs(m.bsr_wow),
-    )
-    top_comp = sorted(comps, key=lambda m: -abs(m.bsr_wow))[:1]
+    )[:2]
+    hero_skus = sorted(
+        [m for m in yours if m.ads_stance == "Defend"],
+        key=lambda m: -abs(m.bsr_wow),
+    )[:1]
+    comp_pressure = sorted(
+        [m for m in comps if m.discount_persistence >= 4 / 7 and m.bsr_wow < -0.03],
+        key=lambda m: -abs(m.bsr_wow),
+    )[:1]
 
-    curated = (pause_hold[:3] + scale_defend[:2] + top_comp)[:max_items]
+    curated = (scale_skus + pause_skus + comp_pressure + hero_skus)[:max_items]
     if not curated:
         curated = sorted(asin_metrics.values(), key=lambda m: -abs(m.bsr_wow))[:max_items]
 
@@ -568,10 +750,15 @@ def receipts_list(
             "Low" if m.ad_waste_risk == "High" else "Med"
         )
         price_str = f"price {m.price_vs_tier_band}"
-        bsr_str = f"BSR {band_fn(m.bsr_wow, 'rank_change')} WoW"
-        ads_hint = f" | If on ads: {m.ads_stance}"
+        bsr_str = band_fn(m.bsr_wow, "rank_change")
+        ads_hint = f" | If on ads: {_POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance)}"
+        validate_hint = ""
+        if runs_ads is not False:
+            validate_hint = f" | Validate: {_VALIDATE_BY_STANCE.get(m.ads_stance, '')}"
+        _extra = phase_a_receipt_extras(m)
         lines.append(
-            f"{m.brand} ({m.asin[-6:]}): {price_str}, {bsr_str} — {m.tag} [{conf} conf]{ads_hint}"
+            f"{m.brand} ({m.asin[-6:]}): {price_str}, BSR {bsr_str} WoW — "
+            f"{m.tag} [{conf} conf]{_extra}{ads_hint}{validate_hint}"
         )
 
     return lines

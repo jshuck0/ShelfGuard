@@ -590,13 +590,60 @@ def detect_demand_tailwind(
         and not concentrated
     )
 
-    # Confidence
+    # ── Corroboration: monthly_sold_delta (Phase A) ─────────────────────────
+    # When Amazon's own monthlySold data is available, it provides independent
+    # confirmation (or contradiction) of the BSR-based demand direction.
+    n_asins = df_weekly["asin"].nunique() if "asin" in df_weekly.columns else 0
+    monthly_sold_corroboration: Optional[str] = None
+    _ms_delta_available = False
+    if "monthly_sold_delta" in df_weekly.columns:
+        _latest_full = df_weekly[df_weekly["week_start"] == latest] if "week_start" in df_weekly.columns else df_weekly
+        _ms_vals = _latest_full["monthly_sold_delta"].dropna()
+        if len(_ms_vals) >= max(5, n_asins * 0.20 if n_asins > 0 else 5):
+            _ms_delta_available = True
+            _ms_median = _ms_vals.median()
+            _ms_positive_frac = (_ms_vals > 0).mean()
+            _ms_negative_frac = (_ms_vals < 0).mean()
+            if direction == "tailwind" and _ms_positive_frac >= 0.50:
+                monthly_sold_corroboration = "confirms"
+            elif direction == "headwind" and _ms_negative_frac >= 0.50:
+                monthly_sold_corroboration = "confirms"
+            elif direction == "tailwind" and _ms_negative_frac >= 0.50:
+                monthly_sold_corroboration = "contradicts"
+            elif direction == "headwind" and _ms_positive_frac >= 0.50:
+                monthly_sold_corroboration = "contradicts"
+            else:
+                monthly_sold_corroboration = "neutral"
+
+    # ── Corroboration: sales_rank_drops (Phase A) ────────────────────────────
+    # sales_rank_drops_30 = count of BSR improvement events in 30 days.
+    # A high arena-wide count supports tailwind; low count weakens it.
+    _srd_corroboration: Optional[str] = None
+    if "sales_rank_drops_30" in df_weekly.columns:
+        _latest_full_srd = df_weekly[df_weekly["week_start"] == latest] if "week_start" in df_weekly.columns else df_weekly
+        _srd_vals = _latest_full_srd["sales_rank_drops_30"].dropna()
+        if len(_srd_vals) >= 5:
+            _srd_median = _srd_vals.median()
+            if direction == "tailwind" and _srd_median >= 3:
+                _srd_corroboration = "confirms"
+            elif direction == "tailwind" and _srd_median <= 1:
+                _srd_corroboration = "contradicts"
+            else:
+                _srd_corroboration = "neutral"
+
+    # Confidence (with Phase A corroboration)
     if not active:
         confidence = "Low"
     elif fraction_moving >= high_conf_fraction and not concentrated:
         confidence = "High"
+        # Phase A can upgrade Med→High or downgrade High→Med
+        if monthly_sold_corroboration == "contradicts":
+            confidence = "Med"  # BSR says tailwind but monthlySold disagrees
     else:
         confidence = "Med"
+        # Phase A corroboration can upgrade Med→High
+        if monthly_sold_corroboration == "confirms" and _srd_corroboration == "confirms":
+            confidence = "High"
 
     # Receipts
     receipts = []
@@ -620,14 +667,32 @@ def detect_demand_tailwind(
                     brand=brand,
                 ))
 
+    # Build verdict with corroboration note
+    _corr_note = ""
+    if monthly_sold_corroboration == "confirms":
+        _corr_note = " — corroborated by Amazon monthlySold"
+    elif monthly_sold_corroboration == "contradicts":
+        _corr_note = " — note: Amazon monthlySold data diverges"
+
     verdict = (
         f"Demand {direction}: {fraction_moving:.0%} of arena moved "
         f"{'up' if direction == 'tailwind' else 'down'} "
-        f"(median BSR {median_change*100:+.1f}% vs {lookback_weeks}wk ago)"
+        f"(median BSR {median_change*100:+.1f}% vs {lookback_weeks}wk ago){_corr_note}"
         if active else
         f"No broad demand shift: {fraction_moving:.0%} of arena moved, "
         f"{'concentrated in one brand' if concentrated else 'below threshold'}"
     )
+
+    # Evidence
+    evidence = [
+        f"Arena fraction moving: {fraction_moving:.0%}",
+        f"Median BSR change: {median_change*100:+.1f}%",
+        f"Top brand concentration: {top_brand_share:.0%}",
+    ]
+    if monthly_sold_corroboration:
+        evidence.append(f"monthly_sold_delta: {monthly_sold_corroboration}")
+    if _srd_corroboration:
+        evidence.append(f"sales_rank_drops_30: {_srd_corroboration}")
 
     return RegimeSignal(
         regime=regime,
@@ -636,14 +701,14 @@ def detect_demand_tailwind(
         verdict=verdict,
         driver_type="Market-driven" if active else "Unknown",
         receipts=receipts[:2],
-        evidence=[f"Arena fraction moving: {fraction_moving:.0%}",
-                  f"Median BSR change: {median_change*100:+.1f}%",
-                  f"Top brand concentration: {top_brand_share:.0%}"],
+        evidence=evidence,
         metadata={
             "direction": direction,
             "fraction_moving": round(fraction_moving, 3),
             "median_rank_change": round(median_change, 4),
             "concentrated": concentrated,
+            "monthly_sold_corroboration": monthly_sold_corroboration,
+            "sales_rank_drops_corroboration": _srd_corroboration,
         },
     )
 

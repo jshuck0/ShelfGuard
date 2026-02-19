@@ -1427,6 +1427,27 @@ def render_seed_search_and_map_mvp():
                     st.session_state["active_project_name"] = f"{brand} Arena"
                     st.session_state["active_project_all_asins"] = asins
                     st.session_state["last_market_stats"] = market_stats
+
+                    # Cache to Supabase for instant return visits
+                    if CACHE_ENABLED and cache_market_snapshot:
+                        try:
+                            _leaf_id = seed_row.get("leaf_category_id")
+                            _cat_path = seed_row.get("category_path", "")
+                            _cat_name = _cat_path.split(" > ")[-1] if _cat_path else f"{brand} Arena"
+                            _cat_tree = _cat_path.split(" > ") if _cat_path else []
+                            _cat_root = _cat_tree[0] if _cat_tree else _cat_name
+                            _cat_ctx = {
+                                "category_id": int(_leaf_id) if _leaf_id else int(seed_row.get("category_id", 0)),
+                                "category_name": _cat_name,
+                                "category_tree": _cat_tree,
+                                "category_root": _cat_root,
+                            }
+                            cache_market_snapshot(df_snapshot, df_weekly, _cat_ctx)
+                            if cache_weekly_timeseries:
+                                cache_weekly_timeseries(df_weekly, _cat_ctx)
+                        except Exception:
+                            pass  # Caching is best-effort
+
                     _ms = market_stats
                     st.success(
                         f"Arena loaded — {_ms.get('brand_selected_count', '?')} brand + "

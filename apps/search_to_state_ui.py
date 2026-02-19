@@ -10,11 +10,38 @@ Usage:
     render_discovery_ui()
 """
 
+import contextlib
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Optional
+
+
+@contextlib.contextmanager
+def _quiet_st():
+    """Suppress non-error Streamlit output during backend discovery calls.
+
+    st.error() is deliberately left untouched so genuine failures still surface.
+    """
+    _noop = lambda *a, **kw: None
+    _orig = {
+        "write":   st.write,
+        "info":    st.info,
+        "caption": st.caption,
+        "success": st.success,
+        "warning": st.warning,
+    }
+    try:
+        st.write   = _noop
+        st.info    = _noop
+        st.caption = _noop
+        st.success = _noop
+        st.warning = _noop
+        yield
+    finally:
+        for k, v in _orig.items():
+            setattr(st, k, v)
 
 # Import core modules
 from src.persistence import (
@@ -1414,19 +1441,20 @@ def render_seed_search_and_map_mvp():
                         and all(isinstance(x, (int, float)) for x in _raw_tree)
                         else None
                     )
-                    df_snapshot, market_stats = phase2_category_market_mapping(
-                        category_id=int(seed_row.get("category_id", 0)),
-                        seed_product_title=str(seed_row.get("title", "")),
-                        seed_asin=str(seed_row.get("asin", "")),
-                        target_brand=brand,
-                        max_products=2000,
-                        leaf_category_id=seed_row.get("leaf_category_id"),
-                        category_tree_ids=_tree_ids,
-                        mvp_mode=True,
-                        arena_size=_arena_size,
-                        min_competitors=_min_comps,
-                        brand_cap=_brand_cap_mv,
-                    )
+                    with _quiet_st():
+                        df_snapshot, market_stats = phase2_category_market_mapping(
+                            category_id=int(seed_row.get("category_id", 0)),
+                            seed_product_title=str(seed_row.get("title", "")),
+                            seed_asin=str(seed_row.get("asin", "")),
+                            target_brand=brand,
+                            max_products=2000,
+                            leaf_category_id=seed_row.get("leaf_category_id"),
+                            category_tree_ids=_tree_ids,
+                            mvp_mode=True,
+                            arena_size=_arena_size,
+                            min_competitors=_min_comps,
+                            brand_cap=_brand_cap_mv,
+                        )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
                     st.write(f"Found {len(asins)} ASINs — building weekly panel…")
                     df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)

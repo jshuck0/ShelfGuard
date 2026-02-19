@@ -273,23 +273,24 @@ if use_golden:
                 st.write("Scanning category — pulling ~90 days of Keepa history…")
                 try:
                     from src.two_phase_discovery import phase2_category_market_mapping
-                    from apps.search_to_state_ui import ensure_weekly_panel
+                    from apps.search_to_state_ui import ensure_weekly_panel, _quiet_st
                     _sz = st.session_state.get("_mvp_arena_size", 300)
                     _mc = st.session_state.get("_mvp_min_comps", 150)
                     _bc = st.session_state.get("_mvp_brand_cap", 150)
-                    df_snapshot, market_stats = phase2_category_market_mapping(
-                        category_id=GOLDEN_CATEGORY_ID,
-                        seed_product_title=GOLDEN_PROJECT_NAME,
-                        seed_asin=GOLDEN_SEED_ASIN,
-                        target_brand=GOLDEN_BRAND,
-                        domain="US" if GOLDEN_DOMAIN == 1 else str(GOLDEN_DOMAIN),
-                        max_products=2000,
-                        leaf_category_id=GOLDEN_CATEGORY_ID,
-                        mvp_mode=True,
-                        arena_size=_sz,
-                        min_competitors=_mc,
-                        brand_cap=_bc,
-                    )
+                    with _quiet_st():
+                        df_snapshot, market_stats = phase2_category_market_mapping(
+                            category_id=GOLDEN_CATEGORY_ID,
+                            seed_product_title=GOLDEN_PROJECT_NAME,
+                            seed_asin=GOLDEN_SEED_ASIN,
+                            target_brand=GOLDEN_BRAND,
+                            domain="US" if GOLDEN_DOMAIN == 1 else str(GOLDEN_DOMAIN),
+                            max_products=2000,
+                            leaf_category_id=GOLDEN_CATEGORY_ID,
+                            mvp_mode=True,
+                            arena_size=_sz,
+                            min_competitors=_mc,
+                            brand_cap=_bc,
+                        )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
                     st.write(f"Found {len(asins)} ASINs — building weekly panel…")
                     df_new = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)

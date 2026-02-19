@@ -910,7 +910,7 @@ def build_baseline_signal(
     Explicit Baseline RegimeSignal for weeks when no other regime fires.
 
     Provides Driver 1 receipts (brand vs arena divergence card) and routes
-    to the "Baseline (No dominant market regime)" verdict path.
+    to the "Baseline (No dominant market environment)" verdict path.
     driver_type="Unknown" so _build_misattribution_verdict() uses the
     tracking/divergence branch rather than the Market-driven branch.
 
@@ -921,10 +921,32 @@ def build_baseline_signal(
         band_fn = lambda v, t: f"{v*100:+.1f}%"
 
     receipts: List[Receipt] = []
+    effective_confidence = data_confidence
 
     if arena_bsr_wow is not None:
+        arena_band = band_fn(arena_bsr_wow, "rank_change")
+        _is_significant = "significant" in arena_band.lower()
+
+        if _is_significant:
+            # Arena moved meaningfully but no regime fired — explain why
+            if arena_bsr_wow < 0:
+                r1_suffix = (
+                    "broad lift, not a defined market environment "
+                    "(no single-brand concentration, no discount divergence, no structural driver)"
+                )
+            else:
+                r1_suffix = (
+                    "broad decline, not a defined market environment "
+                    "(no single-brand concentration, no discount divergence, no structural driver)"
+                )
+            # Cap confidence at Med when arena move is significant but no regime fired
+            if effective_confidence == "High":
+                effective_confidence = "Med"
+        else:
+            r1_suffix = "no structural shift"
+
         receipts.append(Receipt(
-            label=f"Arena median BSR {band_fn(arena_bsr_wow, 'rank_change')} WoW — no structural shift",
+            label=f"Arena median BSR {arena_band} WoW — {r1_suffix}",
             metric="arena_bsr_wow",
             value=arena_bsr_wow,
             baseline=0.0,
@@ -934,12 +956,21 @@ def build_baseline_signal(
     if your_bsr_wow is not None:
         delta = (your_bsr_wow - arena_bsr_wow) if arena_bsr_wow is not None else your_bsr_wow
         if arena_bsr_wow is not None:
+            # Band the numeric delta into a clean relative statement
+            # For BSR: negative delta = brand improving faster than arena (outperforming)
+            abs_delta = abs(delta)
+            if abs_delta < 0.02:        # < 2 pp difference
+                _relative = "Brand tracking market"
+            elif delta < 0:             # brand BSR improving more than arena
+                _relative = "Brand outperforming market"
+            else:                       # brand BSR worsening relative to arena
+                _relative = "Brand lagging market"
             r2_label = (
-                f"Brand BSR {band_fn(your_bsr_wow, 'rank_change')} WoW vs arena "
-                f"{band_fn(arena_bsr_wow, 'rank_change')} — delta {band_fn(delta, 'rank_change')}"
+                f"{_relative} (brand {your_bsr_wow*100:+.1f}% WoW, "
+                f"arena {arena_bsr_wow*100:+.1f}% WoW, delta {delta*100:+.1f} pp)"
             )
         else:
-            r2_label = f"Brand BSR {band_fn(your_bsr_wow, 'rank_change')} WoW — no arena context"
+            r2_label = f"Brand visibility {your_bsr_wow*100:+.1f}% WoW — no arena context"
         receipts.append(Receipt(
             label=r2_label,
             metric="brand_vs_arena_delta",
@@ -950,7 +981,7 @@ def build_baseline_signal(
 
     while len(receipts) < 2:
         receipts.append(Receipt(
-            label="No regime-level signals above confidence threshold",
+            label="No market-environment-level signals above confidence threshold",
             metric="",
             value=0.0,
             baseline=0.0,
@@ -960,8 +991,8 @@ def build_baseline_signal(
     return RegimeSignal(
         regime="baseline",
         active=True,
-        confidence=data_confidence,   # inherits data confidence — not a forced "Low"
-        verdict="Baseline (No dominant market regime)",
+        confidence=effective_confidence,
+        verdict="Baseline (No dominant market environment)",
         driver_type="Unknown",
         receipts=receipts[:2],
     )

@@ -174,12 +174,12 @@ def score_last_prediction(
         # Last week predicted no regime — check if that holds
         any_active = any(s.active for s in current_regime_signals.values() if hasattr(s, "active"))
         regime_outcome = "✅" if not any_active else "❌"
-        regime_reason = "No regime active (correct)" if not any_active else "Regime appeared (incorrect)"
+        regime_reason = "No environment active (correct)" if not any_active else "Environment appeared (incorrect)"
     else:
         matching_signal = current_regime_signals.get(last_pred.regime_call)
         if matching_signal is None:
             regime_outcome = "⏳"
-            regime_reason = "Regime not evaluated this run"
+            regime_reason = "Environment not evaluated this run"
         elif matching_signal.active:
             regime_outcome = "✅"
             regime_reason = f"{last_pred.regime_call} still active"
@@ -204,7 +204,7 @@ def score_last_prediction(
     else:
         overall = "❌"
 
-    reason = f"Regime: {regime_outcome} ({regime_reason}). Driver: {driver_outcome} ({driver_reason})."
+    reason = f"Environment: {regime_outcome} ({regime_reason}). Driver: {driver_outcome} ({driver_reason})."
 
     return ScoredCall(
         prediction=last_pred,
@@ -234,7 +234,7 @@ def get_scoreboard_lines(
 
     return [
         f"**Week of {last_pred.brief_date}**",
-        f"- Regime call: `{last_pred.regime_call}` → {scored.outcome}",
+        f"- Environment call: `{last_pred.regime_call}` → {scored.outcome}",
         f"- Driver call: `{last_pred.primary_driver}` → {'✅' if last_pred.primary_driver == current_misattribution else '❌'}",
         f"- Reason: {scored.outcome_reason}",
     ]

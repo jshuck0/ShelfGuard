@@ -128,7 +128,7 @@ class TestBuildBaselineSignal:
     def test_verdict_text(self):
         from features.regimes import build_baseline_signal
         sig = build_baseline_signal(0.05, 0.03)
-        assert sig.verdict == "Baseline (No dominant market regime)"
+        assert sig.verdict == "Baseline (No dominant market environment)"
 
     def test_arena_receipt_when_both_provided(self):
         from features.regimes import build_baseline_signal
@@ -177,9 +177,9 @@ class TestBaselineVerdict:
         )
 
     def test_tracking_returns_baseline_verdict(self):
-        """Brand tracking arena (delta ≤ 7pp) → 'Baseline (No dominant market regime)'."""
+        """Brand tracking arena (delta ≤ 7pp) → 'Baseline (No dominant market environment)'."""
         verdict, conf, _ = self._run_verdict(your_bsr=0.05, arena_bsr=0.03)
-        assert verdict == "Baseline (No dominant market regime)"
+        assert verdict == "Baseline (No dominant market environment)"
 
     def test_tracking_confidence_uses_data_confidence(self):
         """Baseline verdict_conf now uses conf_score.label, not hardcoded 'Low'.
@@ -751,7 +751,7 @@ class TestRound6:
     # Baseline headline ────────────────────────────────────────────────────────
 
     def test_headline_baseline_language(self):
-        """baseline regime → headline contains 'No dominant market regime'."""
+        """baseline regime → headline contains 'No dominant market environment'."""
         from report.weekly_brief import _build_headline
         from features.regimes import RegimeSignal
         from scoring.confidence import ConfidenceScore
@@ -762,7 +762,7 @@ class TestRound6:
         conf = ConfidenceScore(label="High", score=2, data_quality="Good",
                                arena_coverage=0.8, reasons=[])
         headline = _build_headline("CeraVe", -0.01, -0.02, [baseline], conf)
-        assert "No dominant market regime" in headline
+        assert "No dominant market environment" in headline
         assert "CeraVe" in headline
         assert "High" in headline
 

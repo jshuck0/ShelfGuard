@@ -291,6 +291,12 @@ def build_brief(
     _pressure_ptypes = [d.regime for d in pressure_buckets] if pressure_buckets else None
     _opportunity_concern = opportunity_bucket.regime if opportunity_bucket else None
 
+    # Align plan_stance when cross-segment rotation is recommended
+    if (plan_stance == "Hold"
+            and _pressure_ptypes and _opportunity_concern
+            and _opportunity_concern not in (_pressure_ptypes or [])):
+        plan_stance = "Hold; rotate within budget"
+
     # ── Section 5.5: Actions block ────────────────────────────────────────────
     actions_block = _build_actions_block(
         firing, asin_metrics, your_brand, plan_stance, runs_ads,
@@ -352,10 +358,10 @@ def build_brief(
 
 
 def _build_flags_line(asin_metrics: dict, your_brand: str) -> str:
-    """Build a 'Flags:' header line summarising data-backed signals across brand Core SKUs.
+    """Build friendly snapshot lines summarising brand positioning and promo activity.
 
-    Only includes flags backed by actual data. Returns "" if nothing to flag.
-    Example: "Flags: price above tier (7/9 core), high return-rate (2 SKUs), BB competition elevated (top non-Amazon 32%)."
+    Returns multi-line string with Positioning / Promo activity / Quality / Buy Box
+    lines. Only includes lines backed by actual data. Returns "" if nothing to show.
     """
     brand_core = [
         m for m in asin_metrics.values()
@@ -365,19 +371,43 @@ def _build_flags_line(asin_metrics: dict, your_brand: str) -> str:
         return ""
 
     n_core = len(brand_core)
-    flags = []
+    lines: list[str] = []
 
-    # Flag 1: price above tier
-    above_tier = [m for m in brand_core if m.price_vs_tier >= 0.05]
-    if above_tier:
-        flags.append(f"price above tier ({len(above_tier)}/{n_core} core)")
+    # ── Positioning ──────────────────────────────────────────────────────────
+    above = [m for m in brand_core if m.price_vs_tier >= 0.05]
+    below = [m for m in brand_core if m.price_vs_tier <= -0.05]
+    if len(above) >= n_core * 0.5:
+        lines.append(f"**Positioning:** Premium vs category benchmark ({len(above)}/{n_core} core).")
+    elif len(below) >= n_core * 0.5:
+        lines.append(f"**Positioning:** Value vs category benchmark ({len(below)}/{n_core} core).")
+    else:
+        lines.append(f"**Positioning:** In line with category benchmark ({n_core} core SKUs).")
 
-    # Flag 2: high return rate
+    # ── Promo activity ───────────────────────────────────────────────────────
+    any_disc = [m for m in brand_core if m.discount_persistence > 0]
+    heavy_disc = [m for m in brand_core if m.discount_persistence >= 5 / 7]
+    if heavy_disc:
+        lines.append(
+            f"**Promo activity:** Heavy — {len(heavy_disc)} core "
+            f"SKU{'s' if len(heavy_disc) != 1 else ''} discounted most of this week."
+        )
+    elif any_disc:
+        lines.append(
+            f"**Promo activity:** Limited — {len(any_disc)} core "
+            f"SKU{'s' if len(any_disc) != 1 else ''} discounted this week."
+        )
+    else:
+        lines.append("**Promo activity:** None — no core SKUs discounted this week.")
+
+    # ── Quality / return risk (only if flagged) ──────────────────────────────
     high_rr = [m for m in brand_core if getattr(m, "return_rate", None) == 2]
     if high_rr:
-        flags.append(f"high return-rate ({len(high_rr)} SKU{'s' if len(high_rr) != 1 else ''})")
+        lines.append(
+            f"**Quality flag:** High return rate on {len(high_rr)} "
+            f"SKU{'s' if len(high_rr) != 1 else ''} — may impact ad efficiency."
+        )
 
-    # Flag 3: BB competition elevated (only when has_buybox_stats)
+    # ── Buy Box competition (only if data present and elevated) ──────────────
     bb_elevated = [
         m for m in brand_core
         if getattr(m, "has_buybox_stats", False)
@@ -386,21 +416,22 @@ def _build_flags_line(asin_metrics: dict, your_brand: str) -> str:
     ]
     if bb_elevated:
         top_bb = max(m.top_comp_bb_share_30 for m in bb_elevated)
-        flags.append(f"BB competition elevated (top non-Amazon {top_bb*100:.0f}%)")
+        lines.append(
+            f"**Buy Box:** Competition elevated — top non-Amazon seller at "
+            f"{top_bb*100:.0f}% win rate."
+        )
 
-    # Flag 4: ad waste risk High
-    high_ad_risk = [m for m in brand_core if m.ad_waste_risk == "High"]
-    if high_ad_risk:
-        flags.append(f"ad waste risk High ({len(high_ad_risk)} SKU{'s' if len(high_ad_risk) != 1 else ''})")
+    # ── Ad waste risk (only if High) ─────────────────────────────────────────
+    high_ad = [m for m in brand_core if m.ad_waste_risk == "High"]
+    if high_ad:
+        lines.append(
+            f"**Ad efficiency risk:** {len(high_ad)} core "
+            f"SKU{'s' if len(high_ad) != 1 else ''} flagged High — review before scaling spend."
+        )
 
-    # Flag 5: heavy discounting
-    heavy_disc = [m for m in brand_core if m.discount_persistence >= 5 / 7]
-    if heavy_disc:
-        flags.append(f"heavily discounted ({len(heavy_disc)}/{n_core} core ≥5/7 d/7)")
-
-    if not flags:
+    if not lines:
         return ""
-    return "**Flags:** " + ", ".join(flags) + "."
+    return "\n".join(lines)
 
 
 def _format_week_label(df: pd.DataFrame) -> str:
@@ -490,6 +521,7 @@ def _ptype_pressure_arena_stats(group_metrics: list) -> dict:
     for pt, s in stats.items():
         n = s["n"] or 1
         result[pt] = {
+            "asin_count": s["n"],
             "pct_losing": s["losing"] / n,
             "pct_discounted": s["disc"] / n,
             "median_price_vs_tier": s["price_sum"] / n,
@@ -505,7 +537,7 @@ def _build_headline(brand, your_bsr, arena_bsr, firing, conf,
         # Baseline regime: richer, marketer-facing language
         if top.regime == "baseline":
             return (
-                f"{brand}: Baseline / No dominant market regime [{conf.label} confidence] — "
+                f"{brand}: Baseline / No dominant market environment [{conf.label} confidence] — "
                 "Market not forcing a directional move; act only on clear SKU-level pressure."
             )
         # Append top brand product_type bucket context when buckets available
@@ -571,14 +603,20 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
                     f"{round(top_comp.pct_discounted * 7)}/7 discounted d/7"
                 )
 
-        # Bullet 3 — Brand vs arena delta
+        # Bullet 3 — Brand vs arena delta (numeric-first)
         if your_bsr is not None and arena_bsr is not None:
-            your_dir = band_fn(your_bsr, "rank_change")
-            arena_dir = band_fn(arena_bsr, "rank_change")
-            bullets.append(f"**Brand vs arena:** your visibility {your_dir}, arena {arena_dir}")
+            _delta = your_bsr - arena_bsr
+            if abs(_delta) < 0.02:
+                _rel = "Brand tracking market"
+            elif _delta < 0:  # brand improving faster
+                _rel = "Brand outperforming market"
+            else:
+                _rel = "Brand lagging market"
+            bullets.append(
+                f"**{_rel}** (brand {your_bsr*100:+.1f}%, arena {arena_bsr*100:+.1f}%)"
+            )
         elif your_bsr is not None:
-            your_dir = band_fn(your_bsr, "rank_change")
-            bullets.append(f"**Brand visibility:** {your_dir} WoW")
+            bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
 
         return bullets[:3]
 
@@ -593,16 +631,22 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     # Bullet 2 — Price/promo regime (only when a regime actually fired)
     promo_regime = next((s for s in firing if s.regime in ("promo_war", "tier_compression")), None)
     if promo_regime:
-        bullets.append(f"**Price/Promo regime:** {promo_regime.verdict}")
+        bullets.append(f"**Price/Promo environment:** {promo_regime.verdict}")
 
-    # Bullet 3 — Brand vs arena delta
+    # Bullet 3 — Brand vs arena delta (numeric-first)
     if your_bsr is not None and arena_bsr is not None:
-        your_dir = band_fn(your_bsr, "rank_change")
-        arena_dir = band_fn(arena_bsr, "rank_change")
-        bullets.append(f"**Brand vs arena:** your visibility {your_dir}, arena {arena_dir}")
+        _delta = your_bsr - arena_bsr
+        if abs(_delta) < 0.02:
+            _rel = "Brand tracking market"
+        elif _delta < 0:
+            _rel = "Brand outperforming market"
+        else:
+            _rel = "Brand lagging market"
+        bullets.append(
+            f"**{_rel}** (brand {your_bsr*100:+.1f}%, arena {arena_bsr*100:+.1f}%)"
+        )
     elif your_bsr is not None:
-        your_dir = band_fn(your_bsr, "rank_change")
-        bullets.append(f"**Brand visibility:** {your_dir} WoW")
+        bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
 
     return bullets[:3]
 
@@ -625,10 +669,15 @@ def _build_pressure_buckets(
     if not arena_stats:
         return []
 
+    MIN_BUCKET_ASINS = 5  # Thin buckets below this threshold are excluded from pressure headlines
+
     scored = []
     all_ptypes = {g.product_type for g in (group_metrics or []) if g.product_type != "other"}
     for pt in all_ptypes:
         s = arena_stats.get(pt, {})
+        # Skip thin buckets — insufficient sample to call "pressure"
+        if s.get("asin_count", 0) < MIN_BUCKET_ASINS:
+            continue
         score = _pressure_score(
             s.get("pct_losing", 0), s.get("pct_discounted", 0), s.get("median_price_vs_tier", 0)
         )
@@ -652,12 +701,12 @@ def _build_pressure_buckets(
         if _is_pressured:
             claim = (
                 f"**{ptype_name}** under pressure: {pct_losing_pct}% losing visibility, "
-                f"{pct_disc_pct}% discounted d/7, vs tier {price_pos}"
+                f"{pct_disc_pct}% discounted d/7, vs category median {price_pos}"
             )
         else:
             claim = (
                 f"**{ptype_name}** — monitor: {pct_losing_pct}% losing visibility, "
-                f"{pct_disc_pct}% discounted d/7, vs tier {price_pos}"
+                f"{pct_disc_pct}% discounted d/7, vs category median {price_pos}"
             )
 
         brand_groups_pt = [g for g in (group_metrics or [])
@@ -667,7 +716,7 @@ def _build_pressure_buckets(
             r1 = (
                 f"Your brand in {ptype_name}: {bg.momentum_label} trend, "
                 f"{round(bg.pct_discounted * 7)}/7 discounted d/7, "
-                f"vs tier {band_fn(bg.median_price_vs_tier, 'price_vs_tier')}"
+                f"vs category median {band_fn(bg.median_price_vs_tier, 'price_vs_tier')}"
             )
         else:
             r1 = f"Your brand has no ASINs in {ptype_name} — no brand-side context available"
@@ -683,7 +732,7 @@ def _build_pressure_buckets(
             r2 = (
                 f"{cg.brand} ({ptype_name}): {cg.momentum_label}, "
                 f"{round(cg.pct_discounted * 7)}/7 discounted d/7, "
-                f"vs tier {band_fn(cg.median_price_vs_tier, 'price_vs_tier')}"
+                f"vs category median {band_fn(cg.median_price_vs_tier, 'price_vs_tier')}"
             )
         else:
             r2 = f"{ptype_name}: No single competitor dominating — distributed pressure"
@@ -697,6 +746,13 @@ def _build_pressure_buckets(
             "Pause+Diagnose": "Pause incremental spend and diagnose root cause before re-investing.",
         }
         so_what = _SO_WHAT_MAP.get(brand_stance, "Hold budget — insufficient signal to act.")
+
+        # Override: under pressure + Hold is contradictory
+        if _is_pressured and brand_stance == "Hold":
+            if brand_groups_pt:
+                so_what = "Defend — investigate price/listing exposure in this bucket."
+            else:
+                so_what = "Monitor only — no brand exposure in this bucket."
 
         drivers.append(BriefDriver(claim=claim, receipts=[r1, r2], confidence="Med", regime=pt, so_what=so_what))
 
@@ -738,6 +794,9 @@ def _build_opportunity_bucket(
             continue
 
         total_comp_asins = max(sum(g.asin_count for g in comp_groups), 1)
+        # Gate: need at least 5 competitor ASINs for a defensible opportunity call
+        if total_comp_asins < 5:
+            continue
         comp_disc = sum(g.pct_discounted * g.asin_count for g in comp_groups) / total_comp_asins
         comp_momenta = [g.momentum_label for g in comp_groups]
         arena_momentum = max(set(comp_momenta), key=comp_momenta.count)
@@ -760,9 +819,18 @@ def _build_opportunity_bucket(
     concern_name = concern.replace("_", " ").title()
 
     if brand_g.momentum_label in ("gaining", "mixed"):
+        # Soften percentage language based on sample size
+        _pct = round(comp_disc * 100)
+        if total_comp_asins >= 20:
+            _disc_label = f"{_pct}% of competitors are discounting"
+        elif total_comp_asins >= 10:
+            _disc_label = f"~{_pct}% of competitors are discounting"
+        else:
+            # total_comp_asins >= 5 (gated above)
+            _disc_label = "most competitors are discounting" if _pct >= 60 else "many competitors are discounting"
         claim = (
             f"**{concern_name} opportunity:** Your brand is {brand_g.momentum_label} "
-            f"while {round(comp_disc * 100)}% of competitors are discounting — "
+            f"while {_disc_label} — "
             "hold position and defend branded placements."
         )
     else:
@@ -816,7 +884,7 @@ def _build_drivers(firing, all_signals, conf_score, your_bsr, arena_bsr, band_fn
     if not drivers:
         if arena_bsr is not None:
             drivers.append(BriefDriver(
-                claim=f"Arena-wide visibility movement ({band_fn(arena_bsr, 'rank_change')} median WoW) — no specific regime detected",
+                claim=f"Arena-wide visibility movement ({band_fn(arena_bsr, 'rank_change')} median WoW) — no specific market environment detected",
                 receipts=["Arena median visibility shift vs prior week", "No single brand driving movement"],
                 confidence=conf_score.label,
             ))
@@ -853,17 +921,17 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
             and (your_bsr - arena_bsr) <= 0.07
         )
         if _tracking:
-            verdict = "Baseline (No dominant market regime)"
+            verdict = "Baseline (No dominant market environment)"
             verdict_conf = conf_score.label if conf_score else "Med"  # data confidence, not forced "Low"
             receipts = [
-                "Arena-wide visibility stable WoW — no active regime detected",
+                "Arena-wide visibility stable WoW — no active market environment detected",
                 "Brand tracking arena: performance consistent with steady-state",
             ]
         else:
             verdict = "Unknown"
             verdict_conf = "Low"
             receipts = [
-                "No market-level regime detected with sufficient confidence",
+                "No market-level environment detected with sufficient confidence",
                 "Cannot rule out brand-level factors (listing, stock, content) without internal data",
             ]
 
@@ -910,7 +978,7 @@ def _build_implications(
             plan_stance = "Pause+Diagnose"
         else:
             bullets.append(
-                "**Exec narrative:** No active market regime detected — arena stable, "
+                "**Exec narrative:** No active market environment detected — arena stable, "
                 "brand in steady state. Escalate only if brand diverges from arena movement."
             )
             plan_stance = "Hold"
@@ -944,7 +1012,7 @@ def _build_implications(
             bullets.append(
                 f"**If you are supporting these ASINs with ads**, avoid scaling incremental spend on "
                 f"High Ad Waste Risk items ({asin_detail}) this week; reallocate toward price-competitive "
-                f"core SKUs. Keep spend only if CVR and in-stock are stable (operator check)."
+                f"core SKUs. Keep spend only if efficiency stable in ads console (operator check)."
             )
             plan_stance = "Reallocate"
         elif not runs_ads:
@@ -956,7 +1024,7 @@ def _build_implications(
     promo = next((s for s in firing if s.regime == "promo_war"), None)
     comp = next((s for s in firing if s.regime == "competitor_compounding"), None)
     if promo:
-        measurement_focus = "Validate whether your CVR has held despite price pressure in the arena"
+        measurement_focus = "Gate: In ads console, confirm efficiency stable despite arena price pressure."
     elif comp:
         measurement_focus = "Track the compounding competitor's review velocity and stock status over next 2 weeks"
     else:
@@ -1025,7 +1093,7 @@ def _build_requests(firing, verdict, your_brand, asin_metrics,
     elif any(s.regime == "tier_compression" for s in firing):
         coordination = (
             "Pricing team: Review whether current list prices remain defensible against "
-            "sustained tier compression — flag any ASINs needing adjustment."
+            "sustained category median price compression — flag any ASINs needing adjustment."
         )
     else:
         coordination = (
@@ -1056,7 +1124,14 @@ def _build_actions_block(
     is_baseline = any(s.regime == "baseline" for s in firing)
 
     # 1. Budget posture
-    if plan_stance == "Hold" or is_baseline:
+    _has_rotation = bool(pressure_ptypes and opportunity_ptype
+                         and opportunity_ptype not in (pressure_ptypes or []))
+    if (plan_stance in ("Hold", "Hold; rotate within budget") or is_baseline) and _has_rotation:
+        lines.append(
+            "**Budget posture:** Hold total budget; rotate within budget "
+            "toward strongest positions."
+        )
+    elif plan_stance in ("Hold", "Hold; rotate within budget") or is_baseline:
         lines.append(
             "**Budget posture:** Hold total budget this week "
             "(Baseline market — no structural shift detected)."
@@ -1167,7 +1242,7 @@ def _build_watch_triggers(
         top = firing[0]
         if top.regime == "tier_compression":
             triggers.append(
-                "If tier median price falls another 5%+ next week, "
+                "If category median price falls another 5%+ next week, "
                 "treat as structural shift — reassess positioning."
             )
         elif top.regime == "promo_war":
@@ -1192,7 +1267,7 @@ def _build_watch_triggers(
             )
         else:
             triggers.append(
-                "If this regime persists for a third consecutive week, "
+                "If this market environment persists for a third consecutive week, "
                 "escalate from monitoring to active response."
             )
 
@@ -1214,12 +1289,12 @@ def _build_watch_triggers(
                 if ptypes:
                     bucket_note = f" [{', '.join(p.replace('_', ' ').title() for p in ptypes[:2])}]"
             triggers.append(
-                f"{len(pause_skus)} Core SKU(s) above tier + losing visibility{bucket_note} ({skus}) — "
+                f"{len(pause_skus)} Core SKU(s) above category median + losing visibility{bucket_note} ({skus}) — "
                 "confirm in-stock and listing health before next week."
             )
         else:
             triggers.append(
-                "If any Core SKU flips to 'above tier + losing visibility' next week, "
+                "If any Core SKU flips to 'above category median + losing visibility' next week, "
                 "treat as SKU-level issue: check Buy Box, OOS, and listing status."
             )
     elif your_bsr is not None and your_bsr > 0.10:
@@ -1250,11 +1325,11 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
         core_brand = [m for m in asin_metrics.values()
                       if m.role == "Core" and m.brand.lower() == your_brand.lower()]
         n_above = sum(1 for m in core_brand if m.price_vs_tier > 0.05) if core_brand else 0
-        r1 = (f"{n_above}/{len(core_brand)} brand Core SKUs priced above tier median"
-              if core_brand else "Brand Core SKUs priced above arena tier median")
-        r2 = f"Brand vs tier gap: {tier_label} — exceeds 5% monitoring threshold"
+        r1 = (f"{n_above}/{len(core_brand)} brand Core SKUs priced above category median"
+              if core_brand else "Brand Core SKUs priced above category median")
+        r2 = f"Brand vs category median gap: {tier_label} — exceeds 5% monitoring threshold"
         signals.append(SecondarySignal(
-            claim=f"Price pressure: brand Core SKUs priced {tier_label} vs arena median (Med confidence)",
+            claim=f"Price pressure: brand Core SKUs priced {tier_label} vs category median (Med confidence)",
             receipts=[r1, r2],
         ))
 
@@ -1270,7 +1345,7 @@ def _build_secondary_signals(price_vs_tier, asin_metrics, your_brand, firing, ba
                            f"discounted ≥4/7 days (Med confidence)"),
                     receipts=[
                         f"{discounted}/{len(core_asins)} arena Core SKUs discounted ≥4 of 7 days last week",
-                        "Promo war regime not yet active — monitoring for escalation next week",
+                        "Promo war environment not yet active — monitoring for escalation next week",
                     ],
                 ))
 
@@ -1408,15 +1483,43 @@ def generate_brief_markdown(
     except ImportError:
         band_value = lambda v, t: f"{v*100:+.1f}%"
 
+    # ── Market Environment legend (reference definitions) ──────────────────────
+    _MARKET_ENV_LEGEND = [
+        ("Baseline",
+         "Stable market. No concentrated promo, pricing, or visibility shifts.\n"
+         "  Default: hold budget, act at SKU level."),
+        ("Promo Pressure",
+         "Discounting driving visibility shifts across meaningful share of SKUs.\n"
+         "  Default: defend heroes, be cautious scaling."),
+        ("Price Pressure",
+         "Sustained undercutting vs category median price without broad discounting.\n"
+         "  Default: pricing/listing review before spend."),
+        ("Disruption",
+         "Sudden visibility reallocation (launch, viral SKU, platform shift).\n"
+         "  Default: investigate quickly, short decision cycles."),
+        ("Rotation",
+         "Movement concentrated in specific sub-categories or actives, not category-wide.\n"
+         "  Default: rotate within budget."),
+    ]
+
     lines = []
     conf_label = brief.confidence_score.label if brief.confidence_score else "Med"
     data_q = brief.data_quality
 
+    # Derive category label from module_id (e.g. "skincare" → "Skincare")
+    _category_label = brief.module_id.replace("_", " ").title() if brief.module_id != "generic" else ""
+
     # ── Header ────────────────────────────────────────────────────────────────
     _brand_ct = sum(1 for m in asin_metrics.values() if m.brand.lower() == your_brand.lower())
     _comp_ct = len(asin_metrics) - _brand_ct
+    if _category_label:
+        _title = f"# {your_brand} — {_category_label} Market Brief"
+    else:
+        _title = f"# {your_brand} — Market Brief"
     lines += [
-        f"# {brief.arena_name} — Weekly Brief",
+        _title,
+        "_Weekly market context and competitive signals_",
+        "",
         f"**{brief.week_label}** | Generated {brief.generated_at.strftime('%Y-%m-%d %H:%M')} | "
         f"Data confidence: **{conf_label}** | Data quality: {data_q} | Fidelity: {brief.data_fidelity}",
         f"Arena: **{_brand_ct}** brand + **{_comp_ct}** competitor ASINs "
@@ -1426,14 +1529,15 @@ def generate_brief_markdown(
         "",
     ]
 
-    # ── Flags (data-backed only) ─────────────────────────────────────────────
+    # ── Snapshot lines (positioning, promo, quality, etc.) ──────────────────
     if brief.flags_line:
-        lines += [brief.flags_line, ""]
+        for _fl in brief.flags_line.split("\n"):
+            lines.append(_fl)
+        lines.append("")
 
-    # ── Section 1: Regime ────────────────────────────────────────────────────
-    # Merged view: headline → why (drivers as bullets) → misattribution → secondary signals
+    # ── Section 1: Market Environment ────────────────────────────────────────
     lines += [
-        "## 1. Regime",
+        "## 1. Market Environment",
         f"> {brief.headline}",
         "",
     ]
@@ -1448,7 +1552,7 @@ def generate_brief_markdown(
 
     # Misattribution inline
     lines.append(
-        f"**Misattribution verdict:** {brief.misattribution_verdict} "
+        f"**Attribution:** {brief.misattribution_verdict} "
         f"[{brief.misattribution_confidence} confidence]"
     )
     for r in brief.misattribution_receipts:
@@ -1464,15 +1568,16 @@ def generate_brief_markdown(
                 lines.append(f"  - {r}")
         lines.append("")
 
-    # ── Section 2: What Changed ───────────────────────────────────────────────
-    lines += ["## 2. What Changed", ""]
-    for b in brief.what_changed:
-        lines.append(f"- {b}")
+    # Legend
+    lines.append("<details><summary>Market Environment definitions</summary>")
     lines.append("")
+    for env_name, env_def in _MARKET_ENV_LEGEND:
+        lines.append(f"- **{env_name}:** {env_def}")
+    lines += ["", "</details>", ""]
 
-    # ── Section 2.5: Pressure Buckets ────────────────────────────────────────
+    # ── Section 2: Sub-category Signals ──────────────────────────────────────
     if brief.pressure_buckets:
-        lines += ["### Market Pressure by Bucket", ""]
+        lines += ["## 2. Sub-category Signals", ""]
         for driver in brief.pressure_buckets:
             lines.append(f"- {driver.claim}")
             for r in driver.receipts[:2]:
@@ -1480,20 +1585,33 @@ def generate_brief_markdown(
             if driver.so_what:
                 lines.append(f"  - **So what?** {driver.so_what}")
         lines.append("")
+    else:
+        lines += ["## 2. Sub-category Signals", ""]
+        for b in brief.what_changed:
+            lines.append(f"- {b}")
+        lines.append("")
 
-    # ── Section 2.6: Opportunity Bucket ──────────────────────────────────────
+    # ── Section 3: Active Signals ────────────────────────────────────────────
     if brief.opportunity_bucket:
         ob = brief.opportunity_bucket
-        lines += ["### Opportunity Signal", ""]
+        lines += ["## 3. Active Signals", ""]
         lines.append(f"- {ob.claim}")
         for r in ob.receipts[:2]:
             lines.append(f"  - {r}")
         if ob.so_what:
             lines.append(f"  - **So what?** {ob.so_what}")
         lines.append("")
+    elif brief.concern_summary:
+        lines += ["## 3. Active Signals", ""]
+        lines.append("- No actionable active/ingredient-level signal this week.")
+        lines.append("")
 
-    # ── Section 3: Implications ───────────────────────────────────────────────
-    lines += ["## 3. Implications", ""]
+    # ── Section 4: Key SKUs ──────────────────────────────────────────────────
+    # (rendered below with per-ASIN detail)
+
+    # ── Section 5: Actions ───────────────────────────────────────────────────
+    lines += ["## 5. Actions", ""]
+    # Implications as context
     for b in brief.implications:
         lines.append(f"- {b}")
     lines += [
@@ -1501,16 +1619,13 @@ def generate_brief_markdown(
         f"**Plan stance:** {brief.plan_stance}",
         "",
     ]
-
-    # ── Section 3.5: Actions (If you run Sponsored Ads) ──────────────────────
     if brief.actions_block:
-        lines += ["", "## Actions (if you run Sponsored Ads)", ""]
         for item in brief.actions_block:
             lines.append(f"- {item}")
         lines.append("")
 
-    # ── Section 4: Requests ───────────────────────────────────────────────────
-    lines += ["## 4. Requests", "", "**Validation asks:**", ""]
+    # Requests inline under Actions
+    lines += ["**Validation asks:**", ""]
     for i, ask in enumerate(brief.validation_asks, 1):
         lines.append(f"{i}. {ask}")
     lines += [
@@ -1519,14 +1634,14 @@ def generate_brief_markdown(
         "",
     ]
 
-    # ── Section 5: What to Watch ──────────────────────────────────────────────
-    lines += ["## 5. What to Watch", ""]
+    # ── Section 6: What to Watch ─────────────────────────────────────────────
+    lines += ["## 6. What to Watch", ""]
     for trigger in brief.watch_triggers:
         lines.append(f"- {trigger}")
     lines.append("")
 
-    # ── Section 6: Scoreboard ─────────────────────────────────────────────────
-    lines += ["## 6. Scoreboard (Last Week's Calls)", ""]
+    # ── Section 7: Recommended Set (Scoreboard) ──────────────────────────────
+    lines += ["## 7. Recommended Set", ""]
     if brief.scoreboard_lines:
         for line in brief.scoreboard_lines:
             lines.append(f"- {line}")
@@ -1534,12 +1649,12 @@ def generate_brief_markdown(
         lines.append("- *(No prior week calls to score — first run)*")
     lines.append("")
 
-    # ── Per-ASIN Sections ─────────────────────────────────────────────────────
+    # ── Section 4: Key SKUs ──────────────────────────────────────────────────
     if include_per_asin and asin_metrics:
-        lines += ["---", "", "## Per-ASIN Detail", ""]
+        lines += ["---", "", "## 4. Key SKUs", ""]
 
         # Layer A: Ads-relevant receipts (grouped by pressure/opportunity bucket when available)
-        lines += ["### Layer A: Ads-relevant receipts this week", ""]
+        lines += ["### Ads-relevant receipts this week", ""]
         _pressure_ptypes = [d.regime for d in brief.pressure_buckets] if brief.pressure_buckets else None
         _opp_concern = brief.opportunity_bucket.regime if brief.opportunity_bucket else None
         receipt_lines = grouped_receipts_list(
@@ -1552,14 +1667,34 @@ def generate_brief_markdown(
             lines.append(f"- {line}")
         lines.append("")
 
-        def _render_md_table(tdf):
+        def _render_md_table(tdf, top_n: int = 6):
+            """Render a DataFrame as a markdown table. Shows top_n rows by default,
+            rest behind a <details> 'Show all' toggle."""
             if tdf.empty:
                 return
             cols = list(tdf.columns)
-            lines.append("| " + " | ".join(str(c) for c in cols) + " |")
-            lines.append("| " + " | ".join("---" for _ in cols) + " |")
-            for row in tdf.itertuples(index=False, name=None):
+            header = "| " + " | ".join(str(c) for c in cols) + " |"
+            sep = "| " + " | ".join("---" for _ in cols) + " |"
+
+            all_rows = list(tdf.itertuples(index=False, name=None))
+            visible = all_rows[:top_n]
+            overflow = all_rows[top_n:]
+
+            lines.append(header)
+            lines.append(sep)
+            for row in visible:
                 lines.append("| " + " | ".join(str(v) if v is not None else "" for v in row) + " |")
+
+            if overflow:
+                lines.append("")
+                lines.append(f"<details><summary>Show all ({len(all_rows)} rows)</summary>")
+                lines.append("")
+                lines.append(header)
+                lines.append(sep)
+                for row in overflow:
+                    lines.append("| " + " | ".join(str(v) if v is not None else "" for v in row) + " |")
+                lines.append("")
+                lines.append("</details>")
 
         # Layer B: group view when buckets available, flat brand/competitor view otherwise
         if _has_buckets(brief.group_summary):
@@ -1616,7 +1751,7 @@ def generate_brief_markdown(
     lines += [
         "---",
         "",
-        "_Brief generated by Market Misattribution Shield. "
+        "_Brief generated by ShelfGuard. "
         "All estimates are market-observable proxies only. "
         "No ad spend, CVR, or Seller Central data was used._",
         "",

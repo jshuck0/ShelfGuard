@@ -36,10 +36,10 @@ _POSTURE_NEXT_ACTION = {
 }
 
 _VALIDATE_BY_STANCE = {
-    "Scale":          "Spend up + CVR stable?",
-    "Defend":         "BB stable? Impressions holding?",
-    "Hold":           "BB stable?",
-    "Pause+Diagnose": "OOS? Listing suppressed?",
+    "Scale":          "Gate: In ads console, confirm efficiency stable before adding budget.",
+    "Defend":         "Gate: In ads console, confirm BB + impression share holding.",
+    "Hold":           "Gate: In ads console, confirm no Buy Box loss.",
+    "Pause+Diagnose": "Gate: Check OOS and listing health before resuming spend.",
 }
 
 
@@ -62,18 +62,73 @@ def _safe_int(v) -> Optional[int]:
         return None
 
 
+def _discount_label(persistence: float) -> str:
+    """Convert discount_persistence (0.0–1.0) to a categorical label.
+
+    Rare (0–1 days), Periodic (2–4 days), Sustained (5–7 days).
+    """
+    days = round(persistence * 7)
+    if days <= 1:
+        return "Rare"
+    elif days <= 4:
+        return "Periodic"
+    else:
+        return "Sustained"
+
+
+def _derive_signal(m: "ASINMetrics") -> str:
+    """Derive a one-word Signal label from the ASIN metrics row.
+
+    Promo-heavy: Sustained discounting + gaining
+    Undercut risk: Below benchmark + gaining
+    Premium vulnerable: Above benchmark + losing
+    Stable: everything else
+    """
+    disc_label = _discount_label(m.discount_persistence)
+    is_above = m.price_vs_tier > 0.05
+    is_below = m.price_vs_tier < -0.05
+    gaining = m.has_momentum
+    losing = m.bsr_wow > 0.05  # BSR worsening > 5%
+
+    if disc_label == "Sustained" and gaining:
+        return "Promo-heavy"
+    if is_below and gaining:
+        return "Undercut risk"
+    if is_above and losing:
+        return "Premium vulnerable"
+    return "Stable"
+
+
+def _derive_group_signal(g: "ProductGroupMetrics") -> str:
+    """Derive a one-word Signal label for a group row."""
+    days = round(g.pct_discounted * 7)
+    disc_label = "Sustained" if days >= 5 else ("Periodic" if days >= 2 else "Rare")
+    is_above = g.median_price_vs_tier > 0.05
+    is_below = g.median_price_vs_tier < -0.05
+    gaining = g.momentum_label in ("gaining", "mixed")
+    losing = g.momentum_label == "losing"
+
+    if disc_label == "Sustained" and gaining:
+        return "Promo-heavy"
+    if is_below and gaining:
+        return "Undercut risk"
+    if is_above and losing:
+        return "Premium vulnerable"
+    return "Stable"
+
+
 def _band_price_vs_tier(ratio: float) -> str:
     """Convert price_vs_tier ratio to a readable position band."""
     if ratio < -0.15:
-        return "well below tier"
+        return "well below category median"
     elif ratio < -0.05:
-        return "below tier"
+        return "below category median"
     elif ratio <= 0.05:
         return "in line"
     elif ratio <= 0.15:
-        return "above tier"
+        return "above category median"
     else:
-        return "well above tier"
+        return "well above category median"
 
 
 @dataclass
@@ -85,7 +140,7 @@ class ASINMetrics:
     ad_waste_risk: str              # "High" | "Med" | "Low"
     discount_persistence: float     # days/7 (0.0–1.0) or None if unknown
     price_vs_tier: float            # (own_price - tier_median) / tier_median — used for calc
-    price_vs_tier_band: str         # "well below tier" … "well above tier" | "not comparable"
+    price_vs_tier_band: str         # "well below category median" … "well above category median" | "not comparable"
     tier_comparable: bool           # False if number_of_items is missing/extreme
     bsr_wow: float                  # BSR week-over-week % change
     has_momentum: bool              # True if rank improving
@@ -327,7 +382,7 @@ def compute_asin_metrics(
             ad_waste_reason = "High return rate (Keepa returnRate=2)"
         elif is_expensive and is_deteriorating:
             ad_waste_risk = "High"
-            ad_waste_reason = "Price above tier + BSR deteriorating"
+            ad_waste_reason = "Price above category median + BSR deteriorating"
         elif is_competitive and is_improving:
             ad_waste_risk = "Low"
             ad_waste_reason = "Competitive pricing + rank improving"
@@ -572,12 +627,17 @@ def to_group_table(
             "Brand": g.brand,
             "SKUs": g.asin_count,
             "Est. Share (proxy)": f"{g.rev_share_pct:.0%}",
-            "vs Tier": band_fn(g.median_price_vs_tier, "price_vs_tier"),
-            "Discounted d/7": f"{round(g.pct_discounted * 7)}/7",
+            "Price vs Category": band_fn(g.median_price_vs_tier, "price_vs_tier"),
+            "Discounting": _discount_label(g.pct_discounted),
             "Momentum": g.momentum_label.title(),
+            "Signal": _derive_group_signal(g),
             "If on ads": g.dominant_ads_stance,
+            "_share_sort": g.rev_share_pct,
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values("_share_sort", ascending=False).drop(columns=["_share_sort"])
 
 
 def to_compact_table(
@@ -589,8 +649,8 @@ def to_compact_table(
     """
     Build the compact per-ASIN table for the brief's Layer B.
 
-    Columns: ASIN (short), Brand, Role, Price vs Tier, Discount Persistence,
-             BSR WoW, Momentum, Tag
+    Columns: ASIN (short), Brand, Role, Price vs Category, Discounting,
+             Visibility WoW, Signal, Tag
 
     Args:
         asin_metrics: Output of compute_asin_metrics()
@@ -660,10 +720,10 @@ def to_compact_table(
             "ASIN": short_name,
             "Brand": m.brand,
             "Role": m.role,
-            "vs Tier": price_band,
-            "Discounted d/7": f"{round(m.discount_persistence * 7)}/7",
+            "Price vs Category": price_band,
+            "Discounting": _discount_label(m.discount_persistence),
             "Visibility WoW": bsr_band,
-            "Momentum": "Y" if m.has_momentum else "N",
+            "Signal": _derive_signal(m),
             "Tag": m.tag,
             "Posture": _POSTURE_DISPLAY.get(m.ads_stance, m.ads_stance),
             "Next action": _POSTURE_NEXT_ACTION.get(m.ads_stance, ""),

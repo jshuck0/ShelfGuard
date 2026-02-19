@@ -953,93 +953,49 @@ def _build_implications(
     your_bsr_wow: Optional[float] = None,
     arena_bsr_wow: Optional[float] = None,
 ) -> tuple:
-    bullets = []
+    """Derive plan_stance and internal_checks. No user-facing bullets —
+    the Plan block is built later from stance + budget posture + focus areas."""
     plan_stance = "Hold"
 
-    # Exec narrative
     market_driven = any(s.driver_type == "Market-driven" for s in firing)
     if market_driven:
-        bullets.append(
-            "**Exec narrative:** Performance movement is consistent with market-level dynamics. "
-            "Attribution to any single internal lever (ads, content, pricing) is uncertain."
-        )
         plan_stance = "Hold"
     else:
-        # Gate Pause+Diagnose on divergence from arena, not just "no regime"
-        # If brand is tracking the arena → Hold (market conditions are likely driver)
-        # If brand is underperforming the arena → Pause+Diagnose (internal factors likely)
         _is_divergent = (
             your_bsr_wow is not None
             and arena_bsr_wow is not None
-            and (your_bsr_wow - arena_bsr_wow) > 0.07   # brand ≥7pp worse than arena
+            and (your_bsr_wow - arena_bsr_wow) > 0.07
         ) or (
             your_bsr_wow is not None
             and arena_bsr_wow is None
-            and your_bsr_wow > 0.10                      # brand clearly deteriorating, no context
+            and your_bsr_wow > 0.10
         )
         if _is_divergent:
-            bullets.append(
-                "**Exec narrative:** Brand is underperforming the market — internal factors "
-                "(listing health, stock, pricing) merit investigation."
-            )
             plan_stance = "Pause+Diagnose"
         else:
-            bullets.append(
-                "**Exec narrative:** No active market environment detected — market stable, "
-                "brand in steady state. Escalate only if brand diverges from market movement."
-            )
             plan_stance = "Hold"
 
-    # Budget action
+    # Check for high-risk ASINs that warrant reallocation
     high_risk_asins = [
         m for m in asin_metrics.values()
         if m.ad_waste_risk == "High" and m.brand.lower() == your_brand.lower()
     ]
     is_baseline_week = any(s.regime == "baseline" for s in firing)
-    if is_baseline_week and runs_ads is not False:
-        # Baseline week: conservative posture, always show if ads in scope (True or None)
-        bullets.append(
-            "**If you're supporting these ASINs with ads:** Don't scale incremental spend "
-            "unless the SKU is price-competitive and momentum is positive. "
-            "Reallocate away from High Ad Waste Risk SKUs."
-        )
-        if high_risk_asins:
-            plan_stance = "Reallocate"
-    elif runs_ads is not None:
-        if runs_ads and high_risk_asins:
-            # Build ASIN list with reasons for explainability
-            _risk_parts = []
-            for a in high_risk_asins[:3]:
-                _reason = getattr(a, "ad_waste_reason", None)
-                _label = f"{a.asin[-6:]}"
-                if _reason:
-                    _label += f" — {_reason}"
-                _risk_parts.append(_label)
-            asin_detail = "; ".join(_risk_parts)
-            bullets.append(
-                f"**If you are supporting these ASINs with ads**, avoid scaling incremental spend on "
-                f"High Ad Waste Risk items ({asin_detail}) this week; reallocate toward price-competitive "
-                f"core SKUs. Keep spend only if efficiency stable in ads console (operator check)."
-            )
-            plan_stance = "Reallocate"
-        elif not runs_ads:
-            bullets.append(
-                "**Ad spend:** Not applicable (ads not in scope for this market)."
-            )
+    if high_risk_asins and (is_baseline_week or runs_ads):
+        plan_stance = "Reallocate"
 
-    # Measurement focus
+    # Internal checks — one line
     promo = next((s for s in firing if s.regime == "promo_war"), None)
     comp = next((s for s in firing if s.regime == "competitor_compounding"), None)
     if promo:
-        measurement_focus = "Gate: In ads console, confirm efficiency stable despite market price pressure."
+        internal_checks = "Confirm efficiency stable in ads console despite market price pressure."
     elif comp:
-        measurement_focus = "Track the compounding competitor's review velocity and stock status over next 2 weeks"
+        internal_checks = "Track the compounding competitor's review velocity and stock status over next 2 weeks."
     else:
-        measurement_focus = "Confirm core SKUs stayed in stock and held Buy Box this week (Y/N)."
+        internal_checks = "Confirm Buy Box and in-stock held on core SKUs."
 
-    bullets.append(f"**Internal checks:** {measurement_focus}")
-
-    return bullets[:3], plan_stance, measurement_focus
+    # Return empty bullets — plan block is rendered separately
+    return [], plan_stance, internal_checks
 
 
 def _build_requests(firing, verdict, your_brand, asin_metrics,
@@ -1659,26 +1615,38 @@ def generate_brief_markdown(
     # ── Section 4: Key SKUs ──────────────────────────────────────────────────
     # (rendered below with per-ASIN detail)
 
-    # ── Section 5: Actions ───────────────────────────────────────────────────
-    lines += ["## Actions", ""]
-    # Implications as context
-    for b in brief.implications:
-        lines.append(f"- {b}")
-    lines += [
-        "",
-        f"**Plan stance:** {brief.plan_stance}",
-        "",
-    ]
-    if brief.actions_block:
-        for item in brief.actions_block:
-            lines.append(f"- {item}")
-        lines.append("")
+    # ── Section 5: Plan (this week) ─────────────────────────────────────────
+    lines += ["## Plan (this week)", ""]
 
-    lines += [
-        "",
-        f"**Coordination ask:** {brief.coordination_ask}",
-        "",
-    ]
+    # Line 1: Plan stance
+    lines.append(f"**Plan stance:** {brief.plan_stance}")
+    lines.append("")
+
+    # Line 2: Budget posture — derived from actions_block first bullet if available
+    _budget_posture = "Hold total budget"
+    if brief.actions_block:
+        # Use the first actions_block item which is always budget posture
+        _budget_posture = brief.actions_block[0].replace("**Budget posture:** ", "")
+    lines.append(f"**Budget posture:** {_budget_posture}")
+    lines.append("")
+
+    # Line 3: Focus areas — from pressure buckets + opportunity/defend concerns
+    _focus_parts = []
+    if brief.pressure_buckets:
+        _pnames = [d.regime.replace("_", " ").title() for d in brief.pressure_buckets]
+        _focus_parts.append(", ".join(_pnames) + " (pressure)")
+    if brief.opportunity_bucket:
+        _oname = brief.opportunity_bucket.regime.replace("_", " ").title()
+        _focus_parts.append(f"{_oname} (defend)")
+    if _focus_parts:
+        lines.append(f"**Focus areas:** {'; '.join(_focus_parts)}")
+    else:
+        lines.append("**Focus areas:** No specific focus — market stable.")
+    lines.append("")
+
+    # Internal checks — one line
+    lines.append(f"**Internal checks:** {brief.measurement_focus}")
+    lines.append("")
 
     # ── Section 6: What to Watch ─────────────────────────────────────────────
     lines += ["## What to Watch", ""]

@@ -1461,9 +1461,6 @@ def grouped_receipts_list(
 
 # ─── MARKET ENVIRONMENT LEGEND ────────────────────────────────────────────────
 _MARKET_ENV_LEGEND = [
-    ("Visibility",
-     "Marketplace proxy derived from Best Seller Rank (BSR) movement. "
-     "Lower BSR = higher visibility."),
     ("Baseline",
      "Stable market. No concentrated promo, pricing, or visibility shifts. "
      "Default: hold budget, act at SKU level."),
@@ -1479,6 +1476,13 @@ _MARKET_ENV_LEGEND = [
     ("Rotation",
      "Movement concentrated in specific sub-categories or actives, not category-wide. "
      "Default: rotate within budget."),
+]
+
+# ─── KEY TERMS ────────────────────────────────────────────────────────────────
+_KEY_TERMS = [
+    ("Visibility",
+     "Marketplace proxy derived from Best Seller Rank (BSR) movement. "
+     "Lower BSR = higher visibility."),
 ]
 
 # ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
@@ -1878,6 +1882,11 @@ def render_brief_tab(
         for env_name, env_def in _MARKET_ENV_LEGEND:
             st.markdown(f"**{env_name}**")
             st.caption(env_def)
+        st.markdown("---")
+        st.markdown("#### Key Terms")
+        for term_name, term_def in _KEY_TERMS:
+            st.markdown(f"**{term_name}**")
+            st.caption(term_def)
         st.markdown("---")
 
     # ── Bucket drilldown (interactive) ───────────────────────────────────────

@@ -226,6 +226,11 @@ with col_logo:
 with col_title:
     st.markdown("# ShelfGuard Market Brief")
     st.caption("A weekly Amazon category brief that turns marketplace signals into a clear stance and SKU-level actions.")
+st.markdown(
+    "**Seller Central shows your store. ShelfGuard shows your market.** "
+    "Using Amazon marketplace signals like pricing, promos, visibility, and assortment, it delivers a weekly category readout "
+    "and SKU priorities so teams can coordinate decisions without flying blind on competitive dynamics."
+)
 st.markdown("---")
 
 # ── Section 1: Market ─────────────────────────────────────────────────────────

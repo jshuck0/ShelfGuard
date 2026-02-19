@@ -1542,30 +1542,41 @@ def generate_brief_markdown(
         "",
     ]
 
-    # Why — compact driver bullets (2 bullets)
-    lines.append("**Why**")
+    # Explanation — clean 2-3 line summary
+    lines.append("**Explanation**")
+    lines.append("")
+
+    # Line 1: Market environment statement (from top driver or headline)
+    _env_statement = None
+    if brief.drivers:
+        _env_statement = brief.drivers[0].claim
+    if not _env_statement:
+        _env_statement = brief.headline
+    lines.append(f"**Market environment:** {_env_statement}")
+    lines.append("")
+
+    # Line 2: Brand performance — pull from brand_vs_arena receipt
+    _brand_perf = None
     for driver in brief.drivers:
-        lines.append(f"- {driver.claim} [{driver.confidence} confidence]")
-        for receipt in driver.receipts[:2]:
-            lines.append(f"  - {receipt}")
+        for r_str in driver.receipts:
+            if any(kw in r_str for kw in ["Brand tracking", "Brand outperforming", "Brand lagging", "Brand visibility"]):
+                _brand_perf = r_str
+                break
+        if _brand_perf:
+            break
+    if not _brand_perf:
+        # Fallback: use misattribution verdict
+        _brand_perf = f"{brief.misattribution_verdict} [{brief.misattribution_confidence} confidence]"
+    lines.append(f"**Brand performance:** {_brand_perf}")
     lines.append("")
 
-    # Misattribution inline
-    lines.append(
-        f"**Attribution:** {brief.misattribution_verdict} "
-        f"[{brief.misattribution_confidence} confidence]"
-    )
-    for r in brief.misattribution_receipts:
-        lines.append(f"- {r}")
-    lines.append("")
-
-    # Secondary signals (inline, not a separate section)
+    # Line 3: Secondary signals (optional, one line)
     if brief.secondary_signals:
-        lines.append("**Secondary signals** *(monitor — not dominant)*")
-        for sig in brief.secondary_signals:
-            lines.append(f"- {sig.claim}")
-            for r in sig.receipts[:2]:
-                lines.append(f"  - {r}")
+        _sec_parts = [sig.claim for sig in brief.secondary_signals[:2]]
+        lines.append(f"**Secondary signals:** {'; '.join(_sec_parts)}")
+        lines.append("")
+    else:
+        lines.append("**Secondary signals:** No sustained discount divergence or structural driver detected.")
         lines.append("")
 
     # ── Section 2: Sub-category Signals ──────────────────────────────────────

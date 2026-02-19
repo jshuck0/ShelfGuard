@@ -1649,10 +1649,6 @@ def generate_brief_markdown(
             lines.append(f"- {item}")
         lines.append("")
 
-    # Requests inline under Actions
-    lines += ["**Validation asks:**", ""]
-    for i, ask in enumerate(brief.validation_asks, 1):
-        lines.append(f"{i}. {ask}")
     lines += [
         "",
         f"**Coordination ask:** {brief.coordination_ask}",

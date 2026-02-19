@@ -226,11 +226,15 @@ st.markdown(
     "Seller Central is siloed around your storefront and operations, so it doesn't provide a clean view of category dynamics "
     "or competitor behavior. Using Amazon marketplace signals, ShelfGuard delivers a weekly, sales-based category readout "
     "and a brand-vs-market lens that puts your performance in context.\n\n"
+    "Competitive dynamics measurably affect demand. A large meta-analysis (7,264 estimates across 115 studies) finds the mean "
+    "cross-price elasticity is ~0.26 (median ~0.10), meaning competitor price moves can systematically shift demand toward "
+    "or away from you.<sup>1</sup>\n\n"
     "ShelfGuard is built for weekly market legibility. "
     "That context is especially valuable for marketers, because weekly performance is hard to interpret without knowing "
     "what the market was doing around you. ShelfGuard helps teams interpret swings correctly, separating category-wide "
     "pressure from brand-specific changes and highlighting the SKUs that actually drove the week. With a shared category "
-    "read, marketing and ecommerce align faster on posture (hold, defend, investigate) without debating the story."
+    "read, marketing and ecommerce align faster on posture (hold, defend, investigate) without debating the story.",
+    unsafe_allow_html=True,
 )
 st.markdown("---")
 
@@ -397,3 +401,12 @@ else:
                 save_brief_predictions_from_brief(brief)
             except Exception:
                 pass  # Non-fatal — scoreboard is best-effort
+
+# ── Footnotes ─────────────────────────────────────────────────────────────────
+
+st.markdown("---")
+st.markdown(
+    "<small><sup>1</sup> Auer, J. & Papies, D. (2020). Cross-Price Elasticities and Their Determinants: "
+    "A Meta-Analysis and New Empirical Generalizations. <em>Journal of the Academy of Marketing Science.</em></small>",
+    unsafe_allow_html=True,
+)

@@ -239,12 +239,15 @@ st.markdown("---")
 
 st.markdown("## Market Setup")
 st.caption(
-    "ShelfGuard scans a competitive set around your seed product using Keepa category leaves, "
-    "then pulls marketplace history to compute weekly changes in price, visibility (BSR), promo activity, "
-    "and estimated revenue share. "
-    "The brief anchors on last week vs the prior week, with 30–90 day history used to separate "
-    "one-week noise from sustained momentum. "
-    "All signals are Keepa marketplace data only — no Seller Central, no ad spend, no CVR."
+    "ShelfGuard builds this brief in three steps: (1) it maps a competitive set from your seed product "
+    "using Keepa category leaves, (2) it pulls recent Keepa history for those ASINs, and (3) it summarizes "
+    "what changed last week versus the prior week. "
+    "Weekly changes are computed for price, visibility (BSR proxy), promo activity, and share "
+    "(estimated from marketplace-observable proxies). "
+    "We compare the last 7 days to the prior 7 to capture weekly change. We also use 30–90 day history "
+    "for multi-week context: to establish a baseline, detect sustained trends, and flag volatility "
+    "so you don't overreact to one-week noise. "
+    "All signals are Keepa-only marketplace data — no Seller Central, no ad spend, no CVR."
 )
 st.markdown("")
 

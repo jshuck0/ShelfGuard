@@ -1363,11 +1363,17 @@ def render_seed_search_and_map_mvp():
 
     keyword = st.text_input("Search keyword or brand name", key="_mvp_keyword")
     if keyword and st.button("Find Seed Products", key="_mvp_find_seeds"):
-        with st.spinner("Searching Keepa…"):
+        with st.status("Scanning category…", expanded=True) as _s1:
+            st.write("Searching Keepa for matching products…")
             try:
                 df_seeds = phase1_seed_discovery(keyword, limit=50)
                 st.session_state["_mvp_seed_candidates"] = df_seeds
+                _s1.update(
+                    label=f"Found {len(df_seeds)} seed products",
+                    state="complete", expanded=False,
+                )
             except Exception as e:
+                _s1.update(label="Search failed", state="error", expanded=True)
                 st.error(f"Search failed: {e}")
                 return
 
@@ -1397,7 +1403,8 @@ def render_seed_search_and_map_mvp():
         _brand_cap_mv = st.session_state.get("_mvp_brand_cap", 150)
 
         if brand and st.button("Map Market", key="_mvp_map_market", type="primary"):
-            with st.spinner("Mapping market — pulls ~90 days of Keepa history. Takes ~60s…"):
+            with st.status("Building competitive set…", expanded=True) as _s2:
+                st.write("Scanning category — pulling ~90 days of Keepa history…")
                 try:
                     # category_tree_ids must be a tuple (hashable) for @st.cache_data
                     _raw_tree = seed_row.get("category_tree_ids")
@@ -1421,6 +1428,7 @@ def render_seed_search_and_map_mvp():
                         brand_cap=_brand_cap_mv,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
+                    st.write(f"Found {len(asins)} ASINs — building weekly panel…")
                     df_weekly = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
                     st.session_state["active_project_data"] = df_weekly
                     st.session_state["active_project_seed_brand"] = brand
@@ -1430,6 +1438,7 @@ def render_seed_search_and_map_mvp():
 
                     # Cache to Supabase for instant return visits
                     if CACHE_ENABLED and cache_market_snapshot:
+                        st.write("Caching for instant return visits…")
                         try:
                             _leaf_id = seed_row.get("leaf_category_id")
                             _cat_path = seed_row.get("category_path", "")
@@ -1449,25 +1458,15 @@ def render_seed_search_and_map_mvp():
                             pass  # Caching is best-effort
 
                     _ms = market_stats
-                    st.success(
-                        f"Market loaded — {_ms.get('brand_selected_count', '?')} brand + "
-                        f"{_ms.get('competitor_selected_count', '?')} competitors selected"
+                    _s2.update(
+                        label=f"Competitive set ready — {_ms.get('brand_selected_count','?')} brand + {_ms.get('competitor_selected_count','?')} competitors",
+                        state="complete", expanded=False,
                     )
-                    with st.expander("Market contract", expanded=True):
-                        st.markdown(f"""\
-| | |
-|---|---|
-| **Brand ASINs** | {_ms.get('brand_selected_count', '?')} |
-| **Competitor ASINs** | {_ms.get('competitor_selected_count', '?')} |
-| **Weeks of history** | {df_weekly['week_start'].nunique() if 'week_start' in df_weekly.columns else '?'} |
-| **Excluded off-leaf** | {_ms.get('excluded_off_leaf_count', 0)} |
-| **Selection basis** | Best sellers first (BSR ascending) |
-| **Coverage** | {_ms.get('coverage_note', 'estimated within scanned universe')} |
-""")
                     st.rerun()
                 except SystemExit:
-                    pass  # st.stop() — let spinner clear cleanly
+                    pass  # st.stop() — let status clear cleanly
                 except Exception as e:
+                    _s2.update(label="Mapping failed", state="error", expanded=True)
                     st.error(f"Market mapping failed: {e}")
 
 

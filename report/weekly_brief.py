@@ -1934,50 +1934,53 @@ def render_brief_tab(
         except Exception:
             df_daily = None
 
-    with st.spinner("Building brief…"):
-        try:
-            brief = build_brief(
-                df_weekly=df_weekly,
-                your_brand=your_brand,
-                arena_name=arena_name,
-                runs_ads=runs_ads,
-                df_daily=df_daily,
-                scoreboard_lines=scoreboard_lines,
-                category_path=_cat_path,
-                module_id=_mod_id,
-            )
+    _brief_status = st.empty()
+    _brief_status.caption("Generating brief…")
+    try:
+        brief = build_brief(
+            df_weekly=df_weekly,
+            your_brand=your_brand,
+            arena_name=arena_name,
+            runs_ads=runs_ads,
+            df_daily=df_daily,
+            scoreboard_lines=scoreboard_lines,
+            category_path=_cat_path,
+            module_id=_mod_id,
+        )
+    except Exception as e:
+        _brief_status.empty()
+        st.error(f"❌ Brief generation failed: {e}")
+        st.caption("Check that the market data loaded correctly and the brand name matches listings.")
+        return
+    # ── Re-score scoreboard with REAL regime signals ──────────────
+    # Regime signals only available after build_brief — re-score and patch.
+    try:
+        from eval.scoreboard import get_scoreboard_lines as _get_sb
+        _regime_signals_for_scoring = detect_all_regimes(df_weekly, your_brand)
+        _real_sb = _get_sb(
+            your_brand,
+            _regime_signals_for_scoring,
+            brief.misattribution_verdict,
+        )
+        brief.scoreboard_lines = _real_sb
+    except Exception:
+        pass  # Non-fatal — keep whatever was passed in
 
-            # ── Re-score scoreboard with REAL regime signals ──────────────
-            # The caller may have passed placeholder scoreboard_lines (empty
-            # signals / "Unknown" misattribution) because regime signals are
-            # only available after build_brief.  Now that we have them, re-
-            # score properly and patch the brief before markdown generation.
-            try:
-                from eval.scoreboard import get_scoreboard_lines as _get_sb
-                _regime_signals_for_scoring = detect_all_regimes(
-                    df_weekly, your_brand
-                )
-                _real_sb = _get_sb(
-                    your_brand,
-                    _regime_signals_for_scoring,
-                    brief.misattribution_verdict,
-                )
-                brief.scoreboard_lines = _real_sb
-            except Exception:
-                pass  # Non-fatal — keep whatever was passed in
+    # ASIN metrics + markdown
+    try:
+        from config.market_misattribution_module import ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS
+        asin_metrics_map = compute_asin_metrics(
+            df_weekly, ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS,
+            your_brand=your_brand, df_daily=df_daily,
+        )
+        md = generate_brief_markdown(brief, df_weekly, asin_metrics_map, your_brand)
+    except Exception as e:
+        _brief_status.empty()
+        st.error(f"❌ Brief generation failed: {e}")
+        st.caption("Check that the market data loaded correctly and the brand name matches listings.")
+        return
 
-            # Use proper thresholds for ASIN metrics (same configs that build_brief uses)
-            from config.market_misattribution_module import ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS
-            asin_metrics_map = compute_asin_metrics(
-                df_weekly, ASIN_ROLE_THRESHOLDS, AD_WASTE_RISK_THRESHOLDS,
-                your_brand=your_brand, df_daily=df_daily,
-            )
-
-            md = generate_brief_markdown(brief, df_weekly, asin_metrics_map, your_brand)
-        except Exception as e:
-            st.error(f"❌ Brief generation failed: {e}")
-            st.caption("Check that the market data loaded correctly and the brand name matches listings.")
-            return
+    _brief_status.empty()
 
     # Persist for scoreboard
     import streamlit as st

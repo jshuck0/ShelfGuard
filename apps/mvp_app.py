@@ -256,7 +256,8 @@ if use_golden:
             f"{GOLDEN_MARKET_SIZE} ASINs from the {GOLDEN_PROJECT_NAME} category."
         )
         if st.button("⬇ Load Market", type="primary"):
-            with st.spinner("Mapping market — this pulls ~90 days of Keepa history. Takes ~60s…"):
+            with st.status("Building competitive set…", expanded=True) as _sg:
+                st.write("Scanning category — pulling ~90 days of Keepa history…")
                 try:
                     from src.two_phase_discovery import phase2_category_market_mapping
                     from apps.search_to_state_ui import ensure_weekly_panel
@@ -277,6 +278,7 @@ if use_golden:
                         brand_cap=_bc,
                     )
                     asins = list(df_snapshot["asin"].unique()) if "asin" in df_snapshot.columns else []
+                    st.write(f"Found {len(asins)} ASINs — building weekly panel…")
                     df_new = ensure_weekly_panel(df_snapshot, market_stats, asins, mvp_mode=True)
                     st.session_state["active_project_data"] = df_new
                     st.session_state["active_project_seed_brand"] = GOLDEN_BRAND
@@ -286,6 +288,7 @@ if use_golden:
                     _ms = market_stats
 
                     # Cache to Supabase for instant return visits
+                    st.write("Caching for instant return visits…")
                     try:
                         from src.supabase_reader import cache_market_snapshot, cache_weekly_timeseries
                         _cat_ctx = {
@@ -299,25 +302,15 @@ if use_golden:
                     except Exception:
                         pass  # Caching is best-effort
 
-                    st.success(
-                        f"Market loaded — {_ms.get('brand_selected_count', '?')} brand + "
-                        f"{_ms.get('competitor_selected_count', '?')} competitors selected"
+                    _sg.update(
+                        label=f"Competitive set ready — {_ms.get('brand_selected_count','?')} brand + {_ms.get('competitor_selected_count','?')} competitors",
+                        state="complete", expanded=False,
                     )
-                    with st.expander("Market contract", expanded=True):
-                        st.markdown(f"""\
-| | |
-|---|---|
-| **Brand ASINs** | {_ms.get('brand_selected_count', '?')} |
-| **Competitor ASINs** | {_ms.get('competitor_selected_count', '?')} |
-| **Weeks of history** | {df_new['week_start'].nunique() if 'week_start' in df_new.columns else '?'} |
-| **Excluded off-leaf** | {_ms.get('excluded_off_leaf_count', 0)} |
-| **Selection basis** | Best sellers first (BSR ascending) |
-| **Coverage** | {_ms.get('coverage_note', 'estimated within scanned universe')} |
-""")
                     st.rerun()
                 except SystemExit:
-                    pass  # st.stop() — let spinner clear cleanly
+                    pass  # st.stop() — let status clear cleanly
                 except Exception as e:
+                    _sg.update(label="Market load failed", state="error", expanded=True)
                     st.error(f"Market load failed: {e}")
     else:
         asin_count = df_weekly["asin"].nunique() if "asin" in df_weekly.columns else 0

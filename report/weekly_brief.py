@@ -609,13 +609,13 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
         if your_bsr is not None and arena_bsr is not None:
             _delta = your_bsr - arena_bsr
             if abs(_delta) < 0.02:
-                _rel = "Brand tracking market"
+                _rel = "Brand visibility tracking market"
             elif _delta < 0:  # brand improving faster
-                _rel = "Brand outperforming market"
+                _rel = "Brand visibility outperforming market"
             else:
-                _rel = "Brand lagging market"
+                _rel = "Brand visibility lagging market"
             bullets.append(
-                f"**{_rel}** (brand {your_bsr*100:+.1f}%, market {arena_bsr*100:+.1f}%)"
+                f"**{_rel}** (brand {your_bsr*100:+.1f}% vs market {arena_bsr*100:+.1f}% WoW)"
             )
         elif your_bsr is not None:
             bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
@@ -639,13 +639,13 @@ def _build_what_changed(your_bsr, arena_bsr, price_vs_tier, biggest_mover, firin
     if your_bsr is not None and arena_bsr is not None:
         _delta = your_bsr - arena_bsr
         if abs(_delta) < 0.02:
-            _rel = "Brand tracking market"
+            _rel = "Brand visibility tracking market"
         elif _delta < 0:
-            _rel = "Brand outperforming market"
+            _rel = "Brand visibility outperforming market"
         else:
-            _rel = "Brand lagging market"
+            _rel = "Brand visibility lagging market"
         bullets.append(
-            f"**{_rel}** (brand {your_bsr*100:+.1f}%, market {arena_bsr*100:+.1f}%)"
+            f"**{_rel}** (brand {your_bsr*100:+.1f}% vs market {arena_bsr*100:+.1f}% WoW)"
         )
     elif your_bsr is not None:
         bullets.append(f"**Brand visibility:** {your_bsr*100:+.1f}% WoW")
@@ -928,7 +928,7 @@ def _build_misattribution_verdict(firing, all_signals, conf_score, your_bsr, are
             verdict_conf = conf_score.label if conf_score else "Med"  # data confidence, not forced "Low"
             receipts = [
                 "Market-wide visibility stable WoW — no active market environment detected",
-                "Brand tracking market: performance consistent with steady-state",
+                "Brand visibility tracking market: performance consistent with steady-state",
             ]
         else:
             verdict = "Unknown"
@@ -1565,7 +1565,7 @@ def generate_brief_markdown(
     _brand_perf = None
     for driver in brief.drivers:
         for r_str in driver.receipts:
-            if any(kw in r_str for kw in ["Brand tracking", "Brand outperforming", "Brand lagging", "Brand visibility"]):
+            if any(kw in r_str for kw in ["Brand visibility tracking", "Brand visibility outperforming", "Brand visibility lagging", "Brand visibility"]):
                 _brand_perf = r_str
                 break
         if _brand_perf:

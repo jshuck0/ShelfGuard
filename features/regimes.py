@@ -960,14 +960,13 @@ def build_baseline_signal(
             # For BSR: negative delta = brand improving faster than arena (outperforming)
             abs_delta = abs(delta)
             if abs_delta < 0.02:        # < 2 pp difference
-                _relative = "Brand tracking market"
+                _relative = "Brand visibility tracking market"
             elif delta < 0:             # brand BSR improving more than arena
-                _relative = "Brand outperforming market"
+                _relative = "Brand visibility outperforming market"
             else:                       # brand BSR worsening relative to arena
-                _relative = "Brand lagging market"
+                _relative = "Brand visibility lagging market"
             r2_label = (
-                f"{_relative} (brand {your_bsr_wow*100:+.1f}% WoW, "
-                f"market {arena_bsr_wow*100:+.1f}% WoW, delta {delta*100:+.1f} pp)"
+                f"{_relative} (brand {your_bsr_wow*100:+.1f}% vs market {arena_bsr_wow*100:+.1f}% WoW)"
             )
         else:
             r2_label = f"Brand visibility {your_bsr_wow*100:+.1f}% WoW — no market context"

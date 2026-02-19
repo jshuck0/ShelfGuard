@@ -226,7 +226,7 @@ st.markdown("---")
 
 # ── Section 1: Market ─────────────────────────────────────────────────────────
 
-st.markdown("## 1. Market Setup")
+st.markdown("## Market Setup")
 
 use_golden = st.session_state.get("_mvp_use_golden", False)
 df_weekly = st.session_state.get("active_project_data", pd.DataFrame())
@@ -346,7 +346,7 @@ else:
 # ── Section 2: Brief ──────────────────────────────────────────────────────────
 
 st.markdown("---")
-st.markdown("## 2. Brief")
+st.markdown("## Brief")
 
 df_weekly = st.session_state.get("active_project_data", pd.DataFrame())
 

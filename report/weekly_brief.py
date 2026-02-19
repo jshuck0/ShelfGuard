@@ -1558,7 +1558,7 @@ def generate_brief_markdown(
 
     # ── Section 1: Market Environment ────────────────────────────────────────
     lines += [
-        "## 1. Market Environment",
+        "## Market Environment",
         f"> {brief.headline}",
         "",
     ]
@@ -1602,7 +1602,7 @@ def generate_brief_markdown(
 
     # ── Section 2: Sub-category Signals ──────────────────────────────────────
     if brief.pressure_buckets:
-        lines += ["## 2. Sub-category Signals", ""]
+        lines += ["## Sub-category Signals", ""]
         for driver in brief.pressure_buckets:
             lines.append(f"- {driver.claim}")
             for r in driver.receipts[:2]:
@@ -1611,7 +1611,7 @@ def generate_brief_markdown(
                 lines.append(f"  - **So what?** {driver.so_what}")
         lines.append("")
     else:
-        lines += ["## 2. Sub-category Signals", ""]
+        lines += ["## Sub-category Signals", ""]
         for b in brief.what_changed:
             lines.append(f"- {b}")
         lines.append("")
@@ -1619,7 +1619,7 @@ def generate_brief_markdown(
     # ── Section 3: Active Signals ────────────────────────────────────────────
     if brief.opportunity_bucket:
         ob = brief.opportunity_bucket
-        lines += ["## 3. Active Signals", ""]
+        lines += ["## Active Signals", ""]
         lines.append(f"- {ob.claim}")
         for r in ob.receipts[:2]:
             lines.append(f"  - {r}")
@@ -1627,7 +1627,7 @@ def generate_brief_markdown(
             lines.append(f"  - **So what?** {ob.so_what}")
         lines.append("")
     elif brief.concern_summary:
-        lines += ["## 3. Active Signals", ""]
+        lines += ["## Active Signals", ""]
         lines.append("- No actionable active/ingredient-level signal this week.")
         lines.append("")
 
@@ -1635,7 +1635,7 @@ def generate_brief_markdown(
     # (rendered below with per-ASIN detail)
 
     # ── Section 5: Actions ───────────────────────────────────────────────────
-    lines += ["## 5. Actions", ""]
+    lines += ["## Actions", ""]
     # Implications as context
     for b in brief.implications:
         lines.append(f"- {b}")
@@ -1660,13 +1660,13 @@ def generate_brief_markdown(
     ]
 
     # ── Section 6: What to Watch ─────────────────────────────────────────────
-    lines += ["## 6. What to Watch", ""]
+    lines += ["## What to Watch", ""]
     for trigger in brief.watch_triggers:
         lines.append(f"- {trigger}")
     lines.append("")
 
     # ── Section 7: Recommended Set (Scoreboard) ──────────────────────────────
-    lines += ["## 7. Recommended Set", ""]
+    lines += ["## Recommended Set", ""]
     if brief.scoreboard_lines:
         for line in brief.scoreboard_lines:
             lines.append(f"- {line}")
@@ -1676,7 +1676,7 @@ def generate_brief_markdown(
 
     # ── Section 4: Key SKUs ──────────────────────────────────────────────────
     if include_per_asin and asin_metrics:
-        lines += ["---", "", "## 4. Key SKUs", ""]
+        lines += ["---", "", "## Key SKUs", ""]
 
         # Layer A: Ads-relevant receipts (grouped by pressure/opportunity bucket when available)
         lines += ["### Ads-relevant receipts this week", ""]

@@ -226,12 +226,13 @@ st.caption("A weekly Amazon category brief that turns marketplace signals into a
 st.markdown(
     "**Seller Central shows your store. ShelfGuard shows your market.** "
     "Seller Central is siloed around your storefront and operations, so it doesn't provide a clean view of category dynamics "
-    "or competitor behavior. Using Amazon marketplace signals like pricing, promos, visibility, and assortment, ShelfGuard "
-    "delivers a weekly category readout and a brand-vs-market lens that puts your performance in context.\n\n"
-    "That context is especially valuable for marketers, because attribution is hard without knowing what the market was doing "
-    "around you. ShelfGuard helps teams interpret swings correctly, separating category-wide pressure from brand-specific "
-    "changes and highlighting the SKUs that actually drove the week. With a shared category read, marketing and ecommerce "
-    "align faster on posture (hold, defend, investigate) without debating the story."
+    "or competitor behavior. Using Amazon marketplace signals, ShelfGuard delivers a weekly, sales-based category readout "
+    "and a brand-vs-market lens that puts your performance in context.\n\n"
+    "ShelfGuard is built for weekly market legibility. "
+    "That context is especially valuable for marketers, because weekly performance is hard to interpret without knowing "
+    "what the market was doing around you. ShelfGuard helps teams interpret swings correctly, separating category-wide "
+    "pressure from brand-specific changes and highlighting the SKUs that actually drove the week. With a shared category "
+    "read, marketing and ecommerce align faster on posture (hold, defend, investigate) without debating the story."
 )
 st.markdown("---")
 
